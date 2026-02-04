@@ -1,0 +1,121 @@
+defmodule Giulia.Application do
+  @moduledoc """
+  Giulia OTP Application.
+
+  Architecture: Daemon-Client Model
+
+  When started normally (via mix or iex):
+  - Core services start (Registry, Tools, Providers)
+  - Context services are lazy (started when daemon runs)
+
+  When started as daemon:
+  - Full supervision tree including ProjectContexts
+  - Persistent across terminal sessions
+
+  Supervision tree:
+  - Registry for named process lookup
+  - Context.Store (ETS) for codebase state
+  - Tools.Registry for auto-discovered tools
+  - Context.Indexer for background AST scanning
+  - Provider.Supervisor for API/Local connections
+  - Agent.Supervisor for task-specific agents
+
+  Daemon-specific (started by Giulia.Daemon.start/0):
+  - Core.ProjectSupervisor for per-project contexts
+  - Core.ContextManager for routing requests
+  """
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    # Check if running as thin client (escript) - don't start daemon services
+    # The client only needs Req HTTP client, no supervision tree
+    if client_mode?() do
+      # Empty supervision tree - client just makes HTTP calls
+      Supervisor.start_link([], strategy: :one_for_one, name: Giulia.Supervisor)
+    else
+      start_daemon_mode()
+    end
+  end
+
+  # Detect if we're running as the thin client (escript)
+  # Client mode = NOT in container AND NOT explicitly running as daemon
+  defp client_mode? do
+    explicit_client = System.get_env("GIULIA_CLIENT_MODE") == "true"
+    explicit_daemon = System.get_env("GIULIA_DAEMON_MODE") == "true"
+    in_container = System.get_env("GIULIA_IN_CONTAINER") == "true"
+
+    cond do
+      explicit_client -> true
+      explicit_daemon -> false
+      in_container -> false  # Container = daemon mode
+      true -> true  # Default outside container = client mode
+    end
+  end
+
+  defp start_daemon_mode do
+    port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
+
+    children = [
+      # Registry for named process lookup
+      {Registry, keys: :unique, name: Giulia.Registry},
+
+      # ETS-backed context store for project state
+      Giulia.Context.Store,
+
+      # Tool registry (auto-discovers tools on boot)
+      Giulia.Tools.Registry,
+
+      # Background AST indexer
+      Giulia.Context.Indexer,
+
+      # Dynamic supervisor for provider connections
+      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
+
+      # Dynamic supervisor for agent tasks
+      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Agent.Supervisor},
+
+      # Trace storage for debugging inference runs
+      Giulia.Inference.Trace,
+
+      # Inference subsystem (pools with back-pressure)
+      Giulia.Inference.Supervisor,
+
+      # Dynamic supervisor for per-project contexts
+      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
+
+      # Context manager - routes requests to correct ProjectContext
+      Giulia.Core.ContextManager,
+
+      # HTTP API endpoint
+      {Bandit, plug: Giulia.Daemon.Endpoint, port: port}
+    ]
+
+    opts = [strategy: :one_for_one, name: Giulia.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+
+  @doc """
+  Start the daemon-specific services.
+  Called by Giulia.Daemon.start/0 when running as system daemon.
+  """
+  def start_daemon_services do
+    port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
+
+    children = [
+      # Dynamic supervisor for per-project contexts
+      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
+
+      # Context manager - routes requests to correct ProjectContext
+      Giulia.Core.ContextManager,
+
+      # HTTP API endpoint (replaces Erlang distribution)
+      {Bandit, plug: Giulia.Daemon.Endpoint, port: port}
+    ]
+
+    Supervisor.start_link(children,
+      strategy: :one_for_one,
+      name: Giulia.Core.Supervisor
+    )
+  end
+end

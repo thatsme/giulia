@@ -1,0 +1,58 @@
+# Giulia Docker Compose Configuration
+#
+# Usage:
+#   docker-compose up -d      # Start daemon in background
+#   docker-compose logs -f    # Watch logs
+#   docker-compose down       # Stop daemon
+#
+# The thin client connects via HTTP - simple and reliable.
+
+services:
+  giulia-daemon:
+    image: giulia/core:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: giulia-daemon
+    hostname: giulia-daemon
+
+    restart: unless-stopped
+
+    environment:
+      - GIULIA_HOME=/data
+      - GIULIA_PORT=4000
+      - GIULIA_IN_CONTAINER=true
+      # Path mapping: The Translation Shim
+      # GIULIA_HOST_PROJECTS_PATH = Windows path prefix (e.g., C:/Development/GitHub)
+      # Maps to /projects inside container
+      - GIULIA_HOST_PROJECTS_PATH=${GIULIA_HOST_PROJECTS_PATH:-C:/Development/GitHub}
+      - GIULIA_PATH_MAPPING=${GIULIA_PATH_MAPPING:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # LM Studio URL - enable "Serve on Local Network" and use the IP shown
+      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://192.168.33.1:1234/v1/chat/completions}
+
+    volumes:
+      - giulia_data:/data
+      - ${GIULIA_PROJECTS_PATH:-./test_projects}:/projects:rw
+      - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
+
+    # Simple HTTP port - no EPMD complexity
+    ports:
+      - "4000:4000"
+
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  giulia_data:
+    name: giulia_data

@@ -1,0 +1,26 @@
+## Giulia Daemon VM Arguments
+## This configures the Erlang VM for the release
+
+## Name and cookie are set via RELEASE_NODE, RELEASE_DISTRIBUTION, RELEASE_COOKIE env vars
+## Don't set them here
+
+## Configure distribution port range for Docker port forwarding
+## The daemon will listen on a port in this range (9100-9105)
+-kernel inet_dist_listen_min 9100
+-kernel inet_dist_listen_max 9105
+
+## Increase default process limit
++P 1000000
+
+## Increase port limit
++Q 65536
+
+## Enable SMP
+-smp auto
+
+## Memory allocator settings for better performance
++MBas aobf
++MBlmbcs 512
+
+## Crash dump location
+-env ERL_CRASH_DUMP /data/erl_crash.dump

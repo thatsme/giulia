@@ -1,0 +1,485 @@
+defmodule Giulia.Core.ProjectContext do
+  @moduledoc """
+  Per-Project State Manager.
+
+  Each project you work on gets its own GenServer that maintains:
+  - AST index for the project files
+  - Chat history (persisted to SQLite in .giulia/)
+  - Constitution data (loaded from GIULIA.md)
+  - Current model provider preference
+
+  This is the "consciousness" for a single project.
+  Multiple ProjectContexts can run simultaneously for different projects.
+  """
+  use GenServer
+
+  require Logger
+
+  alias Giulia.Context.{Store, Indexer}
+  alias Giulia.Core.PathSandbox
+
+  defstruct [
+    :path,
+    :constitution,
+    :constitution_path,
+    :ast_index_ref,
+    :history_db,
+    :current_provider,
+    :file_watcher_ref,
+    :sandbox,
+    started_at: nil,
+    stats: %{
+      files_indexed: 0,
+      conversations: 0,
+      tool_calls: 0
+    }
+  ]
+
+  # ============================================================================
+  # Client API
+  # ============================================================================
+
+  def start_link(opts) do
+    path = Keyword.fetch!(opts, :path)
+    GenServer.start_link(__MODULE__, opts, name: via_tuple(path))
+  end
+
+  @doc """
+  Get the registry name for a project path.
+  """
+  def via_tuple(path) do
+    {:via, Registry, {Giulia.Registry, {:project, normalize_path(path)}}}
+  end
+
+  @doc """
+  Get the current constitution for this project.
+  """
+  def get_constitution(pid) do
+    GenServer.call(pid, :get_constitution)
+  end
+
+  @doc """
+  Reload the constitution from GIULIA.md.
+  """
+  def reload_constitution(pid) do
+    GenServer.call(pid, :reload_constitution)
+  end
+
+  @doc """
+  Get project stats.
+  """
+  def get_stats(pid) do
+    GenServer.call(pid, :get_stats)
+  end
+
+  @doc """
+  Validate a path against this project's sandbox.
+  Returns {:ok, expanded_path} or {:error, :sandbox_violation}.
+  """
+  def validate_path(pid, path) do
+    GenServer.call(pid, {:validate_path, path})
+  end
+
+  @doc """
+  Execute a sandboxed file read.
+  """
+  def read_file(pid, path) do
+    GenServer.call(pid, {:read_file, path})
+  end
+
+  @doc """
+  Execute a sandboxed file write.
+  """
+  def write_file(pid, path, content) do
+    GenServer.call(pid, {:write_file, path, content})
+  end
+
+  @doc """
+  Get the AST for a file in this project.
+  """
+  def get_ast(pid, path) do
+    GenServer.call(pid, {:get_ast, path})
+  end
+
+  @doc """
+  Search files in this project.
+  """
+  def search_files(pid, pattern) do
+    GenServer.call(pid, {:search_files, pattern})
+  end
+
+  @doc """
+  Add a message to conversation history.
+  """
+  def add_to_history(pid, role, content) do
+    GenServer.cast(pid, {:add_history, role, content})
+  end
+
+  @doc """
+  Get recent conversation history.
+  """
+  def get_history(pid, limit \\ 50) do
+    GenServer.call(pid, {:get_history, limit})
+  end
+
+  # ============================================================================
+  # Server Callbacks
+  # ============================================================================
+
+  @impl true
+  def init(opts) do
+    path = Keyword.fetch!(opts, :path) |> normalize_path()
+
+    Logger.info("Initializing ProjectContext for #{path}")
+
+    # Create the sandbox validator
+    sandbox = PathSandbox.new(path)
+
+    # Load constitution
+    constitution_path = Path.join(path, "GIULIA.md")
+    constitution = load_constitution(constitution_path)
+
+    # Initialize history database
+    history_db = init_history_db(path)
+
+    state = %__MODULE__{
+      path: path,
+      constitution: constitution,
+      constitution_path: constitution_path,
+      sandbox: sandbox,
+      history_db: history_db,
+      started_at: DateTime.utc_now(),
+      current_provider: determine_provider(constitution)
+    }
+
+    # Start AST indexing in background
+    send(self(), :start_indexing)
+
+    # Watch for file changes
+    send(self(), :setup_file_watcher)
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_call(:get_constitution, _from, state) do
+    {:reply, state.constitution, state}
+  end
+
+  @impl true
+  def handle_call(:reload_constitution, _from, state) do
+    constitution = load_constitution(state.constitution_path)
+    new_state = %{state | constitution: constitution}
+    Logger.info("Reloaded constitution for #{state.path}")
+    {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call(:get_stats, _from, state) do
+    stats = %{
+      path: state.path,
+      started_at: state.started_at,
+      files_indexed: state.stats.files_indexed,
+      conversations: state.stats.conversations,
+      tool_calls: state.stats.tool_calls,
+      constitution_loaded: state.constitution != nil
+    }
+
+    {:reply, stats, state}
+  end
+
+  @impl true
+  def handle_call({:validate_path, path}, _from, state) do
+    result = PathSandbox.validate(state.sandbox, path)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:read_file, path}, _from, state) do
+    result =
+      case PathSandbox.validate(state.sandbox, path) do
+        {:ok, safe_path} ->
+          File.read(safe_path)
+
+        {:error, _} = error ->
+          error
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:write_file, path, content}, _from, state) do
+    result =
+      case PathSandbox.validate(state.sandbox, path) do
+        {:ok, safe_path} ->
+          # Ensure parent directory exists
+          safe_path |> Path.dirname() |> File.mkdir_p()
+          File.write(safe_path, content)
+
+        {:error, _} = error ->
+          error
+      end
+
+    new_state = update_stat(state, :tool_calls)
+    {:reply, result, new_state}
+  end
+
+  @impl true
+  def handle_call({:get_ast, path}, _from, state) do
+    result =
+      case PathSandbox.validate(state.sandbox, path) do
+        {:ok, safe_path} ->
+          Store.get_ast(safe_path)
+
+        {:error, _} = error ->
+          error
+      end
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:search_files, pattern}, _from, state) do
+    # Search only within project sandbox
+    results =
+      Path.join(state.path, "**/" <> pattern)
+      |> Path.wildcard()
+      |> Enum.filter(&PathSandbox.safe?(&1, state.sandbox))
+
+    {:reply, results, state}
+  end
+
+  @impl true
+  def handle_call({:get_history, limit}, _from, state) do
+    history = fetch_history(state.history_db, limit)
+    {:reply, history, state}
+  end
+
+  @impl true
+  def handle_cast({:add_history, role, content}, state) do
+    insert_history(state.history_db, role, content)
+    new_state = update_stat(state, :conversations)
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_info(:start_indexing, state) do
+    Logger.info("Starting AST indexing for #{state.path}")
+
+    # Index the project using the global indexer but scoped to our path
+    Task.start(fn ->
+      Indexer.index_path(state.path)
+    end)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:setup_file_watcher, state) do
+    # TODO: Implement FileSystem watcher for live re-indexing
+    # For now, we rely on manual re-indexing
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:file_event, path, events}, state) do
+    Logger.debug("File event: #{path} - #{inspect(events)}")
+
+    # Re-index the changed file if it's an Elixir file
+    if Path.extname(path) in [".ex", ".exs"] do
+      Task.start(fn ->
+        Indexer.index_file(path)
+      end)
+    end
+
+    # Reload constitution if GIULIA.md changed
+    if Path.basename(path) == "GIULIA.md" do
+      send(self(), :reload_constitution)
+    end
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def terminate(reason, state) do
+    Logger.info("ProjectContext for #{state.path} terminating: #{inspect(reason)}")
+    # Close history database if open
+    close_history_db(state.history_db)
+    :ok
+  end
+
+  # ============================================================================
+  # Private - Constitution
+  # ============================================================================
+
+  defp load_constitution(path) do
+    case File.read(path) do
+      {:ok, content} ->
+        parse_constitution(content)
+
+      {:error, reason} ->
+        Logger.warning("Could not load GIULIA.md: #{inspect(reason)}")
+        %{raw: nil, rules: [], taboos: [], patterns: []}
+    end
+  end
+
+  defp parse_constitution(content) do
+    # Extract structured data from GIULIA.md
+    %{
+      raw: content,
+      rules: extract_section(content, "Architectural Guidelines"),
+      taboos: extract_section(content, "Taboos"),
+      patterns: extract_section(content, "Preferred Patterns"),
+      tech_stack: extract_tech_stack(content)
+    }
+  end
+
+  defp extract_section(content, section_name) do
+    # Simple extraction - find section and get bullet points
+    regex = ~r/## #{section_name}\s*\n((?:[-*].*\n?)*)/
+
+    case Regex.run(regex, content) do
+      [_, bullets] ->
+        bullets
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.filter(&String.starts_with?(&1, ["-", "*"]))
+        |> Enum.map(&String.replace_prefix(&1, "- ", ""))
+        |> Enum.map(&String.replace_prefix(&1, "* ", ""))
+
+      nil ->
+        []
+    end
+  end
+
+  defp extract_tech_stack(content) do
+    language = extract_field(content, "Language")
+    framework = extract_field(content, "Framework")
+    %{language: language, framework: framework}
+  end
+
+  defp extract_field(content, field) do
+    regex = ~r/\*\*#{field}\*\*:\s*(.+)/
+
+    case Regex.run(regex, content) do
+      [_, value] -> String.trim(value)
+      nil -> nil
+    end
+  end
+
+  defp determine_provider(constitution) do
+    # Check if constitution specifies a provider preference
+    # Default to cloud for now
+    case constitution[:tech_stack] do
+      %{framework: "Phoenix"} -> :cloud  # Phoenix needs full context
+      _ -> :auto  # Let router decide
+    end
+  end
+
+  # ============================================================================
+  # Private - History Database (SQLite)
+  # ============================================================================
+
+  defp init_history_db(project_path) do
+    db_path = Path.join([project_path, ".giulia", "history", "chat.db"])
+
+    # Ensure directory exists
+    db_path |> Path.dirname() |> File.mkdir_p()
+
+    case Exqlite.Sqlite3.open(db_path) do
+      {:ok, conn} ->
+        create_history_table(conn)
+        conn
+
+      {:error, reason} ->
+        Logger.error("Failed to open history DB: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp create_history_table(nil), do: :ok
+
+  defp create_history_table(conn) do
+    sql = """
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """
+
+    case Exqlite.Sqlite3.execute(conn, sql) do
+      :ok -> :ok
+      {:error, reason} -> Logger.error("Failed to create history table: #{inspect(reason)}")
+    end
+  end
+
+  defp insert_history(nil, _role, _content), do: :ok
+
+  defp insert_history(conn, role, content) do
+    sql = "INSERT INTO messages (role, content) VALUES (?1, ?2)"
+
+    case Exqlite.Sqlite3.prepare(conn, sql) do
+      {:ok, stmt} ->
+        :ok = Exqlite.Sqlite3.bind(stmt, [role, content])
+        Exqlite.Sqlite3.step(conn, stmt)
+        Exqlite.Sqlite3.release(conn, stmt)
+
+      {:error, reason} ->
+        Logger.error("Failed to insert history: #{inspect(reason)}")
+    end
+  end
+
+  defp fetch_history(nil, _limit), do: []
+
+  defp fetch_history(conn, limit) do
+    sql = "SELECT role, content, created_at FROM messages ORDER BY id DESC LIMIT ?1"
+
+    case Exqlite.Sqlite3.prepare(conn, sql) do
+      {:ok, stmt} ->
+        :ok = Exqlite.Sqlite3.bind(stmt, [limit])
+        results = fetch_all_rows(conn, stmt, [])
+        Exqlite.Sqlite3.release(conn, stmt)
+        Enum.reverse(results)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  defp fetch_all_rows(conn, stmt, acc) do
+    case Exqlite.Sqlite3.step(conn, stmt) do
+      {:row, [role, content, created_at]} ->
+        row = %{role: role, content: content, created_at: created_at}
+        fetch_all_rows(conn, stmt, [row | acc])
+
+      :done ->
+        acc
+    end
+  end
+
+  defp close_history_db(nil), do: :ok
+
+  defp close_history_db(conn) do
+    Exqlite.Sqlite3.close(conn)
+  end
+
+  # ============================================================================
+  # Private - Utilities
+  # ============================================================================
+
+  defp normalize_path(path) do
+    # Don't use Path.expand - it breaks Windows paths on Linux
+    # The path should already be translated by PathMapper
+    path
+    |> String.replace("\\", "/")
+    |> String.trim_trailing("/")
+  end
+
+  defp update_stat(state, key) do
+    new_stats = Map.update(state.stats, key, 1, &(&1 + 1))
+    %{state | stats: new_stats}
+  end
+end

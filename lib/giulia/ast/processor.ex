@@ -1,0 +1,804 @@
+defmodule Giulia.AST.Processor do
+  @moduledoc """
+  Native Elixir AST analysis using Sourceror.
+
+  Sourceror preserves comments and formatting, enabling:
+  - Accurate code analysis
+  - Clean code patching (modify and write back)
+  - No C dependencies (pure Elixir)
+
+  This is better than tree-sitter for Elixir-focused work because
+  we can write code back while preserving style.
+  """
+
+  @type ast :: Macro.t()
+  @type parse_result :: {:ok, ast(), String.t()} | {:error, term()}
+
+  @type file_info :: %{
+          path: String.t(),
+          modules: [module_info()],
+          functions: [function_info()],
+          imports: [import_info()],
+          line_count: non_neg_integer(),
+          complexity: non_neg_integer()
+        }
+
+  @type module_info :: %{name: String.t(), line: non_neg_integer()}
+  @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp, line: non_neg_integer()}
+  @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
+
+  # ============================================================================
+  # Debug / Testing
+  # ============================================================================
+
+  @doc """
+  Quick test function to verify extraction works.
+  Call from iex: Giulia.AST.Processor.test_extraction()
+  """
+  def test_extraction do
+    require Logger
+
+    # Simple Elixir module source
+    source = """
+    defmodule TestModule do
+      def hello(name), do: "Hello, \#{name}!"
+
+      defp private_func, do: :ok
+    end
+    """
+
+    Logger.info("=== TEST EXTRACTION ===")
+    Logger.info("Parsing source...")
+
+    case parse(source) do
+      {:ok, ast, _src} ->
+        Logger.info("AST parsed successfully")
+        Logger.info("AST structure: #{inspect(ast, pretty: true, limit: 5)}")
+
+        # Direct pattern match test
+        Logger.info("=== DIRECT PATTERN MATCH TEST ===")
+        case ast do
+          {:defmodule, meta, [{:__aliases__, _, parts} | _]} ->
+            Logger.info("DIRECT MATCH SUCCESS: defmodule with aliases #{inspect(parts)}")
+          {:defmodule, meta, args} ->
+            Logger.info("DIRECT MATCH PARTIAL: defmodule but args = #{inspect(args, limit: 3)}")
+          other ->
+            Logger.info("DIRECT MATCH FAILED: top level is #{inspect(other, limit: 3)}")
+        end
+
+        modules = extract_modules(ast)
+        functions = extract_functions(ast)
+
+        Logger.info("Extracted #{length(modules)} modules: #{inspect(modules)}")
+        Logger.info("Extracted #{length(functions)} functions: #{inspect(functions)}")
+
+        %{modules: modules, functions: functions}
+
+      {:error, reason} ->
+        Logger.error("Parse failed: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Debug function to analyze a real file and show AST structure.
+  """
+  def debug_file(path) do
+    require Logger
+
+    Logger.info("=== DEBUG FILE: #{path} ===")
+
+    case File.read(path) do
+      {:ok, source} ->
+        Logger.info("File read OK, #{byte_size(source)} bytes")
+
+        case Sourceror.parse_string(source) do
+          {:ok, ast} ->
+            Logger.info("Parse OK")
+
+            # Show top-level structure
+            case ast do
+              {:__block__, _, children} when is_list(children) ->
+                Logger.info("TOP: __block__ with #{length(children)} children")
+                Enum.each(Enum.take(children, 3), fn child ->
+                  case child do
+                    {type, _, _} -> Logger.info("  Child: #{type}")
+                    _ -> Logger.info("  Child: #{inspect(child, limit: 2)}")
+                  end
+                end)
+
+              {type, meta, args} ->
+                Logger.info("TOP: #{type} with #{length(args || [])} args")
+                Logger.info("  Meta: #{inspect(meta, limit: 5)}")
+
+              other ->
+                Logger.info("TOP: unexpected #{inspect(other, limit: 3)}")
+            end
+
+            # Now extract
+            modules = extract_modules(ast)
+            functions = extract_functions(ast)
+
+            %{modules: modules, functions: functions}
+
+          {:error, reason} ->
+            Logger.error("Parse failed: #{inspect(reason)}")
+            {:error, :parse_failed}
+        end
+
+      {:error, reason} ->
+        Logger.error("File read failed: #{inspect(reason)}")
+        {:error, :read_failed}
+    end
+  end
+
+  # ============================================================================
+  # Parsing
+  # ============================================================================
+
+  @doc """
+  Parse Elixir source code using Sourceror.
+  Returns {:ok, ast, source} or {:error, reason}.
+  """
+  @spec parse(String.t()) :: parse_result()
+  def parse(source) when is_binary(source) do
+    case Sourceror.parse_string(source) do
+      {:ok, ast} -> {:ok, ast, source}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc """
+  Parse a file from disk.
+  """
+  @spec parse_file(String.t()) :: parse_result()
+  def parse_file(path) do
+    with {:ok, source} <- File.read(path),
+         {:ok, ast} <- Sourceror.parse_string(source) do
+      {:ok, ast, source}
+    end
+  end
+
+  # ============================================================================
+  # Analysis
+  # ============================================================================
+
+  @doc """
+  Analyze an AST and extract structured metadata.
+  """
+  @spec analyze(ast(), String.t()) :: file_info()
+  def analyze(ast, source) do
+    require Logger
+
+    # DEBUG: Show what kind of AST we received (just the type, not full content)
+    ast_type = case ast do
+      {type, _meta, _args} when is_atom(type) -> "3-tuple with type: #{type}"
+      {type, _meta, _args, _extra} -> "4-tuple with type: #{type}"
+      list when is_list(list) -> "list with #{length(list)} elements"
+      other -> "unexpected: #{inspect(other, limit: 2)}"
+    end
+    Logger.info("ANALYZE: AST is #{ast_type}")
+
+    # If it's a defmodule, show its structure
+    case ast do
+      {:defmodule, _meta, args} when is_list(args) ->
+        Logger.info("ANALYZE: defmodule has #{length(args)} args")
+        case args do
+          [first | _] ->
+            Logger.info("ANALYZE: first arg = #{inspect(first, limit: 3)}")
+          _ ->
+            Logger.info("ANALYZE: no args")
+        end
+      _ ->
+        :ok
+    end
+
+    modules = extract_modules(ast)
+    Logger.info("ANALYZE: got #{length(modules)} modules")
+
+    functions = extract_functions(ast)
+    Logger.info("ANALYZE: got #{length(functions)} functions")
+
+    %{
+      modules: modules,
+      functions: functions,
+      imports: extract_imports(ast),
+      line_count: safe_count_lines(source),
+      complexity: estimate_complexity(ast)
+    }
+  end
+
+  defp safe_count_lines(source) when is_binary(source) do
+    source |> String.split("\n") |> length()
+  end
+
+  defp safe_count_lines(_), do: 0
+
+  @doc """
+  Analyze a file and return structured metadata.
+  """
+  @spec analyze_file(String.t()) :: {:ok, file_info()} | {:error, term()}
+  def analyze_file(path) do
+    with {:ok, ast, source} <- parse_file(path) do
+      info = analyze(ast, source) |> Map.put(:path, path)
+      {:ok, info}
+    end
+  end
+
+  @doc """
+  Extract module definitions from AST using Macro.prewalk (not Sourceror.prewalk).
+  """
+  @spec extract_modules(ast()) :: [module_info()]
+  def extract_modules(ast) do
+    require Logger
+
+    try do
+      # Use Macro.prewalk instead of Sourceror.prewalk
+      {_ast, modules} = Macro.prewalk(ast, [], fn node, acc ->
+        case safe_extract_module_info(node) do
+          {:ok, module_info} ->
+            Logger.info("FOUND MODULE: #{inspect(module_info)}")
+            {node, [module_info | acc]}
+          :skip ->
+            {node, acc}
+        end
+      end)
+
+      result = Enum.reverse(modules)
+      Logger.info("extract_modules found #{length(result)} modules")
+      result
+    rescue
+      e ->
+        Logger.error("extract_modules rescue: #{Exception.message(e)}")
+        []
+    catch
+      kind, reason ->
+        Logger.error("extract_modules catch: #{kind} - #{inspect(reason)}")
+        []
+    end
+  end
+
+  # Safe wrapper that never crashes
+  defp safe_extract_module_info(node) do
+    try do
+      extract_module_info(node)
+    rescue
+      _ -> :skip
+    catch
+      _, _ -> :skip
+    end
+  end
+
+  # Extract module info from various AST patterns
+  defp extract_module_info({:defmodule, meta, [{:__aliases__, _, parts} | _]}) when is_list(parts) do
+    {:ok, %{
+      name: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # Handle atom module names (e.g., defmodule :SomeAtom do)
+  defp extract_module_info({:defmodule, meta, [module_atom | _]}) when is_atom(module_atom) do
+    {:ok, %{
+      name: Atom.to_string(module_atom),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # Handle interpolated or dynamic module names - skip these
+  defp extract_module_info({:defmodule, _meta, _args}), do: :skip
+
+  # Not a defmodule node
+  defp extract_module_info(_), do: :skip
+
+  @doc """
+  Extract function definitions from AST using Macro.prewalk.
+  """
+  @spec extract_functions(ast()) :: [function_info()]
+  def extract_functions(ast) do
+    require Logger
+
+    try do
+      {_ast, functions} = Macro.prewalk(ast, [], fn node, acc ->
+        case safe_extract_function_info(node) do
+          {:ok, func_info} -> {node, [func_info | acc]}
+          :skip -> {node, acc}
+        end
+      end)
+
+      funcs = functions |> Enum.reverse() |> Enum.uniq_by(fn f -> {f.name, f.arity} end)
+      Logger.info("extract_functions found #{length(funcs)} functions")
+      funcs
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # Safe wrapper that never crashes
+  defp safe_extract_function_info(node) do
+    try do
+      extract_function_info(node)
+    rescue
+      _ -> :skip
+    catch
+      _, _ -> :skip
+    end
+  end
+
+  # Extract function info from various AST patterns
+
+  # def/defp with when clause: def foo(x) when is_integer(x), do: ...
+  defp extract_function_info({def_type, meta, [{:when, _, [{name, _, args} | _]} | _]})
+       when def_type in [:def, :defp] and is_atom(name) do
+    {:ok, build_function_info(name, args, def_type, meta)}
+  end
+
+  # Standard def/defp: def foo(x), do: ...
+  defp extract_function_info({def_type, meta, [{name, _, args} | _]})
+       when def_type in [:def, :defp] and is_atom(name) do
+    {:ok, build_function_info(name, args, def_type, meta)}
+  end
+
+  # Not a function definition
+  defp extract_function_info(_), do: :skip
+
+  defp build_function_info(name, args, def_type, meta) do
+    arity = if is_list(args), do: length(args), else: 0
+    %{
+      name: name,
+      arity: arity,
+      type: def_type,
+      line: Keyword.get(meta, :line, 0)
+    }
+  end
+
+  @doc """
+  Extract imports, aliases, uses, and requires from AST.
+  """
+  @spec extract_imports(ast()) :: [import_info()]
+  def extract_imports(ast) do
+    try do
+      {_ast, imports} = Macro.prewalk(ast, [], fn node, acc ->
+        case safe_extract_import_info(node) do
+          {:ok, import_info} -> {node, [import_info | acc]}
+          :skip -> {node, acc}
+        end
+      end)
+
+      Enum.reverse(imports)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # Safe wrapper that never crashes
+  defp safe_extract_import_info(node) do
+    try do
+      extract_import_info(node)
+    rescue
+      _ -> :skip
+    catch
+      _, _ -> :skip
+    end
+  end
+
+  # Extract import/alias/use/require info
+
+  # Standard: import Foo.Bar
+  defp extract_import_info({directive, meta, [{:__aliases__, _, parts} | _]})
+       when directive in [:import, :alias, :use, :require] and is_list(parts) do
+    {:ok, %{
+      type: directive,
+      module: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # Atom module: use :logger
+  defp extract_import_info({directive, meta, [module_atom | _]})
+       when directive in [:import, :alias, :use, :require] and is_atom(module_atom) do
+    {:ok, %{
+      type: directive,
+      module: Atom.to_string(module_atom),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # Not an import directive
+  defp extract_import_info(_), do: :skip
+
+  @doc """
+  Count source lines.
+  """
+  @spec count_lines(String.t()) :: non_neg_integer()
+  def count_lines(source) when is_binary(source) do
+    source |> String.split("\n") |> length()
+  end
+
+  def count_lines(_), do: 0
+
+  @doc """
+  Estimate code complexity based on control flow.
+  """
+  @spec estimate_complexity(ast()) :: non_neg_integer()
+  def estimate_complexity(ast) do
+    try do
+      {_ast, complexity} = Macro.prewalk(ast, 0, fn node, acc ->
+        case node do
+          {:case, _, _} -> {node, acc + 1}
+          {:cond, _, _} -> {node, acc + 1}
+          {:if, _, _} -> {node, acc + 1}
+          {:unless, _, _} -> {node, acc + 1}
+          {:with, _, _} -> {node, acc + 2}
+          {:try, _, _} -> {node, acc + 2}
+          {:receive, _, _} -> {node, acc + 2}
+          {:def, _, _} -> {node, acc + 1}
+          {:defp, _, _} -> {node, acc + 1}
+          _ -> {node, acc}
+        end
+      end)
+
+      complexity
+    rescue
+      _ -> 0
+    catch
+      _, _ -> 0
+    end
+  end
+
+  # ============================================================================
+  # Code Patching (Write Back)
+  # ============================================================================
+
+  @doc """
+  Patch a specific function in the source code.
+  Returns the modified source with formatting preserved.
+  """
+  @spec patch_function(String.t(), atom(), non_neg_integer(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def patch_function(source, function_name, arity, new_body) do
+    with {:ok, ast} <- Sourceror.parse_string(source),
+         {:ok, new_ast} <- Sourceror.parse_string(new_body) do
+      patched =
+        Sourceror.postwalk(ast, fn
+          {def_type, _meta, [{^function_name, _fn_meta, args} | _]} = node
+          when def_type in [:def, :defp] ->
+            if length(args || []) == arity do
+              # Replace with new function body
+              new_ast
+            else
+              node
+            end
+
+          node ->
+            node
+        end)
+
+      {:ok, Sourceror.to_string(patched)}
+    end
+  end
+
+  @doc """
+  Insert a new function into a module.
+  """
+  @spec insert_function(String.t(), String.t(), String.t()) ::
+          {:ok, String.t()} | {:error, term()}
+  def insert_function(source, module_name, function_source) do
+    with {:ok, ast} <- Sourceror.parse_string(source),
+         {:ok, func_ast} <- Sourceror.parse_string(function_source) do
+      module_parts = String.split(module_name, ".") |> Enum.map(&String.to_atom/1)
+
+      patched =
+        Sourceror.postwalk(ast, fn
+          {:defmodule, meta, [{:__aliases__, alias_meta, ^module_parts}, body_block]} ->
+            # Insert function into module body
+            [do: {:__block__, block_meta, body}] = body_block
+            new_body = body ++ [func_ast]
+            {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, block_meta, new_body}]]}
+
+          node ->
+            node
+        end)
+
+      {:ok, Sourceror.to_string(patched)}
+    end
+  end
+
+  @doc """
+  Get the source range for a specific function.
+  """
+  @spec get_function_range(ast(), atom(), non_neg_integer()) ::
+          {:ok, {non_neg_integer(), non_neg_integer()}} | :not_found
+  def get_function_range(ast, function_name, arity) do
+    result =
+      ast
+      |> Sourceror.prewalk(nil, fn
+        {def_type, meta, [{^function_name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] ->
+          if length(args || []) == arity do
+            start_line = Keyword.get(meta, :line, 0)
+            end_line = Keyword.get(meta, :end_of_expression, []) |> Keyword.get(:line, start_line)
+            {node, {start_line, end_line}}
+          else
+            {node, nil}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+      |> elem(1)
+
+    case result do
+      nil -> :not_found
+      range -> {:ok, range}
+    end
+  end
+
+  # ============================================================================
+  # Summary for LLM Context
+  # ============================================================================
+
+  @doc """
+  Generate a compact summary for LLM context.
+  """
+  @spec summarize(file_info()) :: String.t()
+  def summarize(info) do
+    modules = Enum.map_join(info.modules, ", ", & &1.name)
+    functions = Enum.map_join(info.functions, ", ", &"#{&1.name}/#{&1.arity}")
+    imports = info.imports |> Enum.map(& &1.module) |> Enum.uniq() |> Enum.join(", ")
+
+    """
+    Modules: #{modules}
+    Functions: #{functions}
+    Imports: #{imports}
+    Lines: #{info.line_count}
+    Complexity: #{info.complexity}
+    """
+  end
+
+  @doc """
+  Generate a detailed summary with function signatures.
+  """
+  @spec detailed_summary(file_info()) :: String.t()
+  def detailed_summary(info) do
+    module_section =
+      info.modules
+      |> Enum.map_join("\n", fn m -> "  - #{m.name} (line #{m.line})" end)
+
+    function_section =
+      info.functions
+      |> Enum.map_join("\n", fn f ->
+        visibility = if f.type == :def, do: "public", else: "private"
+        "  - #{f.name}/#{f.arity} [#{visibility}] (line #{f.line})"
+      end)
+
+    """
+    === File Analysis ===
+    Lines: #{info.line_count} | Complexity: #{info.complexity}
+
+    Modules:
+    #{module_section}
+
+    Functions:
+    #{function_section}
+    """
+  end
+
+  # ============================================================================
+  # Context Slicing (For Small Models)
+  # ============================================================================
+
+  @doc """
+  Extract only a specific function from source code.
+  Returns the function source with minimal context.
+
+  Use this for small models (3B) - 20 lines of context beats 200.
+  """
+  @spec slice_function(String.t(), atom(), non_neg_integer()) ::
+          {:ok, String.t()} | {:error, term()}
+  def slice_function(source, function_name, arity) do
+    with {:ok, ast} <- Sourceror.parse_string(source) do
+      result =
+        ast
+        |> Sourceror.prewalk(nil, fn
+          {def_type, _meta, [{^function_name, _, args} | _]} = node, nil
+          when def_type in [:def, :defp] ->
+            if length(args || []) == arity do
+              {node, Sourceror.to_string(node)}
+            else
+              {node, nil}
+            end
+
+          node, acc ->
+            {node, acc}
+        end)
+        |> elem(1)
+
+      case result do
+        nil -> {:error, :function_not_found}
+        func_source -> {:ok, func_source}
+      end
+    end
+  end
+
+  @doc """
+  Extract a function and its direct dependencies (called functions in same module).
+  Returns a focused slice of code for the LLM.
+  """
+  @spec slice_function_with_deps(String.t(), atom(), non_neg_integer()) ::
+          {:ok, String.t()} | {:error, term()}
+  def slice_function_with_deps(source, function_name, arity) do
+    with {:ok, ast} <- Sourceror.parse_string(source),
+         {:ok, target_func} <- find_function_ast(ast, function_name, arity) do
+      # Find functions called within the target
+      called_functions = extract_called_functions(target_func)
+
+      # Extract all relevant functions
+      slices =
+        [{function_name, arity} | called_functions]
+        |> Enum.uniq()
+        |> Enum.map(fn {name, ar} -> find_function_ast(ast, name, ar) end)
+        |> Enum.filter(&match?({:ok, _}, &1))
+        |> Enum.map(fn {:ok, func_ast} -> Sourceror.to_string(func_ast) end)
+
+      {:ok, Enum.join(slices, "\n\n")}
+    end
+  end
+
+  @doc """
+  Slice source to only include lines around an error location.
+  Useful for sending error context to small models.
+  """
+  @spec slice_around_line(String.t(), non_neg_integer(), non_neg_integer()) :: String.t()
+  def slice_around_line(source, line, context_lines \\ 10) when is_binary(source) do
+    safe_line = if is_integer(line), do: line, else: 1
+    safe_context = if is_integer(context_lines), do: context_lines, else: 10
+
+    lines = String.split(source, "\n")
+    total_lines = length(lines)
+
+    start_line = max(0, safe_line - safe_context - 1)
+    end_line = min(total_lines - 1, safe_line + safe_context - 1)
+
+    lines
+    |> Enum.slice(start_line..end_line)
+    |> Enum.with_index(start_line + 1)
+    |> Enum.map_join("\n", fn {content, num} ->
+      marker = if num == safe_line, do: ">>> ", else: "    "
+      "#{marker}#{num}: #{content}"
+    end)
+  end
+
+  def slice_around_line(_, _, _), do: ""
+
+  @doc """
+  Create a minimal context for a specific error.
+  Combines function slice with error location.
+  """
+  @spec slice_for_error(String.t(), non_neg_integer(), String.t()) :: String.t()
+  def slice_for_error(source, error_line, error_message) do
+    with {:ok, ast, _} <- parse(source) do
+      # Find which function contains the error
+      func = find_function_at_line(ast, error_line)
+
+      case func do
+        nil ->
+          # No function found, just show lines around error
+          """
+          Error: #{error_message}
+
+          Context:
+          #{slice_around_line(source, error_line)}
+          """
+
+        {name, arity, func_source} ->
+          """
+          Error in #{name}/#{arity}: #{error_message}
+
+          Function:
+          #{func_source}
+          """
+      end
+    else
+      _ ->
+        """
+        Error: #{error_message}
+
+        Context:
+        #{slice_around_line(source, error_line)}
+        """
+    end
+  end
+
+  # Private helpers for slicing
+
+  defp find_function_ast(ast, function_name, arity) do
+    result =
+      ast
+      |> Sourceror.prewalk(nil, fn
+        {def_type, _meta, [{^function_name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] ->
+          if length(args || []) == arity do
+            {node, node}
+          else
+            {node, nil}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+      |> elem(1)
+
+    case result do
+      nil -> {:error, :not_found}
+      func -> {:ok, func}
+    end
+  end
+
+  defp find_function_at_line(ast, target_line) do
+    ast
+    |> Sourceror.prewalk(nil, fn
+      {def_type, meta, [{name, _, args} | _]} = node, nil
+      when def_type in [:def, :defp] ->
+        start_line = Keyword.get(meta, :line, 0)
+        end_line = get_end_line(meta, start_line)
+        arity = length(args || [])
+
+        if target_line >= start_line and target_line <= end_line do
+          {node, {name, arity, Sourceror.to_string(node)}}
+        else
+          {node, nil}
+        end
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
+  end
+
+  # Senior approach: Pattern-match on reality, not math on assumptions
+  # The Architect's "Metadata-First" pattern
+  defp get_line_range(meta) when is_list(meta) do
+    start_line = Keyword.get(meta, :line, 1)
+    # Don't assume +10; default to start_line if end is missing
+    end_line = case Keyword.get(meta, :end_of_expression) do
+      nil -> start_line
+      end_meta when is_list(end_meta) -> Keyword.get(end_meta, :line, start_line)
+      _ -> start_line
+    end
+    {start_line, end_line}
+  end
+
+  defp get_line_range(_), do: {1, 1}
+
+  # Legacy helper for compatibility
+  defp get_end_line(meta, default) when is_list(meta) and is_integer(default) do
+    {_start, end_line} = get_line_range(meta)
+    if end_line > 0, do: end_line, else: default
+  end
+
+  defp get_end_line(_, default) when is_integer(default), do: default
+  defp get_end_line(_, _), do: 1
+
+  defp extract_called_functions(func_ast) do
+    func_ast
+    |> Sourceror.prewalk([], fn
+      {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
+        # Skip common non-function atoms
+        if name not in [:def, :defp, :do, :end, :if, :case, :cond, :fn, :&, :|>] do
+          {node, [{name, length(args)} | acc]}
+        else
+          {node, acc}
+        end
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
+    |> Enum.uniq()
+  end
+end
