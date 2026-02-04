@@ -1,0 +1,42 @@
+# Build artifacts
+_build/
+deps/
+cover/
+
+# Generated on crash by the VM
+erl_crash.dump
+
+# Static artifacts
+node_modules/
+
+# Test and development
+test/
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Documentation
+docs/
+*.md
+!README.md
+
+# Docker files (we're already in context)
+docker-compose*.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Elixir LS
+.elixir_ls/
+
+# Local development
+.env
+.env.local
+*.local.exs

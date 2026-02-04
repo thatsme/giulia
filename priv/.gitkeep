@@ -1,0 +1,4 @@
+# This directory holds static assets and will be used for:
+# - Static files for potential web interface
+# - Pre-compiled templates
+# - Other release artifacts

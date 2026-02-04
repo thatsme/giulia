@@ -1,0 +1,272 @@
+defmodule Giulia.Context.Indexer do
+  @moduledoc """
+  Background GenServer for AST scanning.
+
+  The "Brain" of Giulia - scans the project folder
+  and stores AST metadata in Context.Store.
+
+  Uses Task.async_stream for parallel processing.
+
+  IMPORTANT: Ignores heavy directories by default:
+  - node_modules (50k+ files)
+  - _build (Elixir build artifacts)
+  - deps (Elixir dependencies)
+  - .git (version control)
+  - .elixir_ls (language server cache)
+  - cover (test coverage)
+
+  This is critical for performance, especially on Windows/WSL2
+  where cross-filesystem I/O is expensive.
+  """
+  use GenServer
+
+  require Logger
+
+  # Directories to ALWAYS ignore (performance critical)
+  @ignore_dirs ~w(
+    node_modules
+    _build
+    deps
+    .git
+    .elixir_ls
+    .hex
+    cover
+    priv/static/assets
+    __pycache__
+    .venv
+    venv
+    target
+    dist
+    build
+    out
+    .next
+    .nuxt
+  )
+
+  # File patterns to ignore
+  @ignore_patterns [
+    ~r/\.beam$/,
+    ~r/\.pyc$/,
+    ~r/\.class$/,
+    ~r/\.o$/,
+    ~r/\.so$/,
+    ~r/\.dll$/,
+    ~r/\.min\.js$/,
+    ~r/\.map$/,
+    ~r/lock\.json$/,
+    ~r/yarn\.lock$/,
+    ~r/package-lock\.json$/,
+    ~r/mix\.lock$/
+  ]
+
+  # Client API
+
+  def start_link(_opts) do
+    GenServer.start_link(__MODULE__, [], name: __MODULE__)
+  end
+
+  @doc """
+  Trigger a full project scan.
+  """
+  def scan(project_path) do
+    GenServer.cast(__MODULE__, {:scan, project_path})
+  end
+
+  @doc """
+  Alias for scan/1 - used by ProjectContext.
+  """
+  def index_path(project_path), do: scan(project_path)
+
+  @doc """
+  Trigger a scan of a single file.
+  """
+  def scan_file(file_path) do
+    GenServer.cast(__MODULE__, {:scan_file, file_path})
+  end
+
+  @doc """
+  Alias for scan_file/1 - used by ProjectContext.
+  """
+  def index_file(file_path), do: scan_file(file_path)
+
+  @doc """
+  Get the current indexing status.
+  """
+  def status do
+    GenServer.call(__MODULE__, :status)
+  end
+
+  # Server Callbacks
+
+  @impl true
+  def init(_) do
+    state = %{
+      project_path: nil,
+      status: :idle,
+      last_scan: nil,
+      file_count: 0
+    }
+
+    {:ok, state}
+  end
+
+  @impl true
+  def handle_cast({:scan, project_path}, state) do
+    Logger.info("Starting project scan: #{project_path}")
+
+    new_state = %{state | project_path: project_path, status: :scanning}
+
+    Task.start(fn ->
+      do_scan(project_path)
+      GenServer.cast(__MODULE__, :scan_complete)
+    end)
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast({:scan_file, file_path}, state) do
+    Task.start(fn ->
+      case process_file(file_path) do
+        {:ok, ast_data} ->
+          Giulia.Context.Store.put_ast(file_path, ast_data)
+          Logger.debug("Indexed: #{file_path}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to index #{file_path}: #{inspect(reason)}")
+      end
+    end)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:scan_complete, state) do
+    stats = Giulia.Context.Store.stats()
+
+    new_state = %{
+      state
+      | status: :idle,
+        last_scan: DateTime.utc_now(),
+        file_count: stats.ast_files
+    }
+
+    Logger.info("Scan complete. Indexed #{stats.ast_files} files.")
+
+    # Debug: Inspect what's actually in ETS
+    Giulia.Context.Store.debug_inspect()
+
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_call(:status, _from, state) do
+    {:reply, state, state}
+  end
+
+  # Private
+
+  defp do_scan(project_path) do
+    lib_path = Path.join(project_path, "lib")
+
+    if File.dir?(lib_path) do
+      Giulia.Context.Store.clear_asts()
+
+      files = find_elixir_files(lib_path)
+      Logger.info("Found #{length(files)} Elixir files to scan")
+
+      # Debug first file to understand AST structure
+      case Enum.take(files, 1) do
+        [first_file] ->
+          Logger.info("=== DEBUG FIRST FILE ===")
+          Giulia.AST.Processor.debug_file(first_file)
+        _ ->
+          Logger.info("No files to debug")
+      end
+
+      files
+      |> Task.async_stream(
+        fn file -> {file, process_file(file)} end,
+        max_concurrency: System.schedulers_online(),
+        timeout: 30_000
+      )
+      |> Enum.each(fn
+        {:ok, {file, {:ok, ast_data}}} ->
+          Giulia.Context.Store.put_ast(file, ast_data)
+
+        {:ok, {file, {:error, reason}}} ->
+          Logger.warning("Failed to index #{file}: #{inspect(reason)}")
+
+        {:exit, reason} ->
+          Logger.error("Task crashed: #{inspect(reason)}")
+      end)
+    else
+      Logger.warning("No lib directory found at #{lib_path}")
+    end
+  end
+
+  defp find_elixir_files(path) do
+    path
+    |> Path.join("**/*.{ex,exs}")
+    |> Path.wildcard()
+    |> Enum.reject(&should_ignore?/1)
+  end
+
+  defp should_ignore?(file_path) do
+    # Check if path contains any ignored directory
+    path_parts = Path.split(file_path)
+
+    dir_ignored = Enum.any?(@ignore_dirs, fn ignored_dir ->
+      ignored_dir in path_parts
+    end)
+
+    # Check if file matches any ignored pattern
+    pattern_ignored = Enum.any?(@ignore_patterns, fn pattern ->
+      Regex.match?(pattern, file_path)
+    end)
+
+    dir_ignored or pattern_ignored
+  end
+
+  @doc """
+  Get the list of ignored directories.
+  """
+  def ignored_dirs, do: @ignore_dirs
+
+  @doc """
+  Check if a specific path should be ignored.
+  """
+  def ignored?(path), do: should_ignore?(path)
+
+  defp process_file(file_path) do
+    # Use Sourceror-based processor for accurate AST analysis
+    # Wrap in try/rescue to prevent one bad file from crashing the whole scan
+    try do
+      result = Giulia.AST.Processor.analyze_file(file_path)
+
+      # Debug: Log what we extracted (use info level for prod visibility)
+      case result do
+        {:ok, ast_data} ->
+          modules = ast_data[:modules] || []
+          functions = ast_data[:functions] || []
+          Logger.info("EXTRACT: #{Path.basename(file_path)} -> #{length(modules)} modules, #{length(functions)} functions")
+
+        {:error, reason} ->
+          Logger.warning("EXTRACT FAILED: #{Path.basename(file_path)} -> #{inspect(reason)}")
+
+        _ ->
+          :ok
+      end
+
+      result
+    rescue
+      e ->
+        Logger.warning("AST parse error in #{file_path}: #{Exception.message(e)}")
+        {:error, {:parse_error, Exception.message(e)}}
+    catch
+      :exit, reason ->
+        Logger.warning("AST parse exit in #{file_path}: #{inspect(reason)}")
+        {:error, {:parse_exit, reason}}
+    end
+  end
+end
