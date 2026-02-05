@@ -66,11 +66,22 @@ defmodule Giulia.Prompt.Builder do
     User: "What's in lib/giulia/client.ex?"
     Response: {"tool": "read_file", "parameters": {"path": "lib/giulia/client.ex"}}
 
-    User: "Explain the init function"
-    Response: {"tool": "read_file", "parameters": {"path": "lib/giulia/application.ex"}}
+    User: "Analyze the try_repair_json function"
+    Response: {"tool": "lookup_function", "parameters": {"function_name": "try_repair_json"}}
 
-    After reading:
-    Response: {"tool": "respond", "parameters": {"message": "The init function initializes..."}}
+    After lookup returns the code:
+    Response: {"tool": "respond", "parameters": {"message": "The try_repair_json function does X..."}}
+
+    User: "Explain Module.some_func/2"
+    Response: {"tool": "lookup_function", "parameters": {"function_name": "some_func", "module": "Module", "arity": 2}}
+
+    ## Tool Selection Guide
+    - When asked about a SPECIFIC FUNCTION by name: Use "lookup_function" (fast, uses index)
+    - When asked about a whole FILE: Use "read_file"
+    - When searching for PATTERNS in code: Use "search_code"
+    - When you need FUNCTION SOURCE but don't know the file: Use "lookup_function"
+    - When REPLACING/REFACTORING a function: Use "write_function" (AST-based, no exact string matching needed)
+    - When making SMALL TEXT EDITS: Use "edit_file" (requires exact old_text match)
 
     ## Constraints
     1. ONLY respond with JSON - never plain text
@@ -114,28 +125,27 @@ defmodule Giulia.Prompt.Builder do
 
     EXAMPLES:
 
-    To read a file:
+    To look up a function by name (PREFERRED for function analysis):
+    <action>
+    {"tool": "lookup_function", "parameters": {"function_name": "try_repair_json"}}
+    </action>
+
+    To read a whole file:
     <action>
     {"tool": "read_file", "parameters": {"path": "lib/giulia/client.ex"}}
     </action>
 
-    To search code:
-    <action>
-    {"tool": "search_code", "parameters": {"query": "defmodule Giulia.Client"}}
-    </action>
-
     To respond to the user:
     <action>
-    {"tool": "respond", "parameters": {"message": "The file contains..."}}
+    {"tool": "respond", "parameters": {"message": "The function does X..."}}
     </action>
 
     RULES:
-    1. ALWAYS include "parameters" with required values
-    2. read_file REQUIRES "path" parameter
+    1. For FUNCTION questions: Use lookup_function (fast, uses index)
+    2. For FILE questions: Use read_file
     3. ONE action per response
-    4. NEVER make up paths - use list_files first
-    5. After reading a file, IMMEDIATELY use "respond" to answer the user
-    6. Do NOT use "think" more than once - go straight to "respond"
+    4. After lookup_function returns code, use "respond" to analyze it
+    5. Do NOT use "think" more than once - go straight to "respond"
 
     CRITICAL: Stop IMMEDIATELY after </action>.
     Do NOT generate fake tool results.

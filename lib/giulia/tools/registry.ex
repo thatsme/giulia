@@ -154,10 +154,12 @@ defmodule Giulia.Tools.Registry do
       Giulia.Tools.ReadFile,
       Giulia.Tools.WriteFile,
       Giulia.Tools.EditFile,
+      Giulia.Tools.WriteFunction,   # AST-based function replacement (easier for LLMs)
       Giulia.Tools.ListFiles,
 
       # Code intelligence (AST-powered)
-      Giulia.Tools.GetFunction,      # The Slicer - Giulia's secret weapon
+      Giulia.Tools.LookupFunction,   # Index-based lookup (preferred for known functions)
+      Giulia.Tools.GetFunction,      # The Slicer - requires file path
       Giulia.Tools.GetModuleInfo,    # From ETS, no file reading
       Giulia.Tools.GetContext,       # Context around errors
       Giulia.Tools.SearchCode,       # Grep-like search

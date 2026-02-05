@@ -154,26 +154,36 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  List all functions in the indexed project.
-  Returns a list of {module, function, arity} tuples.
+  List all functions in the indexed project, optionally filtered by module.
+
+  ## Examples
+
+      list_functions()                           # All functions
+      list_functions("Giulia.StructuredOutput")  # Single module
+      list_functions(nil)                        # Same as no arg
   """
-  def list_functions do
+  def list_functions(module_filter \\ nil) do
     all_asts()
     |> Enum.flat_map(fn {path, ast_data} ->
       functions = ast_data[:functions] || []
       modules = ast_data[:modules] || []
       module_name = List.first(modules)[:name] || "Unknown"
 
-      Enum.map(functions, fn func ->
-        %{
-          module: module_name,
-          name: func.name,
-          arity: func.arity,
-          type: func.type,
-          file: path,
-          line: func.line
-        }
-      end)
+      # Filter by module if specified
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(functions, fn func ->
+          %{
+            module: module_name,
+            name: func.name,
+            arity: func.arity,
+            type: func.type,
+            file: path,
+            line: func.line
+          }
+        end)
+      else
+        []
+      end
     end)
     |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
   end

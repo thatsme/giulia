@@ -142,7 +142,7 @@ defmodule Giulia.Tools.GetContext do
 
         if target_line >= start_line and target_line <= end_line do
           arity = length(args || [])
-          func_source = Sourceror.to_string(node)
+          func_source = Macro.to_string(node)
           {node, {:found, "#{name}/#{arity}", func_source}}
         else
           {node, nil}

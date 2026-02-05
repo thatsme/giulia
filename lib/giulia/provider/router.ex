@@ -165,42 +165,54 @@ defmodule Giulia.Provider.Router do
   # Classification Logic
   # ============================================================================
 
+  # Helper: Clean keyword matching
+  defp has_any?(prompt, keywords) do
+    Enum.any?(keywords, &String.contains?(prompt, &1))
+  end
+
   defp meta_command?(prompt) do
-    # Check for explicit commands
-    String.starts_with?(prompt, "/") or
-      Enum.any?(@meta_keywords, &String.contains?(prompt, &1)) and
-        not String.contains?(prompt, "how") and
-        not String.contains?(prompt, "why")
+    # Slash commands are always native
+    if String.starts_with?(prompt, "/") do
+      true
+    else
+      # PRIORITY: Action verbs ALWAYS win over nouns
+      # "optimize the module" -> LLM (optimize is action)
+      # "list modules" -> native (list is meta, no action)
+      has_action = has_any?(prompt, @high_intensity_keywords)
+      has_meta = has_any?(prompt, @meta_keywords)
+      has_question = String.contains?(prompt, "how") or String.contains?(prompt, "why")
+
+      # Only route to native if meta-only, no action verbs, no questions
+      has_meta and not has_action and not has_question
+    end
   end
 
   defp simple_task?(prompt, _context) do
     # Low intensity: explanation, formatting, docstrings
-    has_low_keyword = Enum.any?(@low_intensity_keywords, &String.contains?(prompt, &1))
-    has_high_keyword = Enum.any?(@high_intensity_keywords, &String.contains?(prompt, &1))
-
-    # Short prompts asking about single things
+    # BUT action verbs always escalate
+    has_low = has_any?(prompt, @low_intensity_keywords)
+    has_action = has_any?(prompt, @high_intensity_keywords)
     short_prompt = String.length(prompt) < 100
 
-    has_low_keyword and not has_high_keyword and short_prompt
+    has_low and not has_action and short_prompt
   end
 
   defp complex_refactor?(prompt, context) do
-    # High intensity: refactoring, debugging, implementation
-    has_high_keyword = Enum.any?(@high_intensity_keywords, &String.contains?(prompt, &1))
+    # High intensity: any action verb triggers this
+    has_action = has_any?(prompt, @high_intensity_keywords)
 
-    # Multi-file operations
+    # Multi-file operations also escalate
     mentions_multiple = String.contains?(prompt, "all") or
                         String.contains?(prompt, "every") or
                         String.contains?(prompt, "across")
 
-    # Large codebase context
     large_context = Map.get(context, :file_count, 0) > 20
 
-    has_high_keyword or (mentions_multiple and large_context)
+    has_action or (mentions_multiple and large_context)
   end
 
   defp medium_task?(prompt, context) do
-    # Everything else that isn't clearly simple or complex
+    # Everything that isn't clearly simple or complex
     not simple_task?(prompt, context) and not complex_refactor?(prompt, context)
   end
 
