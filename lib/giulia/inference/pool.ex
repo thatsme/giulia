@@ -220,7 +220,7 @@ defmodule Giulia.Inference.Pool do
     }
   end
 
-  defp do_inference(provider, prompt, opts) do
+  defp do_inference(_provider, prompt, opts) do
     # Create a temporary orchestrator for this request
     project_path = Keyword.get(opts, :project_path)
     project_pid = Keyword.get(opts, :project_pid)

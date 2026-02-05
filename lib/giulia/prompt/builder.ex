@@ -210,7 +210,7 @@ defmodule Giulia.Prompt.Builder do
     format_observation(tool_name, {:ok, inspect(data, pretty: true, limit: 50)})
   end
 
-  def format_observation(tool_name, {:error, :enoent}) do
+  def format_observation(_tool_name, {:error, :enoent}) do
     """
     ERROR: File not found. The path does NOT exist.
     Use list_files to see actual paths in the directory.
@@ -219,7 +219,7 @@ defmodule Giulia.Prompt.Builder do
     """
   end
 
-  def format_observation(tool_name, {:error, :sandbox_violation}) do
+  def format_observation(_tool_name, {:error, :sandbox_violation}) do
     """
     ERROR: Access denied. Path is outside the project sandbox.
     You can ONLY access files within this project directory.

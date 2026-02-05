@@ -177,7 +177,7 @@ defmodule Giulia.Inference.Orchestrator do
   # ============================================================================
 
   @impl true
-  def handle_continue({:start, prompt, opts}, state) do
+  def handle_continue({:start, prompt, _opts}, state) do
     Logger.info("Orchestrator starting: #{String.slice(prompt, 0, 50)}...")
 
     # Route to provider
@@ -478,7 +478,7 @@ defmodule Giulia.Inference.Orchestrator do
     case StructuredOutput.extract_json(text) do
       {:ok, json} ->
         case Jason.decode(json) do
-          {:ok, parsed} ->
+          {:ok, _parsed} ->
             handle_model_response(%{response | content: json}, state)
           {:error, _} ->
             # Accept as final response

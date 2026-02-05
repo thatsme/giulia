@@ -138,18 +138,18 @@ defmodule Giulia.Provider.Router do
     _ -> false
   end
 
-  defp lm_studio_health_url do
-    # Use PathMapper's lm_studio_url but point to /models for health check
-    base = Giulia.Core.PathMapper.lm_studio_url()
-    String.replace(base, "/chat/completions", "/models")
-  end
-
   def provider_available?(:local_32b), do: ollama_available?()
 
   def provider_available?(:cloud_sonnet) do
     # Check if API key is configured
     api_key = Application.get_env(:giulia, :anthropic_api_key) || System.get_env("ANTHROPIC_API_KEY")
     api_key != nil and api_key != ""
+  end
+
+  defp lm_studio_health_url do
+    # Use PathMapper's lm_studio_url but point to /models for health check
+    base = Giulia.Core.PathMapper.lm_studio_url()
+    String.replace(base, "/chat/completions", "/models")
   end
 
   @doc """

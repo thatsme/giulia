@@ -58,9 +58,9 @@ defmodule Giulia.AST.Processor do
         # Direct pattern match test
         Logger.info("=== DIRECT PATTERN MATCH TEST ===")
         case ast do
-          {:defmodule, meta, [{:__aliases__, _, parts} | _]} ->
+          {:defmodule, _meta, [{:__aliases__, _, parts} | _]} ->
             Logger.info("DIRECT MATCH SUCCESS: defmodule with aliases #{inspect(parts)}")
-          {:defmodule, meta, args} ->
+          {:defmodule, _meta, args} ->
             Logger.info("DIRECT MATCH PARTIAL: defmodule but args = #{inspect(args, limit: 3)}")
           other ->
             Logger.info("DIRECT MATCH FAILED: top level is #{inspect(other, limit: 3)}")
@@ -657,7 +657,9 @@ defmodule Giulia.AST.Processor do
   Useful for sending error context to small models.
   """
   @spec slice_around_line(String.t(), non_neg_integer(), non_neg_integer()) :: String.t()
-  def slice_around_line(source, line, context_lines \\ 10) when is_binary(source) do
+  def slice_around_line(source, line, context_lines \\ 10)
+
+  def slice_around_line(source, line, context_lines) when is_binary(source) do
     safe_line = if is_integer(line), do: line, else: 1
     safe_context = if is_integer(context_lines), do: context_lines, else: 10
 
