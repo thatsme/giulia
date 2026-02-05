@@ -270,93 +270,94 @@ defmodule Giulia.Client do
     repl_loop(host_path)
   end
 
-  # Simple readline with history using raw terminal mode
-  defp repl_loop(host_path), do: repl_loop(host_path, [], 0, "")
+  # Simple REPL with history recall via /history and !N
+  defp repl_loop(host_path), do: repl_loop(host_path, [])
 
-  defp repl_loop(host_path, history, hist_pos, buffer) do
-    IO.write("giulia> #{buffer}")
-
-    input = read_line_with_history(buffer, history, hist_pos)
-
-    case input do
+  defp repl_loop(host_path, history) do
+    case IO.gets("giulia> ") do
       :eof ->
         info("\nGoodbye!")
 
-      {:history, new_pos, new_buffer} ->
-        # Clear line and redraw
-        IO.write("\r\e[K")
-        repl_loop(host_path, history, new_pos, new_buffer)
-
       line ->
         line = String.trim(line)
-        IO.write("\n")
-
-        # Add to history if non-empty
-        history = if line != "", do: [line | history] |> Enum.take(100), else: history
 
         cond do
           line == "" ->
-            repl_loop(host_path, history, 0, "")
+            repl_loop(host_path, history)
 
           line in ["/quit", "/exit", "/q"] ->
             info("Goodbye!")
 
+          line == "/history" ->
+            print_history(history)
+            repl_loop(host_path, history)
+
+          # !N - replay command N from history
+          Regex.match?(~r/^!(\d+)$/, line) ->
+            [_, num_str] = Regex.run(~r/^!(\d+)$/, line)
+            num = String.to_integer(num_str)
+            case Enum.at(history, num - 1) do
+              nil ->
+                warning("No command ##{num} in history")
+                repl_loop(host_path, history)
+              cmd ->
+                info("Replaying: #{cmd}")
+                history = [cmd | history] |> Enum.take(100)
+                execute_or_command(cmd, host_path)
+                repl_loop(host_path, history)
+            end
+
+          # !! - replay last command
+          line == "!!" ->
+            case List.first(history) do
+              nil ->
+                warning("No previous command")
+                repl_loop(host_path, history)
+              cmd ->
+                info("Replaying: #{cmd}")
+                execute_or_command(cmd, host_path)
+                repl_loop(host_path, history)
+            end
+
           String.starts_with?(line, "/") ->
+            history = [line | history] |> Enum.take(100)
             args = String.split(line)
             process_command(args)
-            repl_loop(host_path, history, 0, "")
+            repl_loop(host_path, history)
 
           true ->
+            history = [line | history] |> Enum.take(100)
             execute_input(line, host_path)
-            repl_loop(host_path, history, 0, "")
+            repl_loop(host_path, history)
         end
     end
   end
 
-  defp read_line_with_history(buffer, history, hist_pos) do
-    # Use IO.getn to read a single character
-    case IO.getn("", 1) do
-      :eof -> :eof
-
-      # Enter key
-      "\n" -> buffer
-      "\r" -> buffer
-
-      # Escape sequence (arrow keys)
-      "\e" ->
-        case IO.getn("", 2) do
-          "[A" -> # Up arrow
-            new_pos = min(hist_pos + 1, length(history))
-            new_buffer = Enum.at(history, new_pos - 1) || ""
-            {:history, new_pos, new_buffer}
-
-          "[B" -> # Down arrow
-            new_pos = max(hist_pos - 1, 0)
-            new_buffer = if new_pos == 0, do: "", else: Enum.at(history, new_pos - 1) || ""
-            {:history, new_pos, new_buffer}
-
-          _ -> read_line_with_history(buffer, history, hist_pos)
-        end
-
-      # Backspace
-      <<127>> ->
-        new_buffer = String.slice(buffer, 0..-2//1)
-        IO.write("\b \b")
-        read_line_with_history(new_buffer, history, hist_pos)
-
-      <<8>> -> # Also backspace on some terminals
-        new_buffer = String.slice(buffer, 0..-2//1)
-        IO.write("\b \b")
-        read_line_with_history(new_buffer, history, hist_pos)
-
-      # Regular character
-      char when is_binary(char) ->
-        IO.write(char)
-        read_line_with_history(buffer <> char, history, hist_pos)
-
-      _ ->
-        read_line_with_history(buffer, history, hist_pos)
+  defp execute_or_command(cmd, host_path) do
+    if String.starts_with?(cmd, "/") do
+      args = String.split(cmd)
+      process_command(args)
+    else
+      execute_input(cmd, host_path)
     end
+  end
+
+  defp print_history([]) do
+    info("No history yet.")
+  end
+
+  defp print_history(history) do
+    IO.puts("\n  \e[36mHistory:\e[0m")
+    history
+    |> Enum.with_index(1)
+    |> Enum.reverse()
+    |> Enum.each(fn {cmd, idx} ->
+      # Truncate long commands
+      display = if String.length(cmd) > 60, do: String.slice(cmd, 0, 57) <> "...", else: cmd
+      IO.puts("  \e[33m#{String.pad_leading(Integer.to_string(idx), 3)}\e[0m  #{display}")
+    end)
+    IO.puts("")
+    info("Use !N to replay command #N, or !! to replay last command")
   end
 
   defp execute_input(input, host_path) do
@@ -709,6 +710,11 @@ defmodule Giulia.Client do
       /help           Show this help
       /quit           Exit interactive mode
 
+    History Commands:
+      /history        Show numbered command history
+      !N              Replay command #N (e.g., !3)
+      !!              Replay last command
+
     Index Commands (Pure Elixir - No LLM):
       /modules        List all indexed modules
       /functions      List all indexed functions
@@ -726,8 +732,7 @@ defmodule Giulia.Client do
       giulia /modules           List modules without LLM
 
     Environment Variables:
-      GIULIA_PROJECTS_PATH      Host path to mount as /projects
-      GIULIA_PATH_MAPPING       Path mapping (e.g., "C:/Dev=/projects")
+      GIULIA_HOST_PROJECTS_PATH Host path for path mapping (e.g., "C:/Development/GitHub")
 
     """)
   end
