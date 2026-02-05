@@ -218,12 +218,154 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  List all types defined in the project.
+  """
+  def list_types(module_filter \\ nil) do
+    all_asts()
+    |> Enum.flat_map(fn {path, ast_data} ->
+      types = ast_data[:types] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(types, fn type ->
+          Map.merge(type, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  List all specs defined in the project.
+  """
+  def list_specs(module_filter \\ nil) do
+    all_asts()
+    |> Enum.flat_map(fn {path, ast_data} ->
+      specs = ast_data[:specs] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(specs, fn spec ->
+          Map.merge(spec, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  Get spec for a specific function.
+  """
+  def get_spec(module_name, function_name, arity) do
+    list_specs(module_name)
+    |> Enum.find(fn spec ->
+      to_string(spec.function) == to_string(function_name) and spec.arity == arity
+    end)
+  end
+
+  @doc """
+  List all callbacks (behaviour definitions) in the project.
+  """
+  def list_callbacks(module_filter \\ nil) do
+    all_asts()
+    |> Enum.flat_map(fn {path, ast_data} ->
+      callbacks = ast_data[:callbacks] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(callbacks, fn cb ->
+          Map.merge(cb, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  List all structs defined in the project.
+  """
+  def list_structs do
+    all_asts()
+    |> Enum.flat_map(fn {path, ast_data} ->
+      structs = ast_data[:structs] || []
+      Enum.map(structs, fn struct ->
+        Map.put(struct, :file, path)
+      end)
+    end)
+  end
+
+  @doc """
+  Get struct fields for a specific module.
+  """
+  def get_struct(module_name) do
+    list_structs()
+    |> Enum.find(&(&1.module == module_name))
+  end
+
+  @doc """
+  List all @doc entries in the project.
+  """
+  def list_docs(module_filter \\ nil) do
+    all_asts()
+    |> Enum.flat_map(fn {path, ast_data} ->
+      docs = ast_data[:docs] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(docs, fn doc ->
+          Map.merge(doc, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  Get @doc for a specific function.
+  """
+  def get_function_doc(module_name, function_name, arity) do
+    list_docs(module_name)
+    |> Enum.find(fn doc ->
+      to_string(doc.function) == to_string(function_name) and doc.arity == arity
+    end)
+  end
+
+  @doc """
+  Get @moduledoc for a specific module.
+  """
+  def get_moduledoc(module_name) do
+    case find_module(module_name) do
+      {:ok, %{ast_data: ast_data}} ->
+        modules = ast_data[:modules] || []
+        case Enum.find(modules, &(&1.name == module_name)) do
+          %{moduledoc: doc} when is_binary(doc) -> {:ok, doc}
+          _ -> :not_found
+        end
+
+      :not_found ->
+        :not_found
+    end
+  end
+
+  @doc """
   Generate a compact project summary for LLM context injection.
   This is the "distilled metadata" strategy for small models.
   """
   def project_summary do
     modules = list_modules()
     functions = list_functions()
+    types = list_types()
+    specs = list_specs()
+    structs = list_structs()
+    callbacks = list_callbacks()
     stats = stats()
 
     public_functions =
@@ -245,10 +387,74 @@ defmodule Giulia.Context.Store do
     Files: #{stats.ast_files}
     Modules: #{length(modules)}
     Functions: #{length(functions)}
+    Types: #{length(types)}
+    Specs: #{length(specs)}
+    Structs: #{length(structs)}
+    Callbacks: #{length(callbacks)}
 
     Modules:
     #{module_summaries}
     """
+  end
+
+  @doc """
+  Generate a detailed summary with types and structs for a specific module.
+  """
+  def module_details(module_name) do
+    case find_module(module_name) do
+      {:ok, %{file: file, ast_data: ast_data}} ->
+        modules = ast_data[:modules] || []
+        mod = Enum.find(modules, &(&1.name == module_name))
+
+        functions = list_functions(module_name)
+        types = list_types(module_name)
+        specs = list_specs(module_name)
+        callbacks = list_callbacks(module_name)
+        struct_info = get_struct(module_name)
+
+        public_funcs = Enum.filter(functions, &(&1.type == :def))
+        private_funcs = Enum.filter(functions, &(&1.type == :defp))
+
+        moduledoc_section = case mod[:moduledoc] do
+          nil -> ""
+          doc -> "\nModuledoc:\n  #{String.slice(doc, 0, 200)}#{if String.length(doc) > 200, do: "...", else: ""}\n"
+        end
+
+        struct_section = case struct_info do
+          nil -> ""
+          %{fields: fields} -> "\nStruct fields: #{Enum.join(fields, ", ")}\n"
+        end
+
+        types_section = if types != [] do
+          type_list = Enum.map_join(types, ", ", &"#{&1.name}/#{&1.arity}")
+          "\nTypes: #{type_list}\n"
+        else
+          ""
+        end
+
+        callbacks_section = if callbacks != [] do
+          cb_list = Enum.map_join(callbacks, ", ", &"#{&1.function}/#{&1.arity}")
+          "\nCallbacks: #{cb_list}\n"
+        else
+          ""
+        end
+
+        """
+        === #{module_name} ===
+        File: #{file}
+        #{moduledoc_section}#{struct_section}#{types_section}#{callbacks_section}
+        Public functions (#{length(public_funcs)}):
+          #{Enum.map_join(public_funcs, "\n  ", &"#{&1.name}/#{&1.arity}")}
+
+        Private functions (#{length(private_funcs)}):
+          #{Enum.map_join(private_funcs, "\n  ", &"#{&1.name}/#{&1.arity}")}
+
+        Specs defined: #{length(specs)}
+        """
+
+      :not_found ->
+        "Module '#{module_name}' not found in index."
+    end
   end
 
   # Server Callbacks
