@@ -6,7 +6,7 @@
 # ============================================================================
 # Stage 1: Build Environment
 # ============================================================================
-FROM elixir:1.17-otp-27-alpine AS builder
+FROM elixir:1.19-otp-27-alpine AS builder
 
 RUN apk add --no-cache \
     build-base \
@@ -37,7 +37,7 @@ RUN mix release giulia
 # ============================================================================
 # Stage 2: Runtime Environment
 # ============================================================================
-FROM elixir:1.17-otp-27-alpine AS runtime
+FROM elixir:1.19-otp-27-alpine AS runtime
 
 RUN apk add --no-cache \
     sqlite-libs \
