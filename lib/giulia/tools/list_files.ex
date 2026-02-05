@@ -16,7 +16,7 @@ defmodule Giulia.Tools.ListFiles do
   embedded_schema do
     field :path, :string, default: "."
     field :pattern, :string, default: "*"
-    field :recursive, :boolean, default: false
+    field :recursive, :boolean, default: true
   end
 
   @impl true
@@ -40,7 +40,7 @@ defmodule Giulia.Tools.ListFiles do
         },
         recursive: %{
           type: "boolean",
-          description: "If true, search recursively (default: false)"
+          description: "If true, search recursively (default: true)"
         }
       },
       required: []
@@ -77,6 +77,9 @@ defmodule Giulia.Tools.ListFiles do
     execute(stringify_keys(params), opts)
   end
 
+  # Directories to exclude from search (dependencies, build artifacts)
+  @excluded_dirs ["deps", "_build", ".git", ".elixir_ls", "node_modules", ".giulia"]
+
   defp do_list(safe_path, pattern, recursive) do
     glob_pattern = if recursive do
       Path.join([safe_path, "**", pattern])
@@ -86,6 +89,7 @@ defmodule Giulia.Tools.ListFiles do
 
     files = Path.wildcard(glob_pattern)
     |> Enum.reject(&File.dir?/1)
+    |> Enum.reject(&in_excluded_dir?/1)
     |> Enum.map(&Path.relative_to(&1, safe_path))
     |> Enum.sort()
     |> Enum.take(100)  # Limit for small models
@@ -95,6 +99,11 @@ defmodule Giulia.Tools.ListFiles do
     else
       {:ok, Enum.join(files, "\n")}
     end
+  end
+
+  defp in_excluded_dir?(path) do
+    parts = Path.split(path)
+    Enum.any?(@excluded_dirs, fn dir -> dir in parts end)
   end
 
   defp parse_params(params) do
