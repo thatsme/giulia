@@ -481,14 +481,32 @@ defmodule Giulia.Inference.Orchestrator do
           {:ok, _parsed} ->
             handle_model_response(%{response | content: json}, state)
           {:error, _} ->
-            # Accept as final response
-            send_reply(state, {:ok, text})
+            # Accept as final response after cleanup
+            send_reply(state, {:ok, clean_model_output(text)})
             {:noreply, reset_state(state)}
         end
       {:error, _} ->
-        # Plain text - accept as response
-        send_reply(state, {:ok, text})
+        # Plain text - accept as response after cleanup
+        send_reply(state, {:ok, clean_model_output(text)})
         {:noreply, reset_state(state)}
+    end
+  end
+
+  # Clean up model output that contains internal tokens or malformed data
+  defp clean_model_output(text) do
+    text
+    # Remove common model internal tokens
+    |> String.replace(~r/<\|im_start\|>.*?(<\|im_end\|>)?/s, "")
+    |> String.replace(~r/<\|im_end\|>/, "")
+    |> String.replace(~r/<action>.*?<\/action>/s, "")
+    |> String.replace(~r/<action>.*$/s, "")  # Unclosed action tag
+    |> String.replace(~r/<\/?think>/s, "")
+    # Trim whitespace
+    |> String.trim()
+    # If nothing left, return a fallback message
+    |> case do
+      "" -> "I wasn't able to formulate a proper response. Please try rephrasing your request."
+      cleaned -> cleaned
     end
   end
 
@@ -656,13 +674,15 @@ defmodule Giulia.Inference.Orchestrator do
   defp parse_model_response(%{content: nil}), do: {:error, :empty_response}
 
   defp parse_model_response(%{content: content}) when is_binary(content) do
-    # Debug: Log raw model output
-    Logger.debug("Raw model response: #{String.slice(content, 0, 500)}")
+    # Log raw model output for debugging
+    Logger.info("Raw model response: #{String.slice(content, 0, 300)}")
 
     case StructuredOutput.extract_json(content) do
       {:ok, json} ->
-        Logger.debug("Extracted JSON: #{json}")
-        case Jason.decode(json) do
+        # Trim and clean JSON before decode
+        clean_json = String.trim(json)
+        Logger.info("Extracted JSON (#{byte_size(clean_json)} bytes): #{clean_json}")
+        case Jason.decode(clean_json) do
           {:ok, %{"tool" => tool, "parameters" => params}} ->
             {:tool_call, tool, params}
           {:ok, %{"tool" => tool}} ->
