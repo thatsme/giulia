@@ -478,7 +478,7 @@ defmodule Giulia.AST.Processor do
             node
         end)
 
-      {:ok, Sourceror.to_string(patched)}
+      {:ok, Macro.to_string(patched)}
     end
   end
 
@@ -504,7 +504,7 @@ defmodule Giulia.AST.Processor do
             node
         end)
 
-      {:ok, Sourceror.to_string(patched)}
+      {:ok, Macro.to_string(patched)}
     end
   end
 
@@ -602,21 +602,24 @@ defmodule Giulia.AST.Processor do
           {:ok, String.t()} | {:error, term()}
   def slice_function(source, function_name, arity) do
     with {:ok, ast} <- Sourceror.parse_string(source) do
-      result =
-        ast
-        |> Sourceror.prewalk(nil, fn
-          {def_type, _meta, [{^function_name, _, args} | _]} = node, nil
-          when def_type in [:def, :defp] ->
-            if length(args || []) == arity do
-              {node, Sourceror.to_string(node)}
-            else
-              {node, nil}
-            end
+      # Use Macro.prewalk for consistency with extract_functions
+      {_ast, result} = Macro.prewalk(ast, nil, fn
+        {def_type, _meta, [{name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] and is_atom(name) ->
+          # Compare function names (both should be atoms)
+          name_matches = name == function_name or to_string(name) == to_string(function_name)
+          arity_matches = length(args || []) == arity
 
-          node, acc ->
-            {node, acc}
-        end)
-        |> elem(1)
+          if name_matches and arity_matches do
+            # Use Macro.to_string - works in production releases (no Mix dependency)
+            {node, Macro.to_string(node)}
+          else
+            {node, nil}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
 
       case result do
         nil -> {:error, :function_not_found}
@@ -643,7 +646,7 @@ defmodule Giulia.AST.Processor do
         |> Enum.uniq()
         |> Enum.map(fn {name, ar} -> find_function_ast(ast, name, ar) end)
         |> Enum.filter(&match?({:ok, _}, &1))
-        |> Enum.map(fn {:ok, func_ast} -> Sourceror.to_string(func_ast) end)
+        |> Enum.map(fn {:ok, func_ast} -> Macro.to_string(func_ast) end)
 
       {:ok, Enum.join(slices, "\n\n")}
     end
@@ -749,7 +752,7 @@ defmodule Giulia.AST.Processor do
         arity = length(args || [])
 
         if target_line >= start_line and target_line <= end_line do
-          {node, {name, arity, Sourceror.to_string(node)}}
+          {node, {name, arity, Macro.to_string(node)}}
         else
           {node, nil}
         end

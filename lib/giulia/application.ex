@@ -78,6 +78,9 @@ defmodule Giulia.Application do
       # Trace storage for debugging inference runs
       Giulia.Inference.Trace,
 
+      # Event broadcaster for SSE streaming
+      Giulia.Inference.Events,
+
       # Inference subsystem (pools with back-pressure)
       Giulia.Inference.Supervisor,
 

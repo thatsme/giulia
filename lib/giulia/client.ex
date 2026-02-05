@@ -242,29 +242,7 @@ defmodule Giulia.Client do
     # Treat as chat message
     message = Enum.join(args, " ")
     host_path = get_working_directory()
-
-    # Show progress indicator
-    IO.write("\n🤔 Thinking...")
-
-    result = post("/api/command", %{message: message, path: host_path})
-
-    # Clear the thinking indicator
-    IO.write("\r\e[K")
-
-    case result do
-      {:ok, %{"status" => "ok", "response" => response}} ->
-        IO.puts("#{response}\n")
-
-      {:ok, %{"status" => "needs_init"}} ->
-        warning("No GIULIA.md found in current directory.")
-        info("Run `giulia /init` to initialize this project.")
-
-      {:ok, %{"error" => reason}} ->
-        error("Chat failed: #{reason}")
-
-      {:error, reason} ->
-        error("Chat failed: #{inspect(reason)}")
-    end
+    execute_input(message, host_path)
   end
 
   # ============================================================================
@@ -382,29 +360,193 @@ defmodule Giulia.Client do
   end
 
   defp execute_input(input, host_path) do
-    # Show thinking indicator
-    IO.write("🤔 Thinking...")
+    IO.puts("\n\e[36m┌─ OODA Loop ─────────────────────────────────┐\e[0m")
 
-    result = post("/api/command", %{message: input, path: host_path})
+    url = @daemon_url <> "/api/command/stream"
 
-    # Clear indicator
-    IO.write("\r\e[K")
+    # Initialize state in process dictionary
+    Process.put(:ooda_state, %{steps: [], current: nil, response: nil, status: :starting})
 
-    case result do
+    try do
+      _resp = Req.post!(url,
+        json: %{message: input, path: host_path},
+        into: fn {:data, data}, {req, resp} ->
+          # Parse and render each SSE event immediately
+          render_sse_event(data)
+          {:cont, {req, resp}}
+        end,
+        receive_timeout: :infinity
+      )
+
+      IO.puts("\e[36m└─────────────────────────────────────────────┘\e[0m")
+
+      final_state = Process.get(:ooda_state)
+      if final_state.response do
+        IO.puts("\n#{final_state.response}\n")
+      end
+    rescue
+      _e in Req.TransportError ->
+        warning("Streaming failed, using sync fallback...")
+        execute_input_sync(input, host_path)
+
+      e ->
+        error("Error: #{inspect(e)}")
+    end
+  end
+
+  # Parse and render SSE event immediately to terminal
+  defp render_sse_event(data) do
+    data
+    |> String.split("\n", trim: true)
+    |> Enum.each(fn line ->
+      if String.starts_with?(line, "data: ") do
+        json_str = String.trim_leading(line, "data: ")
+        case Jason.decode(json_str) do
+          {:ok, event} -> render_event_line(event)
+          _ -> :ok
+        end
+      end
+    end)
+  end
+
+  defp render_event_line(%{"type" => "tool_call", "tool" => tool, "iteration" => iter}) do
+    IO.write("\e[33m│ [#{iter}]\e[0m → \e[36m#{tool}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "tool_result", "success" => true, "tool" => _tool}) do
+    IO.puts(" \e[32m✓\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "tool_result", "success" => false, "tool" => _tool, "preview" => preview}) do
+    short = String.slice(preview || "", 0, 40)
+    IO.puts(" \e[31m✗\e[0m #{short}")
+  end
+
+  defp render_event_line(%{"type" => "complete", "response" => response}) do
+    Process.put(:ooda_state, %{response: response})
+    IO.puts("\e[32m│ ✓ Complete\e[0m")
+  end
+
+  defp render_event_line(%{"request_id" => _}) do
+    IO.puts("\e[90m│ Starting...\e[0m")
+  end
+
+  defp render_event_line(_), do: :ok
+
+  # Render the OODA block
+  defp render_ooda_block(%{status: :done}), do: ""
+  defp render_ooda_block(state) do
+    # Build the steps list (scrollable history)
+    steps_content = state.steps
+    |> Enum.map(fn step ->
+      case step do
+        %{type: :result, tool: tool, success: true} ->
+          Owl.Data.tag("  ✓ #{tool}", :green)
+        %{type: :result, tool: tool, success: false, preview: preview} ->
+          Owl.Data.tag("  ✗ #{tool}: #{String.slice(preview || "", 0, 40)}", :red)
+        _ ->
+          ""
+      end
+    end)
+
+    # Current action (spinner area)
+    current_line = case state.current do
+      %{tool: tool, iteration: iter} ->
+        [Owl.Data.tag("  [#{iter}] → #{tool}...", :yellow)]
+      nil when state.status == :started ->
+        [Owl.Data.tag("  OODA loop starting...", :light_black)]
+      _ ->
+        []
+    end
+
+    # Combine into a box
+    lines = [
+      Owl.Data.tag("┌─ OODA Steps ─────────────────────────────────┐", :cyan)
+    ] ++ steps_content ++ current_line ++ [
+      Owl.Data.tag("└──────────────────────────────────────────────┘", :cyan)
+    ]
+
+    lines
+    |> Enum.reject(&(&1 == ""))
+    |> Owl.Data.unlines()
+  end
+
+  # Process SSE chunk and update state
+  defp process_sse_chunk(data, state) do
+    data
+    |> String.split("\n", trim: true)
+    |> Enum.reduce(state, fn line, acc ->
+      if String.starts_with?(line, "data: ") do
+        json_str = String.trim_leading(line, "data: ")
+        case Jason.decode(json_str) do
+          {:ok, event} -> update_state(event, acc)
+          _ -> acc
+        end
+      else
+        acc
+      end
+    end)
+  end
+
+  defp update_state(%{"type" => "tool_call", "tool" => tool, "iteration" => iter}, state) do
+    step = %{type: :call, tool: tool, iteration: iter, status: :running}
+    %{state | current: step, status: :thinking}
+  end
+
+  defp update_state(%{"type" => "tool_result", "tool" => tool, "success" => success, "preview" => preview}, state) do
+    # Complete the current step and add to history
+    completed = %{type: :result, tool: tool, success: success, preview: preview}
+    steps = state.steps ++ [completed]
+    %{state | steps: steps, current: nil}
+  end
+
+  defp update_state(%{"type" => "complete", "response" => response}, state) do
+    %{state | response: response, status: :complete}
+  end
+
+  defp update_state(%{"request_id" => _}, state) do
+    %{state | status: :started}
+  end
+
+  defp update_state(_, state), do: state
+
+  # Synchronous fallback if streaming fails
+  defp execute_input_sync(input, host_path) do
+    IO.write("🤔 Thinking...\n")
+
+    case post("/api/command", %{message: input, path: host_path}) do
+      {:ok, %{"status" => "ok", "response" => response, "trace" => trace}} ->
+        display_trace(trace)
+        IO.puts("\n#{response}\n")
+
       {:ok, %{"status" => "ok", "response" => response}} ->
         IO.puts("\n#{response}\n")
 
       {:ok, %{"status" => "needs_init", "message" => msg}} ->
         warning(msg)
-        info("Run /init to initialize this project.")
 
       {:ok, %{"error" => reason}} ->
-        error("Error: #{reason}")
+        error(reason)
 
       {:error, reason} ->
-        error("Error: #{inspect(reason)}")
+        error(inspect(reason))
     end
   end
+
+  defp display_trace(nil), do: :ok
+  defp display_trace(trace) when is_map(trace) do
+    actions = trace["action_history"] || []
+    if actions != [] do
+      IO.puts("\n  Steps:")
+      actions
+      |> Enum.reverse()
+      |> Enum.each(fn action ->
+        tool = action["tool"] || "?"
+        IO.puts("    → #{tool}")
+      end)
+    end
+  end
+  defp display_trace(_), do: :ok
 
   # ============================================================================
   # HTTP Client

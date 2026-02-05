@@ -10,6 +10,7 @@ defmodule Giulia.Daemon.Endpoint do
 
   plug Plug.Logger
   plug :match
+  plug :fetch_query_params
   plug Plug.Parsers,
     parsers: [:json],
     pass: ["application/json"],
@@ -23,6 +24,48 @@ defmodule Giulia.Daemon.Endpoint do
       node: node(),
       version: Giulia.Version.short_version()
     }))
+  end
+
+  # Streaming command endpoint (SSE for real-time OODA steps)
+  post "/api/command/stream" do
+    case conn.body_params do
+      %{"message" => message, "path" => path} ->
+        resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+        case Giulia.Core.ContextManager.get_context(resolved_path) do
+          {:ok, context_pid} ->
+            # Generate request ID and subscribe
+            request_id = make_ref() |> inspect()
+            Giulia.Inference.Events.subscribe(request_id)
+
+            # Start SSE response
+            conn = conn
+            |> put_resp_content_type("text/event-stream")
+            |> put_resp_header("cache-control", "no-cache")
+            |> put_resp_header("connection", "keep-alive")
+            |> send_chunked(200)
+
+            # Send initial event
+            {:ok, conn} = chunk(conn, "event: start\ndata: {\"request_id\": \"#{request_id}\"}\n\n")
+
+            # Execute inference async
+            spawn(fn ->
+              execute_inference_streaming(message, resolved_path, context_pid, request_id)
+            end)
+
+            # Stream events
+            stream_events(conn, request_id)
+
+          {:needs_init, _} ->
+            send_json(conn, 200, %{status: "needs_init", message: "No GIULIA.md found."})
+
+          {:error, reason} ->
+            send_json(conn, 400, %{error: inspect(reason)})
+        end
+
+      _ ->
+        send_json(conn, 400, %{error: "Missing required fields"})
+    end
   end
 
   # Main command endpoint
@@ -68,9 +111,11 @@ defmodule Giulia.Daemon.Endpoint do
   end
 
   # "What functions are in module X?"
+  # Supports ?module=Giulia.StructuredOutput query param
   get "/api/index/functions" do
-    functions = Giulia.Context.Store.list_functions()
-    send_json(conn, 200, %{functions: functions, count: length(functions)})
+    module_filter = conn.query_params["module"]
+    functions = Giulia.Context.Store.list_functions(module_filter)
+    send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
   end
 
   # Project summary - The "distilled metadata" for small models
@@ -201,7 +246,9 @@ defmodule Giulia.Daemon.Endpoint do
 
       case Giulia.Inference.Pool.infer(classification.provider, message, opts) do
         {:ok, response} ->
-          %{status: "ok", response: response}
+          # Include trace for visibility
+          trace = Giulia.Inference.Trace.get_last()
+          %{status: "ok", response: response, trace: trace}
 
         {:error, :no_provider_available} ->
           %{error: "No AI provider available. Check LM Studio or API keys."}
@@ -225,9 +272,16 @@ defmodule Giulia.Daemon.Endpoint do
         "Indexed modules:\n#{module_list}"
 
       String.contains?(message_lower, "function") ->
-        functions = Giulia.Context.Store.list_functions()
-        func_list = Enum.map_join(Enum.take(functions, 20), "\n", &"- #{&1.module}.#{&1.name}/#{&1.arity}")
-        "Functions (showing first 20):\n#{func_list}"
+        # Extract module name if provided (e.g., "functions Giulia.StructuredOutput")
+        module_filter = extract_module_name(message)
+        functions = Giulia.Context.Store.list_functions(module_filter)
+
+        header = if module_filter, do: "Functions in #{module_filter}:", else: "Functions (showing first 20):"
+        func_list = Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
+          type_marker = if f.type == :defp, do: "(private)", else: ""
+          "- #{f.module}.#{f.name}/#{f.arity} #{type_marker}"
+        end)
+        "#{header}\n#{func_list}"
 
       String.contains?(message_lower, "status") ->
         stats = Giulia.Context.Store.stats()
@@ -243,9 +297,75 @@ defmodule Giulia.Daemon.Endpoint do
     %{status: "ok", response: response}
   end
 
+  # Extract module name from message like "functions Giulia.StructuredOutput"
+  # Matches: Giulia.Foo.Bar, Foo.Bar, FooBar (capitalized module names)
+  defp extract_module_name(message) do
+    case Regex.run(~r/\b([A-Z][a-zA-Z0-9]*(?:\.[A-Z][a-zA-Z0-9]*)+)\b/, message) do
+      [_, module_name] -> module_name
+      _ -> nil
+    end
+  end
+
   defp send_json(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")
     |> send_resp(status, Jason.encode!(data))
+  end
+
+  # ============================================================================
+  # SSE Streaming Helpers
+  # ============================================================================
+
+  defp stream_events(conn, request_id) do
+    receive do
+      {:ooda_event, %{type: :complete, response: response}} ->
+        # Final event
+        data = Jason.encode!(%{type: "complete", response: response})
+        {:ok, conn} = chunk(conn, "event: complete\ndata: #{data}\n\n")
+        Giulia.Inference.Events.unsubscribe(request_id)
+        conn
+
+      {:ooda_event, event} ->
+        # Tool call or result event
+        data = Jason.encode!(event)
+        case chunk(conn, "event: step\ndata: #{data}\n\n") do
+          {:ok, conn} -> stream_events(conn, request_id)
+          {:error, _} ->
+            Giulia.Inference.Events.unsubscribe(request_id)
+            conn
+        end
+
+    after
+      300_000 ->
+        # Timeout after 5 minutes
+        Giulia.Inference.Events.unsubscribe(request_id)
+        conn
+    end
+  end
+
+  defp execute_inference_streaming(message, project_path, context_pid, request_id) do
+    alias Giulia.Inference.Events
+
+    context_meta = %{file_count: Giulia.Context.Store.stats().ast_files}
+    classification = Giulia.Provider.Router.route(message, context_meta)
+
+    if classification.provider == :elixir_native do
+      result = handle_native_query(message)
+      Events.broadcast(request_id, %{type: :complete, response: result.response})
+    else
+      opts = [
+        project_path: project_path,
+        project_pid: context_pid,
+        request_id: request_id
+      ]
+
+      case Giulia.Inference.Pool.infer(classification.provider, message, opts) do
+        {:ok, response} ->
+          Events.broadcast(request_id, %{type: :complete, response: response})
+
+        {:error, reason} ->
+          Events.broadcast(request_id, %{type: :complete, response: "Error: #{inspect(reason)}"})
+      end
+    end
   end
 end

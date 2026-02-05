@@ -36,7 +36,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.Inference.Trace
 
   # Tools that modify code and need verification
-  @write_tools ["write_file", "edit_file"]
+  @write_tools ["write_file", "edit_file", "write_function"]
 
   defstruct [
     # Task info
@@ -44,6 +44,7 @@ defmodule Giulia.Inference.Orchestrator do
     project_path: nil,
     project_pid: nil,
     reply_to: nil,
+    request_id: nil,  # For event broadcasting
 
     # State machine
     status: :idle,
@@ -130,11 +131,15 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def handle_call({:execute, prompt, opts}, from, state) do
+    # Generate request ID for event broadcasting
+    request_id = Keyword.get(opts, :request_id, make_ref() |> inspect())
+
     # Start the loop, reply will be sent via handle_continue
     state = %{state |
       task: prompt,
       reply_to: from,
-      status: :starting
+      status: :starting,
+      request_id: request_id
     }
     {:noreply, state, {:continue, {:start, prompt, opts}}}
   end
@@ -398,6 +403,7 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp execute_tool(tool_name, params, response, state) do
+    alias Giulia.Inference.Events
     current_action = {tool_name, params}
 
     # Loop detection
@@ -405,7 +411,17 @@ defmodule Giulia.Inference.Orchestrator do
       Logger.warning("Same action repeated - intervening")
       {:noreply, state, {:continue, :intervene}}
     else
-      # DETAILED LOGGING - Show what we're doing
+      # BROADCAST: Tool call starting (only if we have a request_id)
+      if state.request_id do
+        Logger.info("OODA BROADCAST: tool_call #{tool_name} to #{state.request_id}")
+        Events.broadcast(state.request_id, %{
+          type: :tool_call,
+          iteration: state.iteration,
+          tool: tool_name,
+          params: params
+        })
+      end
+
       Logger.info("=== TOOL CALL [#{state.iteration}] ===")
       Logger.info("Tool: #{tool_name}")
       Logger.info("Params: #{inspect(params, pretty: true, limit: 500)}")
@@ -414,7 +430,7 @@ defmodule Giulia.Inference.Orchestrator do
       tool_opts = build_tool_opts(state)
       result = Registry.execute(tool_name, params, tool_opts)
 
-      # Log the result
+      # Log and broadcast the result
       result_preview = case result do
         {:ok, data} when is_binary(data) -> String.slice(data, 0, 200)
         {:ok, data} -> inspect(data, pretty: true, limit: 200)
@@ -423,6 +439,17 @@ defmodule Giulia.Inference.Orchestrator do
       end
       Logger.info("Result: #{result_preview}")
       Logger.info("=== END TOOL CALL ===")
+
+      # BROADCAST: Tool result (only if we have a request_id)
+      if state.request_id do
+        Logger.info("OODA BROADCAST: tool_result #{tool_name} to #{state.request_id}")
+        Events.broadcast(state.request_id, %{
+          type: :tool_result,
+          tool: tool_name,
+          success: match?({:ok, _}, result),
+          preview: result_preview
+        })
+      end
 
       # Record in history
       assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})

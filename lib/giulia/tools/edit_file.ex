@@ -99,29 +99,48 @@ defmodule Giulia.Tools.EditFile do
   end
 
   defp perform_replacement(file_path, content, old_text, new_text) do
-    # Count occurrences
-    count = count_occurrences(content, old_text)
+    # STUTTER DETECTION: Catch "no-op" edits where the model sends identical text
+    if normalize_whitespace(old_text) == normalize_whitespace(new_text) do
+      {:error, """
+      NO CHANGES DETECTED: You provided identical text for old_text and new_text.
 
-    cond do
-      count == 0 ->
-        # Not found - try to help
-        suggest_similar(content, old_text)
+      This is a "stutter" - you decided to act but didn't actually change anything.
+      Please provide the ACTUAL optimized/refactored code in new_text.
 
-      count > 1 ->
-        {:error, "Found #{count} occurrences of old_text. Please provide more context to make it unique."}
+      If you don't know how to improve it, use 'respond' to explain why.
+      """}
+    else
+      # Count occurrences
+      count = count_occurrences(content, old_text)
 
-      true ->
-        # Exactly one match - perform replacement
-        new_content = String.replace(content, old_text, new_text, global: false)
+      cond do
+        count == 0 ->
+          # Not found - try to help
+          suggest_similar(content, old_text)
 
-        case File.write(file_path, new_content) do
-          :ok ->
-            {:ok, "Successfully edited #{Path.basename(file_path)}"}
+        count > 1 ->
+          {:error, "Found #{count} occurrences of old_text. Please provide more context to make it unique."}
 
-          {:error, reason} ->
-            {:error, "Failed to write file: #{inspect(reason)}"}
-        end
+        true ->
+          # Exactly one match - perform replacement
+          new_content = String.replace(content, old_text, new_text, global: false)
+
+          case File.write(file_path, new_content) do
+            :ok ->
+              {:ok, "Successfully edited #{Path.basename(file_path)}"}
+
+            {:error, reason} ->
+              {:error, "Failed to write file: #{inspect(reason)}"}
+          end
+      end
     end
+  end
+
+  # Normalize whitespace for comparison (catches near-identical "stutters")
+  defp normalize_whitespace(text) do
+    text
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
   end
 
   defp count_occurrences(content, pattern) do

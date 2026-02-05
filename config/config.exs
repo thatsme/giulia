@@ -18,7 +18,7 @@ config :giulia,
 # Docker vs native detection (uses host.docker.internal:12345 in container)
 config :giulia,
   local_provider: Giulia.Provider.LMStudio,
-  lm_studio_model: "qwen2.5-coder-3b-instruct",
+  lm_studio_model: "qwen/qwen2.5-coder-14b",
   lm_studio_api_key: "lm-studio"  # Dummy key, LM Studio doesn't require it
 
 # Ollama (alternative local provider for larger models)
