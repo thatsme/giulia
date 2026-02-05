@@ -19,13 +19,23 @@ defmodule Giulia.AST.Processor do
           modules: [module_info()],
           functions: [function_info()],
           imports: [import_info()],
+          types: [type_info()],
+          specs: [spec_info()],
+          callbacks: [callback_info()],
+          structs: [struct_info()],
+          docs: [doc_info()],
           line_count: non_neg_integer(),
           complexity: non_neg_integer()
         }
 
-  @type module_info :: %{name: String.t(), line: non_neg_integer()}
+  @type module_info :: %{name: String.t(), line: non_neg_integer(), moduledoc: String.t() | nil}
   @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp, line: non_neg_integer()}
   @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
+  @type type_info :: %{name: atom(), arity: non_neg_integer(), visibility: :type | :typep | :opaque, line: non_neg_integer(), definition: String.t()}
+  @type spec_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
+  @type callback_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
+  @type struct_info :: %{module: String.t(), fields: [atom()], line: non_neg_integer()}
+  @type doc_info :: %{function: atom(), arity: non_neg_integer(), doc: String.t(), line: non_neg_integer()}
 
   # ============================================================================
   # Debug / Testing
@@ -199,10 +209,21 @@ defmodule Giulia.AST.Processor do
     functions = extract_functions(ast)
     Logger.info("ANALYZE: got #{length(functions)} functions")
 
+    types = extract_types(ast)
+    specs = extract_specs(ast)
+    callbacks = extract_callbacks(ast)
+    structs = extract_structs(ast)
+    docs = extract_docs(ast)
+
     %{
       modules: modules,
       functions: functions,
       imports: extract_imports(ast),
+      types: types,
+      specs: specs,
+      callbacks: callbacks,
+      structs: structs,
+      docs: docs,
       line_count: safe_count_lines(source),
       complexity: estimate_complexity(ast)
     }
@@ -270,18 +291,22 @@ defmodule Giulia.AST.Processor do
   end
 
   # Extract module info from various AST patterns
-  defp extract_module_info({:defmodule, meta, [{:__aliases__, _, parts} | _]}) when is_list(parts) do
+  defp extract_module_info({:defmodule, meta, [{:__aliases__, _, parts} | rest]}) when is_list(parts) do
+    moduledoc = extract_moduledoc_from_body(rest)
     {:ok, %{
       name: parts |> Enum.map(&to_string/1) |> Enum.join("."),
-      line: Keyword.get(meta, :line, 0)
+      line: Keyword.get(meta, :line, 0),
+      moduledoc: moduledoc
     }}
   end
 
   # Handle atom module names (e.g., defmodule :SomeAtom do)
-  defp extract_module_info({:defmodule, meta, [module_atom | _]}) when is_atom(module_atom) do
+  defp extract_module_info({:defmodule, meta, [module_atom | rest]}) when is_atom(module_atom) do
+    moduledoc = extract_moduledoc_from_body(rest)
     {:ok, %{
       name: Atom.to_string(module_atom),
-      line: Keyword.get(meta, :line, 0)
+      line: Keyword.get(meta, :line, 0),
+      moduledoc: moduledoc
     }}
   end
 
@@ -290,6 +315,42 @@ defmodule Giulia.AST.Processor do
 
   # Not a defmodule node
   defp extract_module_info(_), do: :skip
+
+  # Extract @moduledoc from module body
+  # Handle standard Code.string_to_quoted format
+  defp extract_moduledoc_from_body([[do: body]]) do
+    extract_moduledoc_from_ast(body)
+  end
+
+  defp extract_moduledoc_from_body([_, [do: body]]) do
+    extract_moduledoc_from_ast(body)
+  end
+
+  # Handle Sourceror format: [[{key_block, body_block}]]
+  defp extract_moduledoc_from_body([[{_key_ast, body_ast}]]) do
+    extract_moduledoc_from_ast(body_ast)
+  end
+
+  defp extract_moduledoc_from_body(_), do: nil
+
+  defp extract_moduledoc_from_ast({:__block__, _, statements}) when is_list(statements) do
+    Enum.find_value(statements, fn
+      # Standard string
+      {:@, _, [{:moduledoc, _, [doc]}]} when is_binary(doc) -> doc
+      # Sourceror wraps strings in __block__
+      {:@, _, [{:moduledoc, _, [{:__block__, _, [doc]}]}]} when is_binary(doc) -> doc
+      # Sigil S
+      {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc]}, []]}]}]} when is_binary(doc) -> doc
+      # false (no doc)
+      {:@, _, [{:moduledoc, _, [false]}]} -> nil
+      {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} -> nil
+      _ -> nil
+    end)
+  end
+
+  defp extract_moduledoc_from_ast({:@, _, [{:moduledoc, _, [doc]}]}) when is_binary(doc), do: doc
+  defp extract_moduledoc_from_ast({:@, _, [{:moduledoc, _, [{:__block__, _, [doc]}]}]}) when is_binary(doc), do: doc
+  defp extract_moduledoc_from_ast(_), do: nil
 
   @doc """
   Extract function definitions from AST using Macro.prewalk.
@@ -410,6 +471,311 @@ defmodule Giulia.AST.Processor do
 
   # Not an import directive
   defp extract_import_info(_), do: :skip
+
+  # ============================================================================
+  # Type Extraction (@type, @typep, @opaque)
+  # ============================================================================
+
+  @doc """
+  Extract type definitions from AST.
+  """
+  @spec extract_types(ast()) :: [type_info()]
+  def extract_types(ast) do
+    try do
+      {_ast, types} = Macro.prewalk(ast, [], fn node, acc ->
+        case extract_type_info(node) do
+          {:ok, type_info} -> {node, [type_info | acc]}
+          :skip -> {node, acc}
+        end
+      end)
+
+      Enum.reverse(types)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # @type name :: definition
+  defp extract_type_info({:@, meta, [{type_kind, _, [{:"::", _, [{name, _, args}, _definition]}]}]})
+       when type_kind in [:type, :typep, :opaque] and is_atom(name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, %{
+      name: name,
+      arity: arity,
+      visibility: type_kind,
+      line: Keyword.get(meta, :line, 0),
+      definition: "" # We'll get the string representation later if needed
+    }}
+  end
+
+  # @type name (no args)
+  defp extract_type_info({:@, meta, [{type_kind, _, [{:"::", _, [{name, _, nil}, _definition]}]}]})
+       when type_kind in [:type, :typep, :opaque] and is_atom(name) do
+    {:ok, %{
+      name: name,
+      arity: 0,
+      visibility: type_kind,
+      line: Keyword.get(meta, :line, 0),
+      definition: ""
+    }}
+  end
+
+  defp extract_type_info(_), do: :skip
+
+  # ============================================================================
+  # Spec Extraction (@spec)
+  # ============================================================================
+
+  @doc """
+  Extract @spec definitions from AST.
+  """
+  @spec extract_specs(ast()) :: [spec_info()]
+  def extract_specs(ast) do
+    try do
+      {_ast, specs} = Macro.prewalk(ast, [], fn node, acc ->
+        case extract_spec_info(node) do
+          {:ok, spec_info} -> {node, [spec_info | acc]}
+          :skip -> {node, acc}
+        end
+      end)
+
+      Enum.reverse(specs)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # @spec function_name(args) :: return_type
+  defp extract_spec_info({:@, meta, [{:spec, _, [{:"::", _, [{name, _, args}, _return]}]}]})
+       when is_atom(name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, %{
+      function: name,
+      arity: arity,
+      spec: "", # Could extract full spec string if needed
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # @spec with when clause
+  defp extract_spec_info({:@, meta, [{:spec, _, [{:when, _, [{:"::", _, [{name, _, args}, _return]} | _]}]}]})
+       when is_atom(name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, %{
+      function: name,
+      arity: arity,
+      spec: "",
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  defp extract_spec_info(_), do: :skip
+
+  # ============================================================================
+  # Callback Extraction (@callback)
+  # ============================================================================
+
+  @doc """
+  Extract @callback definitions from AST.
+  """
+  @spec extract_callbacks(ast()) :: [callback_info()]
+  def extract_callbacks(ast) do
+    try do
+      {_ast, callbacks} = Macro.prewalk(ast, [], fn node, acc ->
+        case extract_callback_info(node) do
+          {:ok, callback_info} -> {node, [callback_info | acc]}
+          :skip -> {node, acc}
+        end
+      end)
+
+      Enum.reverse(callbacks)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  # @callback function_name(args) :: return_type
+  defp extract_callback_info({:@, meta, [{:callback, _, [{:"::", _, [{name, _, args}, _return]}]}]})
+       when is_atom(name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, %{
+      function: name,
+      arity: arity,
+      spec: "",
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  defp extract_callback_info(_), do: :skip
+
+  # ============================================================================
+  # Struct Extraction (defstruct)
+  # ============================================================================
+
+  @doc """
+  Extract defstruct definitions from AST.
+  """
+  @spec extract_structs(ast()) :: [struct_info()]
+  def extract_structs(ast) do
+    try do
+      # We need to track current module context for struct extraction
+      {_ast, {_module, structs}} = Macro.prewalk(ast, {nil, []}, fn node, {current_module, acc} ->
+        case node do
+          # Track module context
+          {:defmodule, _, [{:__aliases__, _, parts} | _]} ->
+            module_name = parts |> Enum.map(&to_string/1) |> Enum.join(".")
+            {node, {module_name, acc}}
+
+          # defstruct with keyword list (standard AST)
+          {:defstruct, meta, [fields]} when is_list(fields) ->
+            field_names = extract_struct_fields(fields)
+            struct_info = %{
+              module: current_module || "Unknown",
+              fields: field_names,
+              line: Keyword.get(meta, :line, 0)
+            }
+            {node, {current_module, [struct_info | acc]}}
+
+          # defstruct with Sourceror __block__ wrapper
+          {:defstruct, meta, [{:__block__, _, [fields]}]} when is_list(fields) ->
+            field_names = extract_struct_fields(fields)
+            struct_info = %{
+              module: current_module || "Unknown",
+              fields: field_names,
+              line: Keyword.get(meta, :line, 0)
+            }
+            {node, {current_module, [struct_info | acc]}}
+
+          _ ->
+            {node, {current_module, acc}}
+        end
+      end)
+
+      Enum.reverse(structs)
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  defp extract_struct_fields(fields) when is_list(fields) do
+    Enum.map(fields, fn
+      # Standard keyword: {key, default}
+      {key, _default} when is_atom(key) -> key
+      # Simple atom field
+      key when is_atom(key) -> key
+      # Sourceror wrapped atom: {:__block__, _, [atom]}
+      {:__block__, _, [key]} when is_atom(key) -> key
+      # Sourceror wrapped keyword: {{:__block__, _, [key]}, _default}
+      {{:__block__, _, [key]}, _default} when is_atom(key) -> key
+      _ -> :unknown
+    end)
+    |> Enum.filter(&(&1 != :unknown))
+  end
+
+  defp extract_struct_fields(_), do: []
+
+  # ============================================================================
+  # Doc Extraction (@doc, @moduledoc)
+  # ============================================================================
+
+  @doc """
+  Extract @doc definitions from AST.
+  Links docs to following function definitions.
+  """
+  @spec extract_docs(ast()) :: [doc_info()]
+  def extract_docs(ast) do
+    try do
+      # First pass: collect all @doc positions and their content
+      {_ast, doc_entries} = Macro.prewalk(ast, [], fn node, acc ->
+        case node do
+          {:@, meta, [{:doc, _, [doc_content]}]} when is_binary(doc_content) ->
+            entry = %{line: Keyword.get(meta, :line, 0), doc: doc_content}
+            {node, [entry | acc]}
+
+          {:@, meta, [{:doc, _, [{:sigil_S, _, [{:<<>>, _, [doc_content]}, []]}]}]} when is_binary(doc_content) ->
+            entry = %{line: Keyword.get(meta, :line, 0), doc: doc_content}
+            {node, [entry | acc]}
+
+          # Handle heredoc style @doc """..."""
+          {:@, meta, [{:doc, _, [{:__block__, _, [doc_content]}]}]} when is_binary(doc_content) ->
+            entry = %{line: Keyword.get(meta, :line, 0), doc: doc_content}
+            {node, [entry | acc]}
+
+          _ ->
+            {node, acc}
+        end
+      end)
+
+      # Second pass: collect functions
+      functions = extract_functions(ast)
+
+      # Match docs to functions (doc should be immediately before function)
+      doc_entries
+      |> Enum.reverse()
+      |> Enum.map(fn %{line: doc_line, doc: doc_content} ->
+        # Find function that follows this doc (within 10 lines)
+        matching_func = Enum.find(functions, fn func ->
+          func.line > doc_line and func.line <= doc_line + 10
+        end)
+
+        case matching_func do
+          nil -> nil
+          func -> %{
+            function: func.name,
+            arity: func.arity,
+            doc: doc_content,
+            line: doc_line
+          }
+        end
+      end)
+      |> Enum.filter(&(&1 != nil))
+    rescue
+      _ -> []
+    catch
+      _, _ -> []
+    end
+  end
+
+  @doc """
+  Extract @moduledoc from a module.
+  """
+  @spec extract_moduledoc(ast()) :: String.t() | nil
+  def extract_moduledoc(ast) do
+    try do
+      {_ast, moduledoc} = Macro.prewalk(ast, nil, fn node, acc ->
+        case node do
+          {:@, _, [{:moduledoc, _, [doc_content]}]} when is_binary(doc_content) ->
+            {node, doc_content}
+
+          {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc_content]}, []]}]}]} when is_binary(doc_content) ->
+            {node, doc_content}
+
+          {:@, _, [{:moduledoc, _, [false]}]} ->
+            {node, false}
+
+          _ ->
+            {node, acc}
+        end
+      end)
+
+      case moduledoc do
+        false -> nil
+        doc -> doc
+      end
+    rescue
+      _ -> nil
+    catch
+      _, _ -> nil
+    end
+  end
 
   @doc """
   Count source lines.
