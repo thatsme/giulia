@@ -37,13 +37,13 @@ defmodule Giulia.Inference.Trace do
     %{
       task: state.task,
       project_path: state.project_path,
-      status: state.status,
+      status: to_string(state.status),
       iteration: state.iteration,
       max_iterations: state.max_iterations,
       consecutive_failures: state.consecutive_failures,
-      provider: state.provider,
+      provider: if(state.provider, do: to_string(state.provider), else: nil),
       action_history: format_action_history(state.action_history),
-      recent_errors: state.recent_errors,
+      recent_errors: Enum.map(state.recent_errors, &inspect/1),
       last_action: format_action(state.last_action),
       final_response: state.final_response
     }
@@ -76,12 +76,25 @@ defmodule Giulia.Inference.Trace do
   end
   defp truncate_params(params), do: params
 
+  # Convert tuples to JSON-encodable format
   defp format_result({:ok, content}) when is_binary(content) do
-    if String.length(content) > 200 do
-      {:ok, String.slice(content, 0, 200) <> "..."}
+    truncated = if String.length(content) > 200 do
+      String.slice(content, 0, 200) <> "..."
     else
-      {:ok, content}
+      content
     end
+    ["ok", truncated]
   end
-  defp format_result(other), do: other
+
+  defp format_result({:ok, content}) do
+    ["ok", inspect(content, limit: 50)]
+  end
+
+  defp format_result({:error, reason}) do
+    ["error", inspect(reason, limit: 100)]
+  end
+
+  defp format_result(other) do
+    inspect(other, limit: 100)
+  end
 end
