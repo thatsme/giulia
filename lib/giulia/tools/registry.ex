@@ -166,6 +166,7 @@ defmodule Giulia.Tools.Registry do
 
       # Build/Test
       Giulia.Tools.RunMix,           # Safe mix commands only
+      Giulia.Tools.CycleCheck,       # Detect compile-time cyclic dependencies
 
       # Pseudo-tools for orchestration
       Giulia.Tools.Respond,
