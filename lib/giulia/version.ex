@@ -8,18 +8,16 @@ defmodule Giulia.Version do
 
   # These are compile-time constants
   @version Mix.Project.config()[:version]
-  @build_time DateTime.utc_now() |> DateTime.to_iso8601()
+  @build Mix.Project.config()[:build] || 0
 
   def version, do: @version
-  def build_time, do: @build_time
+  def build, do: @build
 
   def full_version do
-    "v#{@version} (built #{@build_time})"
+    "v#{@version} build #{@build}"
   end
 
   def short_version do
-    # Extract just time portion for display
-    time = @build_time |> String.split("T") |> List.last() |> String.slice(0, 8)
-    "v#{@version}@#{time}"
+    "v#{@version}.#{@build}"
   end
 end
