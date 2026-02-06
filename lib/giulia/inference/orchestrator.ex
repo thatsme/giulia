@@ -1411,9 +1411,17 @@ defmodule Giulia.Inference.Orchestrator do
     {:noreply, state, {:continue, :step}}
   end
 
-  # Check if a tool requires user approval
+  # Check if a tool requires user approval.
+  # Read-only tools (lookup, read, search, think, respond) are auto-approved
+  # to keep the OODA loop fast. Only write tools need human consent.
+  # run_mix is auto-approved for compile (verification), but requires approval
+  # for test/deps/other commands that have side effects.
+  defp requires_approval?("run_mix", params, _state) do
+    command = params["command"] || params[:command] || ""
+    command not in ["compile", "help"]
+  end
+
   defp requires_approval?(tool_name, _params, _state) do
-    # Only dangerous tools require approval
     tool_name in @write_tools
   end
 
@@ -1493,16 +1501,29 @@ defmodule Giulia.Inference.Orchestrator do
       {:ok, %{file: file_path}} ->
         resolved = resolve_tool_path(file_path, state)
         case File.read(resolved) do
-          {:ok, _content} ->
-            # Show the new function code that will replace the old one
-            """
-            Module: #{module}
-            Function: #{func_name}/#{arity}
-            File: #{Path.basename(file_path)}
+          {:ok, content} ->
+            # Try to extract the old function for a proper diff
+            old_code = extract_old_function(content, func_name, arity)
 
-            === NEW FUNCTION CODE ===
-            #{new_code}
-            """
+            if old_code do
+              diff = Diff.colorized(old_code, new_code, file_path: Path.basename(file_path))
+              """
+              Module: #{module}
+              Function: #{func_name}/#{arity}
+              File: #{Path.basename(file_path)}
+
+              #{diff}
+              """
+            else
+              """
+              Module: #{module}
+              Function: #{func_name}/#{arity} (new)
+              File: #{Path.basename(file_path)}
+
+              === NEW FUNCTION CODE ===
+              #{new_code}
+              """
+            end
 
           {:error, _} ->
             "Module: #{module}\nFunction: #{func_name}/#{arity}\n\nNew code:\n#{new_code}"
@@ -1512,6 +1533,84 @@ defmodule Giulia.Inference.Orchestrator do
         "Module: #{module} (not found in index)\nFunction: #{func_name}/#{arity}\n\nNew code:\n#{new_code}"
     end
   end
+
+  # Extract the current function source from file content using Sourceror.
+  # Returns the old function code as a string, or nil if not found.
+  defp extract_old_function(content, func_name, arity) do
+    source = String.replace(content, "\r\n", "\n")
+    func_atom = String.to_atom(func_name)
+    arity = if is_binary(arity), do: String.to_integer(arity), else: arity
+
+    case Sourceror.parse_string(source) do
+      {:ok, {:defmodule, _meta, [_alias, [do: body]]}} ->
+        extract_function_from_body(source, body, func_atom, arity)
+
+      {:ok, {:defmodule, _meta, [_alias, [{_do_key, body}]]}} ->
+        extract_function_from_body(source, body, func_atom, arity)
+
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp extract_function_from_body(source, {:__block__, _meta, statements}, func_atom, arity) do
+    ranges = Enum.flat_map(statements, fn stmt ->
+      case match_func_def(stmt, func_atom, arity) do
+        {:ok, range} -> [range]
+        _ -> []
+      end
+    end)
+
+    case ranges do
+      [] -> nil
+      [first | _] ->
+        last = List.last(ranges)
+        lines = String.split(source, "\n")
+        end_line = min(last.end_line || length(lines), length(lines))
+        lines
+        |> Enum.slice((first.start_line - 1)..(end_line - 1))
+        |> Enum.join("\n")
+    end
+  end
+
+  defp extract_function_from_body(source, stmt, func_atom, arity) do
+    case match_func_def(stmt, func_atom, arity) do
+      {:ok, range} ->
+        lines = String.split(source, "\n")
+        end_line = min(range.end_line || length(lines), length(lines))
+        lines
+        |> Enum.slice((range.start_line - 1)..(end_line - 1))
+        |> Enum.join("\n")
+      _ -> nil
+    end
+  end
+
+  defp match_func_def({def_type, meta, [{:when, _, [{name, _, args} | _]} | _]}, func_atom, arity)
+       when def_type in [:def, :defp] and is_atom(name) do
+    if name == func_atom and length(args || []) == arity do
+      start_line = Keyword.get(meta, :line)
+      end_info = Keyword.get(meta, :end)
+      end_line = if is_list(end_info), do: Keyword.get(end_info, :line), else: nil
+      if start_line, do: {:ok, %{start_line: start_line, end_line: end_line}}, else: :no_match
+    else
+      :no_match
+    end
+  end
+
+  defp match_func_def({def_type, meta, [{name, _, args} | _]}, func_atom, arity)
+       when def_type in [:def, :defp] and is_atom(name) do
+    if name == func_atom and length(args || []) == arity do
+      start_line = Keyword.get(meta, :line)
+      end_info = Keyword.get(meta, :end)
+      end_line = if is_list(end_info), do: Keyword.get(end_info, :line), else: nil
+      if start_line, do: {:ok, %{start_line: start_line, end_line: end_line}}, else: :no_match
+    else
+      :no_match
+    end
+  end
+
+  defp match_func_def(_, _, _), do: :no_match
 
   defp resolve_tool_path(path, state) do
     if state.project_path do
