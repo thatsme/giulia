@@ -44,6 +44,8 @@ services:
 
     volumes:
       - giulia_data:/data
+      - giulia_build:/tmp/giulia_build
+      - giulia_deps:/tmp/giulia_deps
       - ${GIULIA_PROJECTS_PATH:-./test_projects}:/projects:rw
       - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
 
@@ -67,3 +69,7 @@ services:
 volumes:
   giulia_data:
     name: giulia_data
+  giulia_build:
+    name: giulia_build
+  giulia_deps:
+    name: giulia_deps
