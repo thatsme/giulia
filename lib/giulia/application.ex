@@ -81,6 +81,9 @@ defmodule Giulia.Application do
       # Event broadcaster for SSE streaming
       Giulia.Inference.Events,
 
+      # Approval manager for interactive consent gate
+      Giulia.Inference.Approval,
+
       # Inference subsystem (pools with back-pressure)
       Giulia.Inference.Supervisor,
 

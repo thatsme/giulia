@@ -52,7 +52,7 @@ defmodule Giulia.Prompt.Builder do
     ## Response Schema
     Your response MUST be valid JSON matching ONE of these formats:
 
-    1. Tool Call:
+    1. Tool Call (non-code tools):
     {"tool": "tool_name", "parameters": {"param1": "value1"}}
 
     2. Final Response (when task is complete):
@@ -60,6 +60,21 @@ defmodule Giulia.Prompt.Builder do
 
     3. Thinking (if you need to reason):
     {"tool": "think", "parameters": {"thought": "reasoning here"}}
+
+    4. CODE TOOLS (patch_function, write_function — code in fenced block):
+    <action>
+    {"tool": "patch_function", "parameters": {"module": "Giulia.Example", "function_name": "my_func", "arity": 2}}
+    </action>
+
+    ```elixir
+    def my_func(arg1, arg2) do
+      # raw Elixir code — no JSON escaping needed
+      arg1 + arg2
+    end
+    ```
+
+    For code tools, place the new function in a ```elixir fenced block after </action>.
+    The code is NOT inside JSON. Do NOT add any text after the closing ```.
 
     ## Examples
 
@@ -75,22 +90,53 @@ defmodule Giulia.Prompt.Builder do
     User: "Explain Module.some_func/2"
     Response: {"tool": "lookup_function", "parameters": {"function_name": "some_func", "module": "Module", "arity": 2}}
 
+    User: "Fix the parse_response function in Giulia.StructuredOutput"
+    Response (code in fenced block after action):
+    <action>
+    {"tool": "patch_function", "parameters": {"module": "Giulia.StructuredOutput", "function_name": "parse_response", "arity": 1}}
+    </action>
+
+    ```elixir
+    def parse_response(raw) do
+      case extract_json(raw) do
+        {:ok, json} -> Jason.decode(json)
+        error -> error
+      end
+    end
+    ```
+
     ## Tool Selection Guide
     - When asked about a SPECIFIC FUNCTION by name: Use "lookup_function" (fast, uses index)
     - When asked about a whole FILE: Use "read_file"
     - When searching for PATTERNS in code: Use "search_code"
     - When you need FUNCTION SOURCE but don't know the file: Use "lookup_function"
-    - When REPLACING/REFACTORING a function: Use "write_function" (AST-based, no exact string matching needed)
-    - When making SMALL TEXT EDITS: Use "edit_file" (requires exact old_text match)
+    - When REPLACING/REFACTORING a function: Use "patch_function" — code goes in ```elixir block after </action>
+    - When making SMALL TEXT EDITS (imports, module attrs, config): Use "edit_file" (requires exact old_text match)
 
     ## Constraints
-    1. ONLY respond with JSON - never plain text
-    2. ONLY use tools from the Available Tools list
-    3. NEVER access files outside the project root
-    4. If unsure, use read_file or search_code to gather information first
-    5. If search returns "No matches found", the file/function does NOT exist in this project
-    6. If you cannot find something after 2 searches, use respond to explain what you tried
-    7. Dependencies (deps/) are NOT searchable - only project source files
+    1. ONLY use tools from the Available Tools list
+    2. NEVER access files outside the project root
+    3. If unsure, use read_file or search_code to gather information first
+    4. If search returns "No matches found", the file/function does NOT exist in this project
+    5. If you cannot find something after 2 searches, use respond to explain what you tried
+    6. Dependencies (deps/) are NOT searchable - only project source files
+    7. For patch_function: place code in ```elixir block after </action>, NOT inside JSON
+
+    ## AGENTIC MANDATE (CRITICAL)
+    You are an AUTONOMOUS AGENT, not a chatbot. When you encounter:
+    - Syntax errors
+    - Build failures
+    - Broken code
+    - Missing delimiters (end, }, ], etc.)
+
+    DO NOT ask the user to fix it. DO NOT just report the problem.
+    YOU ARE THE DEVELOPER. Use your tools to FIX IT:
+    1. read_file to see the current state
+    2. Identify the exact error (missing end, unclosed string, etc.)
+    3. edit_file to make the surgical fix
+    4. The Orchestrator will verify with mix compile
+
+    Your goal is a GREEN BUILD. Do not respond until mix compile succeeds.
     """
   end
 
@@ -119,23 +165,50 @@ defmodule Giulia.Prompt.Builder do
     PROJECT MODULES: #{Enum.join(modules, ", ")}
 
     RESPONSE FORMAT (REQUIRED):
+
+    For NON-CODE tools (read, search, respond, think):
     <action>
     {"tool": "TOOL_NAME", "parameters": {"PARAM": "VALUE"}}
     </action>
 
+    For CODE tools (patch_function, write_function):
+    <action>
+    {"tool": "patch_function", "parameters": {"module": "Module.Name", "function_name": "func", "arity": 2}}
+    </action>
+
+    ```elixir
+    defp func(arg1, arg2) do
+      arg1 + arg2
+    end
+    ```
+
+    CRITICAL: For code tools, place the code in a ```elixir fenced block after </action>.
+    Do NOT put code in JSON. Do NOT add any text after the closing ```.
+
     EXAMPLES:
 
-    To look up a function by name (PREFERRED for function analysis):
+    To look up a function:
     <action>
     {"tool": "lookup_function", "parameters": {"function_name": "try_repair_json"}}
     </action>
 
-    To read a whole file:
+    To read a file:
     <action>
     {"tool": "read_file", "parameters": {"path": "lib/giulia/client.ex"}}
     </action>
 
-    To respond to the user:
+    To replace a function (code in fenced block):
+    <action>
+    {"tool": "patch_function", "parameters": {"module": "Giulia.Example", "function_name": "hello", "arity": 1}}
+    </action>
+
+    ```elixir
+    def hello(name) do
+      "Hello, " <> name <> "!"
+    end
+    ```
+
+    To respond:
     <action>
     {"tool": "respond", "parameters": {"message": "The function does X..."}}
     </action>
@@ -143,11 +216,17 @@ defmodule Giulia.Prompt.Builder do
     RULES:
     1. For FUNCTION questions: Use lookup_function (fast, uses index)
     2. For FILE questions: Use read_file
-    3. ONE action per response
-    4. After lookup_function returns code, use "respond" to analyze it
-    5. Do NOT use "think" more than once - go straight to "respond"
+    3. For REPLACING functions: Use patch_function — code in ```elixir block after </action>
+    4. For SMALL TEXT EDITS (imports, config): Use edit_file
+    5. ONE action per response
+    6. After lookup_function returns code, use "respond" to analyze it
 
-    CRITICAL: Stop IMMEDIATELY after </action>.
+    AGENTIC MANDATE:
+    You are the AUTONOMOUS DEVELOPER. If you see a syntax error or build failure:
+    - DO NOT ask the user to fix it
+    - USE patch_function or edit_file to FIX IT YOURSELF
+    - Goal: GREEN BUILD (mix compile success)
+
     Do NOT generate fake tool results.
     After a tool succeeds, use RESPOND to give your answer.
     #{format_constitution_minimal(opts[:constitution])}

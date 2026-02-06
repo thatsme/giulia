@@ -40,11 +40,7 @@ defmodule Giulia.StructuredOutput do
   end
 
   defp strip_markdown_fences(str) do
-    str
-    |> String.replace(~r/```json\s*/i, "")
-    |> String.replace(~r/```\s*$/, "")
-    |> String.replace(~r/^```\s*/, "")
-    |> String.trim()
+    Regex.replace(~r/(^|\n)```[a-z]*\n?(.*?)\n?```(\n|$)/s, str, "\\2")
   end
 
   defp find_json_bounds(str) do

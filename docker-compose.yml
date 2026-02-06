@@ -1,11 +1,11 @@
 # Giulia Docker Compose Configuration
 #
 # Usage:
-#   docker-compose up -d      # Start daemon in background
-#   docker-compose logs -f    # Watch logs
-#   docker-compose down       # Stop daemon
+#   docker compose up -d       # Start daemon in background
+#   docker compose logs -f     # Watch logs
+#   docker compose down        # Stop daemon
 #
-# The thin client connects via HTTP - simple and reliable.
+# No OTP release — runs directly with mix. Simple, debuggable, no boot file drama.
 
 services:
   giulia-daemon:
@@ -18,16 +18,27 @@ services:
 
     restart: unless-stopped
 
+    # Run directly with mix — no release, no RELEASE_* env poison
+    command: /bin/sh -c "cd /app && mix deps.get && mix run --no-halt"
+
     environment:
       - GIULIA_HOME=/data
       - GIULIA_PORT=4000
       - GIULIA_IN_CONTAINER=true
+      # Isolated build paths — never touch the host's Windows _build
+      - MIX_ENV=dev
+      - MIX_BUILD_PATH=/tmp/giulia_build
+      - MIX_DEPS_PATH=/tmp/giulia_deps
       # Path mapping: The Translation Shim
       # GIULIA_HOST_PROJECTS_PATH = Windows path prefix (e.g., C:/Development/GitHub)
       # Maps to /projects inside container
       - GIULIA_HOST_PROJECTS_PATH=${GIULIA_HOST_PROJECTS_PATH:-C:/Development/GitHub}
       - GIULIA_PATH_MAPPING=${GIULIA_PATH_MAPPING:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Groq API Key - for hybrid escalation (Llama 3.3 70B)
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # Gemini API Key - fallback for escalation
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       # LM Studio URL - enable "Serve on Local Network" and use the IP shown
       - LM_STUDIO_URL=${LM_STUDIO_URL:-http://192.168.33.1:1234/v1/chat/completions}
 

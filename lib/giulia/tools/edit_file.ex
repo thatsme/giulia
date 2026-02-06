@@ -15,7 +15,7 @@ defmodule Giulia.Tools.EditFile do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Giulia.Core.PathSandbox
+  alias Giulia.Core.{PathSandbox, ProjectContext}
 
   @behaviour Giulia.Tools.Registry
 
@@ -67,7 +67,16 @@ defmodule Giulia.Tools.EditFile do
 
     case PathSandbox.validate(sandbox, file) do
       {:ok, safe_path} ->
-        do_edit(safe_path, old_text, new_text)
+        result = do_edit(safe_path, old_text, new_text)
+
+        # Mark file as dirty in project context for verification tracking
+        if match?({:ok, _}, result) do
+          if project_pid = Keyword.get(opts, :project_pid) do
+            ProjectContext.mark_dirty(project_pid, safe_path)
+          end
+        end
+
+        result
 
       {:error, :sandbox_violation} ->
         {:error, PathSandbox.violation_message(file, sandbox)}
@@ -115,8 +124,24 @@ defmodule Giulia.Tools.EditFile do
 
       cond do
         count == 0 ->
-          # Not found - try to help
-          suggest_similar(content, old_text)
+          # Not found - try WHITESPACE-INSENSITIVE matching before giving up
+          case find_normalized_match(content, old_text) do
+            {:ok, actual_text} ->
+              # Found a match via normalized whitespace - use the ACTUAL text from file
+              new_content = String.replace(content, actual_text, new_text, global: false)
+
+              case File.write(file_path, new_content) do
+                :ok ->
+                  {:ok, "Successfully edited #{Path.basename(file_path)} (whitespace-normalized match)"}
+
+                {:error, reason} ->
+                  {:error, "Failed to write file: #{inspect(reason)}"}
+              end
+
+            :not_found ->
+              # Truly not found - suggest similar
+              suggest_similar(content, old_text)
+          end
 
         count > 1 ->
           {:error, "Found #{count} occurrences of old_text. Please provide more context to make it unique."}
@@ -141,6 +166,65 @@ defmodule Giulia.Tools.EditFile do
     text
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
+  end
+
+  # Normalize backslashes for comparison (JSON escaping causes \\ vs \ mismatches)
+  defp normalize_backslashes(text) do
+    text
+    |> String.replace("\\\\", "\x00BACKSLASH\x00")  # Protect double backslashes
+    |> String.replace("\\", "")                       # Remove single backslashes
+    |> String.replace("\x00BACKSLASH\x00", "\\")     # Restore as single
+  end
+
+  # Full normalization for matching: whitespace + backslashes
+  defp normalize_for_match(text) do
+    text
+    |> normalize_backslashes()
+    |> normalize_whitespace()
+  end
+
+  # Try to find old_text in content using normalized matching.
+  # Handles whitespace AND backslash differences (JSON escaping issues).
+  # Returns {:ok, actual_text} where actual_text is the REAL text from the file.
+  defp find_normalized_match(content, old_text) do
+    normalized_target = normalize_for_match(old_text)
+    old_text_lines = length(String.split(old_text, "\n"))
+
+    # Sliding window approach: check consecutive line groups
+    content_lines = String.split(content, "\n")
+
+    # Try windows of old_text_lines ± 2 to account for line count differences
+    min_window = max(1, old_text_lines - 2)
+    max_window = old_text_lines + 2
+
+    result = Enum.reduce_while(min_window..max_window, :not_found, fn window_size, acc ->
+      case find_in_window(content_lines, normalized_target, window_size) do
+        {:ok, _} = found -> {:halt, found}
+        :not_found -> {:cont, acc}
+      end
+    end)
+
+    result
+  end
+
+  defp find_in_window(lines, normalized_target, window_size) do
+    max_start = length(lines) - window_size
+
+    if max_start < 0 do
+      :not_found
+    else
+      Enum.reduce_while(0..max_start, :not_found, fn start_idx, _acc ->
+        candidate = lines
+        |> Enum.slice(start_idx, window_size)
+        |> Enum.join("\n")
+
+        if normalize_for_match(candidate) == normalized_target do
+          {:halt, {:ok, candidate}}
+        else
+          {:cont, :not_found}
+        end
+      end)
+    end
   end
 
   defp count_occurrences(content, pattern) do

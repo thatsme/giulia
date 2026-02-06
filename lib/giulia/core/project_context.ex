@@ -32,7 +32,11 @@ defmodule Giulia.Core.ProjectContext do
       files_indexed: 0,
       conversations: 0,
       tool_calls: 0
-    }
+    },
+    # Dirty state tracking for workflow hardening
+    dirty_files: nil,                # MapSet of files modified since last verification
+    verification_status: :clean,     # :clean | :dirty | :failed
+    last_verified_at: nil            # DateTime of last successful compile
   ]
 
   # ============================================================================
@@ -123,6 +127,52 @@ defmodule Giulia.Core.ProjectContext do
   end
 
   # ============================================================================
+  # Dirty State Tracking API
+  # ============================================================================
+
+  @doc """
+  Mark a file as dirty (modified since last verification).
+  """
+  def mark_dirty(pid, file_path) do
+    GenServer.cast(pid, {:mark_dirty, file_path})
+  end
+
+  @doc """
+  Mark the project as clean (after successful verification).
+  """
+  def mark_clean(pid) do
+    GenServer.cast(pid, :mark_clean)
+  end
+
+  @doc """
+  Mark verification as failed.
+  """
+  def mark_verification_failed(pid) do
+    GenServer.cast(pid, :mark_verification_failed)
+  end
+
+  @doc """
+  Check if the project has dirty (unverified) files.
+  """
+  def dirty?(pid) do
+    GenServer.call(pid, :dirty?)
+  end
+
+  @doc """
+  Get the list of dirty files.
+  """
+  def get_dirty_files(pid) do
+    GenServer.call(pid, :get_dirty_files)
+  end
+
+  @doc """
+  Get verification status.
+  """
+  def verification_status(pid) do
+    GenServer.call(pid, :verification_status)
+  end
+
+  # ============================================================================
   # Server Callbacks
   # ============================================================================
 
@@ -149,7 +199,10 @@ defmodule Giulia.Core.ProjectContext do
       sandbox: sandbox,
       history_db: history_db,
       started_at: DateTime.utc_now(),
-      current_provider: determine_provider(constitution)
+      current_provider: determine_provider(constitution),
+      dirty_files: MapSet.new(),
+      verification_status: :clean,
+      last_verified_at: nil
     }
 
     # Start AST indexing in background
@@ -256,12 +309,73 @@ defmodule Giulia.Core.ProjectContext do
     {:reply, history, state}
   end
 
+  # Dirty state tracking handle_call implementations
+  @impl true
+  def handle_call(:dirty?, _from, state) do
+    is_dirty = MapSet.size(state.dirty_files || MapSet.new()) > 0
+    {:reply, is_dirty, state}
+  end
+
+  @impl true
+  def handle_call(:get_dirty_files, _from, state) do
+    files = MapSet.to_list(state.dirty_files || MapSet.new())
+    {:reply, files, state}
+  end
+
+  @impl true
+  def handle_call(:verification_status, _from, state) do
+    status = %{
+      status: state.verification_status,
+      dirty_files: MapSet.to_list(state.dirty_files || MapSet.new()),
+      last_verified_at: state.last_verified_at
+    }
+    {:reply, status, state}
+  end
+
+  # ============================================================================
+  # handle_cast implementations
+  # ============================================================================
+
   @impl true
   def handle_cast({:add_history, role, content}, state) do
     insert_history(state.history_db, role, content)
     new_state = update_stat(state, :conversations)
     {:noreply, new_state}
   end
+
+  # Dirty state tracking handle_cast implementations
+  @impl true
+  def handle_cast({:mark_dirty, file_path}, state) do
+    new_dirty = MapSet.put(state.dirty_files || MapSet.new(), file_path)
+    new_state = %{state |
+      dirty_files: new_dirty,
+      verification_status: :dirty
+    }
+    Logger.debug("Marked dirty: #{file_path} (#{MapSet.size(new_dirty)} dirty files)")
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast(:mark_clean, state) do
+    new_state = %{state |
+      dirty_files: MapSet.new(),
+      verification_status: :clean,
+      last_verified_at: DateTime.utc_now()
+    }
+    Logger.info("Project verified clean at #{new_state.last_verified_at}")
+    {:noreply, new_state}
+  end
+
+  @impl true
+  def handle_cast(:mark_verification_failed, state) do
+    new_state = %{state | verification_status: :failed}
+    Logger.warning("Verification failed - #{MapSet.size(state.dirty_files || MapSet.new())} dirty files")
+    {:noreply, new_state}
+  end
+
+  # ============================================================================
+  # handle_info implementations
+  # ============================================================================
 
   @impl true
   def handle_info(:start_indexing, state) do

@@ -23,7 +23,7 @@ defmodule Giulia.Tools.RunMix do
   @allowed_commands %{
     "test" => ["test"],
     "test_file" => ["test"],  # Will have file appended
-    "compile" => ["compile", "--warnings-as-errors"],
+    "compile" => ["compile"],  # No --warnings-as-errors for self-healing
     "format_check" => ["format", "--check-formatted"],
     "deps" => ["deps.get"],
     "help" => ["help"]
@@ -108,18 +108,17 @@ defmodule Giulia.Tools.RunMix do
   defp run_mix_command(args, project_path) do
     Logger.info("Running: mix #{Enum.join(args, " ")} in #{project_path}")
 
-    # Use System.cmd with timeout and working directory
+    # Pure System.cmd — no release env scrubbing needed.
+    # Giulia runs with `mix run --no-halt`, not as an OTP release.
     try do
       case System.cmd("mix", args,
              cd: project_path,
-             stderr_to_stdout: true,
-             env: [{"MIX_ENV", "test"}]
+             stderr_to_stdout: true
            ) do
         {output, 0} ->
           {:ok, truncate_output(output)}
 
         {output, exit_code} ->
-          # Still return output even on failure - useful for debugging
           {:ok, "Exit code: #{exit_code}\n\n#{truncate_output(output)}"}
       end
     rescue
