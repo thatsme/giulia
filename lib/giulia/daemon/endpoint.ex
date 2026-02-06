@@ -86,6 +86,29 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
+  # Lightweight ping endpoint - checks project status WITHOUT triggering inference
+  # Used by client at startup to check if project needs initialization
+  post "/api/ping" do
+    case conn.body_params do
+      %{"path" => path} ->
+        resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+        case Giulia.Core.ContextManager.get_context(resolved_path) do
+          {:ok, _context_pid} ->
+            send_json(conn, 200, %{status: "ok", path: resolved_path})
+
+          {:needs_init, _} ->
+            send_json(conn, 200, %{status: "needs_init", path: resolved_path})
+
+          {:error, reason} ->
+            send_json(conn, 200, %{status: "error", error: inspect(reason)})
+        end
+
+      _ ->
+        send_json(conn, 400, %{error: "Missing required field: path"})
+    end
+  end
+
   # Status endpoint
   get "/api/status" do
     status = %{
@@ -161,6 +184,38 @@ defmodule Giulia.Daemon.Endpoint do
       trace ->
         send_json(conn, 200, %{trace: trace})
     end
+  end
+
+  # ============================================================================
+  # Approval Endpoints (Interactive Consent Gate)
+  # ============================================================================
+
+  # Respond to an approval request
+  post "/api/approval/:approval_id" do
+    approval_id = conn.path_params["approval_id"]
+    approved = conn.body_params["approved"] == true
+
+    Giulia.Inference.Approval.respond(approval_id, approved)
+    send_json(conn, 200, %{status: "ok", approval_id: approval_id, approved: approved})
+  end
+
+  # Get pending approval request info
+  get "/api/approval/:approval_id" do
+    approval_id = conn.path_params["approval_id"]
+
+    case Giulia.Inference.Approval.get_pending(approval_id) do
+      {:ok, info} ->
+        send_json(conn, 200, info)
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{error: "Approval request not found or already resolved"})
+    end
+  end
+
+  # List all pending approval requests
+  get "/api/approvals" do
+    pending = Giulia.Inference.Approval.list_pending()
+    send_json(conn, 200, %{pending: pending, count: length(pending)})
   end
 
   # Initialize project

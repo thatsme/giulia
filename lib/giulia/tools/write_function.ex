@@ -171,12 +171,55 @@ defmodule Giulia.Tools.WriteFunction do
   end
 
   # Use Elixir's standard parser - produces AST compatible with Macro.to_string
+  # Returns descriptive errors for the model to understand
   defp parse_source(source) do
-    Code.string_to_quoted(source)
+    case Code.string_to_quoted(source) do
+      {:ok, ast} -> {:ok, ast}
+      {:error, {meta, message, token}} ->
+        line = meta[:line] || 1
+        # Extract context around the error
+        lines = String.split(source, "\n")
+        context = extract_error_context_lines(lines, line)
+        {:error, "Syntax error at line #{line}: #{message} #{inspect(token)}\n\nContext:\n#{context}"}
+    end
   end
 
   defp parse_new_function(code) do
-    Code.string_to_quoted(code)
+    case Code.string_to_quoted(code) do
+      {:ok, ast} -> {:ok, ast}
+      {:error, {meta, message, token}} ->
+        line = meta[:line] || 1
+        col = meta[:column] || 1
+        lines = String.split(code, "\n")
+        context = extract_error_context_lines(lines, line)
+        {:error, """
+        SYNTAX ERROR in your proposed code at line #{line}, column #{col}:
+        #{message} #{inspect(token)}
+
+        YOUR CODE (showing error location):
+        #{context}
+
+        FULL CODE YOU SENT:
+        #{code}
+
+        Please fix the syntax error and try again with edit_file.
+        """}
+    end
+  end
+
+  # Show 3 lines before and after the error line
+  defp extract_error_context_lines(lines, error_line) do
+    start_line = max(1, error_line - 3)
+    end_line = min(length(lines), error_line + 3)
+
+    lines
+    |> Enum.with_index(1)
+    |> Enum.filter(fn {_, idx} -> idx >= start_line and idx <= end_line end)
+    |> Enum.map(fn {line, idx} ->
+      marker = if idx == error_line, do: ">>> ", else: "    "
+      "#{marker}#{idx}: #{line}"
+    end)
+    |> Enum.join("\n")
   end
 
   # Simple formatter - just ensure clean output
@@ -186,15 +229,31 @@ defmodule Giulia.Tools.WriteFunction do
   end
 
   defp replace_function_ast(ast, func_name, arity, new_func_ast) do
+    require Logger
+    Logger.debug("replace_function_ast: Looking for #{func_name}/#{arity}")
+
     {new_ast, found} = Macro.prewalk(ast, false, fn
-      # Match function definition
-      {def_type, _meta, [{name, _, args} | _rest]} = node, found
+      # Match function definition WITH guard clause
+      # AST: {:def, meta, [{:when, _, [{name, _, args}, guard]}, body]}
+      {def_type, _meta, [{:when, _, [{name, _, args} | _guard]} | _rest]} = node, found
       when def_type in [:def, :defp] and is_atom(name) ->
+        Logger.debug("Found guarded function: #{name}/#{length(args || [])}")
         if name == func_name and length(args || []) == arity do
-          # Replace this function with the new one
+          Logger.info("MATCH! Replacing #{name}/#{arity}")
           {new_func_ast, true}
         else
-          # Keep the original node unchanged
+          {node, found}
+        end
+
+      # Match function definition WITHOUT guard clause
+      # AST: {:def, meta, [{name, _, args}, body]}
+      {def_type, _meta, [{name, _, args} | _rest]} = node, found
+      when def_type in [:def, :defp] and is_atom(name) ->
+        Logger.debug("Found function: #{name}/#{length(args || [])}")
+        if name == func_name and length(args || []) == arity do
+          Logger.info("MATCH! Replacing #{name}/#{arity}")
+          {new_func_ast, true}
+        else
           {node, found}
         end
 
@@ -202,6 +261,7 @@ defmodule Giulia.Tools.WriteFunction do
         {node, found}
     end)
 
+    Logger.debug("replace_function_ast: found=#{found}")
     {new_ast, found}
   end
 

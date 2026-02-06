@@ -253,8 +253,8 @@ defmodule Giulia.Client do
     print_banner()
     host_path = get_working_directory()
 
-    # Check if project is initialized
-    case post("/api/command", %{message: "ping", path: host_path}) do
+    # Check if project is initialized (lightweight ping - no inference)
+    case post("/api/ping", %{path: host_path}) do
       {:ok, %{"status" => "needs_init"}} ->
         warning("No GIULIA.md found.")
 
@@ -423,6 +423,40 @@ defmodule Giulia.Client do
     IO.puts(" \e[31m✗\e[0m #{short}")
   end
 
+  # Approval gate - simple output
+  defp render_event_line(%{"type" => "tool_requires_approval", "approval_id" => approval_id, "tool" => tool, "preview" => preview}) do
+    IO.puts("\n\e[1;33m│ APPROVAL: #{tool}\e[0m (#{approval_id})")
+    preview_text = preview || "(no preview)"
+    preview_text
+    |> String.split("\n")
+    |> Enum.take(30)
+    |> Enum.each(fn line -> IO.puts("│   #{colorize_diff_line_ansi(line)}") end)
+
+    approved = prompt_approval()
+    send_approval_response(approval_id, approved)
+    if approved, do: IO.puts("\e[32m│ ✓ Approved\e[0m"), else: IO.puts("\e[31m│ ✗ Rejected\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "approval_granted", "tool" => _tool}), do: :ok
+  defp render_event_line(%{"type" => "approval_rejected", "tool" => _tool}), do: :ok
+  defp render_event_line(%{"type" => "approval_timeout", "tool" => tool}) do
+    IO.puts("\e[33m│ Timeout: #{tool}\e[0m")
+  end
+
+  # Verification events
+  defp render_event_line(%{"type" => "verification_started", "tool" => tool}) do
+    IO.puts("\e[36m│ VERIFY: #{tool} (mix compile)\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "verification_passed", "message" => message}) do
+    IO.puts("\e[32m│ ✓ #{message}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "verification_failed", "errors" => errors}) do
+    IO.puts("\e[1;31m│ BUILD BROKEN - model must fix:\e[0m")
+    IO.puts("\e[31m│   #{String.slice(errors || "", 0, 200)}\e[0m")
+  end
+
   defp render_event_line(%{"type" => "complete", "response" => response}) do
     Process.put(:ooda_state, %{response: response})
     IO.puts("\e[32m│ ✓ Complete\e[0m")
@@ -432,7 +466,96 @@ defmodule Giulia.Client do
     IO.puts("\e[90m│ Starting...\e[0m")
   end
 
+  # Baseline warning - project was already broken before we started
+  defp render_event_line(%{"type" => "baseline_warning", "message" => message}) do
+    IO.puts("")
+    IO.puts("\e[1;33m⚠ BASELINE WARNING\e[0m")
+    IO.puts("\e[33m#{message}\e[0m")
+    IO.puts("\e[33mGiulia will not blame herself for pre-existing errors.\e[0m")
+    IO.puts("")
+  end
+
+  # HYBRID ESCALATION Events
+  defp render_event_line(%{"type" => "escalation_triggered", "message" => message}) do
+    IO.puts("\e[1;35m│ ESCALATION: #{message}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "escalation_started", "message" => message}) do
+    IO.puts("\e[35m│ #{message}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "escalation_complete", "message" => _message, "instructions" => instructions} = event) do
+    provider = event["provider"] || "Cloud"
+    IO.puts("\e[1;32m│ SENIOR ARCHITECT (#{provider}):\e[0m")
+    (instructions || "(no instructions)")
+    |> String.split("\n")
+    |> Enum.each(fn line -> IO.puts("\e[37m│   #{line}\e[0m") end)
+    IO.puts("\e[33m│ Feeding to local model...\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "escalation_failed", "message" => message}) do
+    IO.puts("\e[1;31m│ ESCALATION FAILED: #{message}\e[0m")
+  end
+
   defp render_event_line(_), do: :ok
+
+  # ============================================================================
+  # Owl Formatting Helpers
+  # ============================================================================
+
+  # Simple ANSI colorization for diff lines
+  defp colorize_diff_line_ansi(line) do
+    cond do
+      String.starts_with?(line, "@@") ->
+        "\e[36m#{line}\e[0m"
+
+      String.starts_with?(line, "---") or String.starts_with?(line, "+++") ->
+        "\e[1;37m#{line}\e[0m"
+
+      String.starts_with?(line, "-") ->
+        "\e[31m#{line}\e[0m"
+
+      String.starts_with?(line, "+") ->
+        "\e[32m#{line}\e[0m"
+
+      String.starts_with?(line, "===") ->
+        "\e[1;33m#{line}\e[0m"
+
+      String.starts_with?(line, "Module:") or String.starts_with?(line, "Function:") or String.starts_with?(line, "File:") ->
+        "\e[36m#{line}\e[0m"
+
+      true ->
+        line
+    end
+  end
+
+  # ============================================================================
+  # Approval Helpers
+  # ============================================================================
+
+  # Prompt user for approval
+  defp prompt_approval do
+    response = IO.gets("\e[1;33mApprove? [y/N]\e[0m ") |> String.trim() |> String.downcase()
+    response in ["y", "yes"]
+  end
+
+  # Send approval response to daemon
+  defp send_approval_response(approval_id, approved) do
+    # URL-encode the approval_id since it contains special chars (#, <, >, .)
+    encoded_id = URI.encode(approval_id, &URI.char_unreserved?/1)
+    url = @daemon_url <> "/api/approval/#{encoded_id}"
+
+    case Req.post(url, json: %{approved: approved}, decode_body: false, receive_timeout: 5000) do
+      {:ok, %{status: 200}} ->
+        :ok
+
+      {:ok, %{status: status, body: body}} ->
+        IO.puts("\e[31mWarning: Failed to send approval (#{status}): #{body}\e[0m")
+
+      {:error, reason} ->
+        IO.puts("\e[31mWarning: Failed to send approval: #{inspect(reason)}\e[0m")
+    end
+  end
 
   # Synchronous fallback if streaming fails
   defp execute_input_sync(input, host_path) do

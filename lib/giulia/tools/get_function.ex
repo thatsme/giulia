@@ -88,6 +88,18 @@ defmodule Giulia.Tools.GetFunction do
     end
   end
 
+  # Handle when model sends "module" instead of "file" - look up the file from index
+  def execute(%{"module" => module, "function_name" => _func_name} = params, opts) do
+    case Giulia.Context.Store.find_module(module) do
+      {:ok, %{file: file_path}} ->
+        new_params = Map.put(params, "file", file_path) |> Map.delete("module")
+        execute(new_params, opts)
+
+      :not_found ->
+        {:error, "Module '#{module}' not found in project index. Use /scan first or provide 'file' parameter."}
+    end
+  end
+
   def execute(%{file: _, function_name: _} = params, opts) do
     execute(stringify_keys(params), opts)
   end

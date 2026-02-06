@@ -154,7 +154,8 @@ defmodule Giulia.Tools.Registry do
       Giulia.Tools.ReadFile,
       Giulia.Tools.WriteFile,
       Giulia.Tools.EditFile,
-      Giulia.Tools.WriteFunction,   # AST-based function replacement (easier for LLMs)
+      Giulia.Tools.WriteFunction,    # AST-based function replacement (legacy)
+      Giulia.Tools.PatchFunction,    # Sourceror-based patching (preferred for code tools)
       Giulia.Tools.ListFiles,
 
       # Code intelligence (AST-powered)

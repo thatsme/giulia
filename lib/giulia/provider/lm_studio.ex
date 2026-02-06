@@ -38,7 +38,10 @@ defmodule Giulia.Provider.LMStudio do
   @impl true
   def chat(messages, tools, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
-    model = opts[:model] || Application.get_env(:giulia, :lm_studio_model, @default_model)
+    # GIULIA_ prefix for all env vars - see CLAUDE.md
+    model = opts[:model] ||
+            System.get_env("GIULIA_LM_STUDIO_MODEL") ||
+            Application.get_env(:giulia, :lm_studio_model, @default_model)
     # LM Studio doesn't require a real key, but we keep header logic consistent
     api_key = opts[:api_key] || Application.get_env(:giulia, :lm_studio_api_key, "lm-studio")
 
@@ -76,7 +79,9 @@ defmodule Giulia.Provider.LMStudio do
   @impl true
   def stream(messages, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
-    model = opts[:model] || Application.get_env(:giulia, :lm_studio_model, @default_model)
+    model = opts[:model] ||
+            System.get_env("GIULIA_LM_STUDIO_MODEL") ||
+            Application.get_env(:giulia, :lm_studio_model, @default_model)
     api_key = opts[:api_key] || Application.get_env(:giulia, :lm_studio_api_key, "lm-studio")
 
     body =
@@ -105,9 +110,10 @@ defmodule Giulia.Provider.LMStudio do
       "messages" => format_messages(messages),
       "temperature" => opts[:temperature] || 0.1,
       "max_tokens" => opts[:max_tokens] || 1024,
-      # THE MUZZLE: Stop sequences prevent the 3B model from hallucinating tool results
-      # The model MUST stop after </action> - no roleplaying allowed
-      "stop" => ["</action>", "[TOOL_RESULT]", "[END_TOOL_RESULT]", "\n\n[TOOL"]
+      # Stop sequences prevent hallucinated tool results.
+      # NOTE: </action> is NOT a stop sequence — model must continue generating
+      # code after </action> in fenced ```elixir blocks for code tools.
+      "stop" => ["[DONE]", "---END---", "[TOOL_RESULT]", "\n\n[TOOL"]
     }
 
     if tools != [] do

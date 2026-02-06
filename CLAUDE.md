@@ -170,22 +170,25 @@ MIX_ENV=prod mix release giulia_client
 
 ## Building the Docker Daemon
 
+**IMPORTANT**: Use `docker compose` (v2 plugin), NOT `docker-compose` (v1 standalone).
+The v1 binary fails on Windows with "driver not connecting" errors.
+
 ```bash
 # Build Docker image
-docker-compose build
+docker compose build
 # Or: docker build -t giulia/core:latest .
 
 # Start daemon (background)
-docker-compose up -d
+docker compose up -d
 
 # Check logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop daemon
-docker-compose down
+docker compose down
 
 # Full rebuild (no cache)
-docker-compose build --no-cache
+docker compose build --no-cache
 ```
 
 ## Running Without Docker (development)
@@ -233,12 +236,17 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 
 ## Environment Variables
 
-- `ANTHROPIC_API_KEY` - Required for Anthropic provider
-- `GIULIA_LM_STUDIO_URL` - LM Studio endpoint (e.g., `http://192.168.1.52:1234`)
+**All Giulia-specific env vars use the `GIULIA_` prefix for consistency.**
+
+- `ANTHROPIC_API_KEY` - Required for Anthropic provider (standard Anthropic naming)
+- `GIULIA_LM_STUDIO_URL` - LM Studio base URL (e.g., `http://192.168.1.52:1234`)
+- `GIULIA_LM_STUDIO_MODEL` - LM Studio model name (e.g., `qwen/qwen2.5-coder-14b`)
 - `GIULIA_IN_CONTAINER` - Set to "true" when running in Docker (auto-detected via /.dockerenv)
 - `GIULIA_HOST_PROJECTS_PATH` - Host path prefix for path mapping (e.g., `C:/Development/GitHub`)
 - `GIULIA_HOME` - Data directory inside container (default: /data)
 - `GIULIA_PORT` - HTTP API port (default: 4000)
+- `GIULIA_DAEMON_MODE` - Set to "true" to force daemon mode
+- `GIULIA_CLIENT_MODE` - Set to "true" to force client mode
 
 ## Docker Run Command (EXACT)
 

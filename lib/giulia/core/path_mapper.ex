@@ -91,21 +91,35 @@ defmodule Giulia.Core.PathMapper do
 
   @doc """
   Get the LM Studio base URL (without endpoint path).
+
+  Environment variable priority:
+  1. GIULIA_LM_STUDIO_URL (explicit full URL like http://192.168.1.52:1234)
+  2. Auto-detect based on container status
   """
   @spec lm_studio_base_url() :: String.t()
   def lm_studio_base_url do
-    case System.get_env("LM_STUDIO_URL") do
+    # Check the correct env var name (GIULIA_LM_STUDIO_URL per CLAUDE.md)
+    case System.get_env("GIULIA_LM_STUDIO_URL") do
       nil ->
         if in_container?() do
+          # Inside Docker, use host.docker.internal to reach host machine
           "http://host.docker.internal:1234"
         else
+          # Outside Docker, default to localhost
           "http://127.0.0.1:1234"
         end
 
       url ->
-        # Extract base from full URL like "http://192.168.33.1:1234/v1/chat/completions"
-        uri = URI.parse(url)
-        "#{uri.scheme}://#{uri.host}:#{uri.port || 1234}"
+        # User provided URL - extract base (handle both full URL and base URL)
+        url = String.trim_trailing(url, "/")
+        if String.contains?(url, "/v1/") do
+          # Full URL provided like "http://192.168.1.52:1234/v1/chat/completions"
+          uri = URI.parse(url)
+          "#{uri.scheme}://#{uri.host}:#{uri.port || 1234}"
+        else
+          # Base URL provided like "http://192.168.1.52:1234"
+          url
+        end
     end
   end
 
