@@ -176,7 +176,8 @@ defmodule Giulia.Tools.Registry do
 
       # Pseudo-tools for orchestration
       Giulia.Tools.Respond,
-      Giulia.Tools.Think
+      Giulia.Tools.Think,
+      Giulia.Tools.CommitChanges
     ]
 
     Enum.each(known_tools, &do_register/1)

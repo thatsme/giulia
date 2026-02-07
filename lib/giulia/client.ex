@@ -197,6 +197,45 @@ defmodule Giulia.Client do
     end
   end
 
+  defp process_command(["/transaction"]) do
+    host_path = get_working_directory()
+
+    case post("/api/transaction/enable", %{path: host_path}) do
+      {:ok, %{"status" => "enabled", "transaction_mode" => true}} ->
+        success("Transaction mode ENABLED. Writes are now staged.")
+        info("Use /staged to view staged files, commit_changes to flush.")
+
+      {:ok, %{"status" => "disabled", "transaction_mode" => false}} ->
+        info("Transaction mode DISABLED. Writes go directly to disk.")
+
+      {:ok, %{"error" => reason}} ->
+        error("Failed: #{reason}")
+
+      {:error, reason} ->
+        error("Failed to toggle transaction mode: #{inspect(reason)}")
+    end
+  end
+
+  defp process_command(["/staged"]) do
+    host_path = get_working_directory()
+
+    case get("/api/transaction/staged?path=#{URI.encode(host_path)}") do
+      {:ok, %{"transaction_mode" => true, "staged_files" => files, "count" => count}} ->
+        IO.puts("\nTransaction Mode: \e[32mACTIVE\e[0m")
+        IO.puts("Staged Files (#{count}):\n")
+        Enum.each(files, fn %{"path" => path, "size" => size} ->
+          IO.puts("  #{path} (#{size} bytes)")
+        end)
+        IO.puts("\nUse commit_changes in the OODA loop to flush to disk.\n")
+
+      {:ok, %{"transaction_mode" => false}} ->
+        info("Transaction mode is not active. No files staged.")
+
+      {:error, reason} ->
+        error("Failed to get staged files: #{inspect(reason)}")
+    end
+  end
+
   defp process_command(["/trace"]) do
     case get("/api/agent/last_trace") do
       {:ok, %{"trace" => nil}} ->
@@ -497,6 +536,23 @@ defmodule Giulia.Client do
     IO.puts("\e[1;31m│ ESCALATION FAILED: #{message}\e[0m")
   end
 
+  # Transaction lifecycle events
+  defp render_event_line(%{"type" => "transaction_auto_enabled", "module" => module}) do
+    IO.puts("\e[1;33m│ TRANSACTION MODE auto-enabled (hub module: #{module})\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_started", "file_count" => count}) do
+    IO.puts("\e[36m│ COMMIT: Flushing #{count} file(s) to disk...\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_success", "file_count" => count}) do
+    IO.puts("\e[1;32m│ COMMIT SUCCESS: #{count} file(s) verified and written\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_rollback", "message" => message}) do
+    IO.puts("\e[1;31m│ ROLLBACK: #{message}\e[0m")
+  end
+
   defp render_event_line(_), do: :ok
 
   # ============================================================================
@@ -767,6 +823,10 @@ defmodule Giulia.Client do
       /summary        Show project summary (for LLM context)
       /scan           Trigger re-indexing of current directory
       /indexstatus    Show indexer status
+
+    Transaction Commands:
+      /transaction    Toggle transaction mode (stage writes in memory)
+      /staged         Show currently staged files
 
     Debug Commands:
       /trace          Show last inference trace (what the model did)

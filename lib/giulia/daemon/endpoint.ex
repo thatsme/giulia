@@ -187,6 +187,63 @@ defmodule Giulia.Daemon.Endpoint do
   end
 
   # ============================================================================
+  # Transaction Endpoints (Transactional Exoskeleton)
+  # ============================================================================
+
+  # Toggle transaction mode preference for the project
+  post "/api/transaction/enable" do
+    path = conn.body_params["path"]
+    resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+    case Giulia.Core.ContextManager.get_context(resolved_path) do
+      {:ok, context_pid} ->
+        new_mode = Giulia.Core.ProjectContext.toggle_transaction_preference(context_pid)
+        status = if new_mode, do: "enabled", else: "disabled"
+        send_json(conn, 200, %{status: status, transaction_mode: new_mode})
+
+      _ ->
+        send_json(conn, 400, %{error: "No active project context"})
+    end
+  end
+
+  # View transaction preference (staged files are per-inference, ephemeral)
+  get "/api/transaction/staged" do
+    path = conn.query_params["path"]
+    resolved_path = if path, do: Giulia.Core.PathMapper.resolve_path(path), else: nil
+
+    case Giulia.Core.ContextManager.get_context(resolved_path) do
+      {:ok, context_pid} ->
+        pref = Giulia.Core.ProjectContext.transaction_preference(context_pid)
+        send_json(conn, 200, %{
+          transaction_mode: pref,
+          staged_files: [],
+          count: 0,
+          note: "Staged files exist only during active inference sessions"
+        })
+
+      _ ->
+        send_json(conn, 200, %{transaction_mode: false, staged_files: [], count: 0})
+    end
+  end
+
+  # Reset transaction preference
+  post "/api/transaction/rollback" do
+    path = conn.body_params["path"]
+    resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+    case Giulia.Core.ContextManager.get_context(resolved_path) do
+      {:ok, context_pid} ->
+        # If preference is on, toggle it off
+        pref = Giulia.Core.ProjectContext.transaction_preference(context_pid)
+        if pref, do: Giulia.Core.ProjectContext.toggle_transaction_preference(context_pid)
+        send_json(conn, 200, %{status: "reset", transaction_mode: false})
+
+      _ ->
+        send_json(conn, 400, %{error: "No active project context"})
+    end
+  end
+
+  # ============================================================================
   # Approval Endpoints (Interactive Consent Gate)
   # ============================================================================
 

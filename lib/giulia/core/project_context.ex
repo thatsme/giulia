@@ -36,7 +36,9 @@ defmodule Giulia.Core.ProjectContext do
     # Dirty state tracking for workflow hardening
     dirty_files: nil,                # MapSet of files modified since last verification
     verification_status: :clean,     # :clean | :dirty | :failed
-    last_verified_at: nil            # DateTime of last successful compile
+    last_verified_at: nil,           # DateTime of last successful compile
+    # Transaction mode preference (user toggle via /transaction)
+    transaction_preference: false    # When true, orchestrator starts in transaction_mode
   ]
 
   # ============================================================================
@@ -170,6 +172,21 @@ defmodule Giulia.Core.ProjectContext do
   """
   def verification_status(pid) do
     GenServer.call(pid, :verification_status)
+  end
+
+  @doc """
+  Toggle transaction mode preference for this project.
+  Returns the new value.
+  """
+  def toggle_transaction_preference(pid) do
+    GenServer.call(pid, :toggle_transaction_preference)
+  end
+
+  @doc """
+  Get the current transaction mode preference.
+  """
+  def transaction_preference(pid) do
+    GenServer.call(pid, :transaction_preference)
   end
 
   # ============================================================================
@@ -330,6 +347,17 @@ defmodule Giulia.Core.ProjectContext do
       last_verified_at: state.last_verified_at
     }
     {:reply, status, state}
+  end
+
+  @impl true
+  def handle_call(:toggle_transaction_preference, _from, state) do
+    new_pref = not state.transaction_preference
+    {:reply, new_pref, %{state | transaction_preference: new_pref}}
+  end
+
+  @impl true
+  def handle_call(:transaction_preference, _from, state) do
+    {:reply, state.transaction_preference, state}
   end
 
   # ============================================================================
