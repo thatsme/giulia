@@ -154,21 +154,31 @@ defmodule Giulia.Tools.Registry do
       Giulia.Tools.ReadFile,
       Giulia.Tools.WriteFile,
       Giulia.Tools.EditFile,
-      Giulia.Tools.WriteFunction,    # AST-based function replacement (legacy)
-      Giulia.Tools.PatchFunction,    # Sourceror-based patching (preferred for code tools)
+      # AST-based function replacement (legacy)
+      Giulia.Tools.WriteFunction,
+      # Sourceror-based patching (preferred for code tools)
+      Giulia.Tools.PatchFunction,
       Giulia.Tools.ListFiles,
 
       # Code intelligence (AST-powered)
-      Giulia.Tools.LookupFunction,   # Index-based lookup (preferred for known functions)
-      Giulia.Tools.GetFunction,      # The Slicer - requires file path
-      Giulia.Tools.GetModuleInfo,    # From ETS, no file reading
-      Giulia.Tools.GetContext,       # Context around errors
-      Giulia.Tools.SearchCode,       # Grep-like search
+      # Index-based lookup (preferred for known functions)
+      Giulia.Tools.LookupFunction,
+      # The Slicer - requires file path
+      Giulia.Tools.GetFunction,
+      # From ETS, no file reading
+      Giulia.Tools.GetModuleInfo,
+      # Context around errors
+      Giulia.Tools.GetContext,
+      # Grep-like search
+      Giulia.Tools.SearchCode,
 
       # Build/Test
-      Giulia.Tools.RunMix,           # Safe mix commands only
-      Giulia.Tools.RunTests,         # Structured ExUnit test runner
-      Giulia.Tools.CycleCheck,       # Detect compile-time cyclic dependencies
+      # Safe mix commands only
+      Giulia.Tools.RunMix,
+      # Structured ExUnit test runner
+      Giulia.Tools.RunTests,
+      # Detect compile-time cyclic dependencies
+      Giulia.Tools.CycleCheck,
 
       # Knowledge graph
       Giulia.Tools.GetImpactMap,
@@ -177,7 +187,9 @@ defmodule Giulia.Tools.Registry do
       # Pseudo-tools for orchestration
       Giulia.Tools.Respond,
       Giulia.Tools.Think,
-      Giulia.Tools.CommitChanges
+      Giulia.Tools.CommitChanges,
+      Giulia.Tools.GetStagedFiles,
+      Giulia.Tools.BulkReplace
     ]
 
     Enum.each(known_tools, &do_register/1)

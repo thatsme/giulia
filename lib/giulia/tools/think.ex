@@ -32,6 +32,6 @@ defmodule Giulia.Tools.Think do
   end
 
   # This should never be called - Orchestrator handles it
-  def execute(%{"thought" => thought}), do: {:ok, "Thought recorded: #{thought}"}
-  def execute(_), do: {:error, :invalid_parameters}
+  def execute(%{"thought" => thought}, _opts), do: {:ok, "Thought recorded: #{thought}"}
+  def execute(_, _opts), do: {:error, :invalid_parameters}
 end

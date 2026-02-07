@@ -22,12 +22,38 @@ defmodule Giulia.Provider.LMStudio do
   """
   @behaviour Giulia.Provider
 
-  @default_model "qwen2.5-coder-7b-instruct"
+  require Logger
 
   # Get URL via PathMapper (handles env var + Docker detection)
   # NO HARDCODED URLS - see CLAUDE.md
   defp default_url do
     Giulia.Core.PathMapper.lm_studio_url()
+  end
+
+  @doc """
+  Auto-detect the model loaded in LM Studio by querying GET /v1/models.
+  Returns the first model ID, or nil if unreachable.
+  """
+  def detect_model do
+    models_url = Giulia.Core.PathMapper.lm_studio_models_url()
+
+    case Req.get(models_url, connect_options: [timeout: 5_000], receive_timeout: 5_000, retry: false) do
+      {:ok, %{status: 200, body: %{"data" => [first | _]}}} ->
+        first["id"]
+
+      _ ->
+        nil
+    end
+  end
+
+  defp resolve_model(opts) do
+    # 1. Explicit opt passed in code
+    # 2. Env var override (if user set it)
+    # 3. Auto-detect from LM Studio
+    opts[:model] ||
+      System.get_env("GIULIA_LM_STUDIO_MODEL") ||
+      detect_model() ||
+      "auto"
   end
 
   @impl true
@@ -38,18 +64,12 @@ defmodule Giulia.Provider.LMStudio do
   @impl true
   def chat(messages, tools, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
-    # GIULIA_ prefix for all env vars - see CLAUDE.md
-    model = opts[:model] ||
-            System.get_env("GIULIA_LM_STUDIO_MODEL") ||
-            Application.get_env(:giulia, :lm_studio_model, @default_model)
-    # LM Studio doesn't require a real key, but we keep header logic consistent
+    model = resolve_model(opts)
     api_key = opts[:api_key] || Application.get_env(:giulia, :lm_studio_api_key, "lm-studio")
 
     body = build_request_body(messages, tools, model, opts)
 
-    # Debug: log the URL being used
-    require Logger
-    Logger.info("LM Studio request to: #{url}")
+    Logger.info("LM Studio request to: #{url} (model: #{model})")
 
     case Req.post(url,
            json: body,
@@ -79,9 +99,7 @@ defmodule Giulia.Provider.LMStudio do
   @impl true
   def stream(messages, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
-    model = opts[:model] ||
-            System.get_env("GIULIA_LM_STUDIO_MODEL") ||
-            Application.get_env(:giulia, :lm_studio_model, @default_model)
+    model = resolve_model(opts)
     api_key = opts[:api_key] || Application.get_env(:giulia, :lm_studio_api_key, "lm-studio")
 
     body =
