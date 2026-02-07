@@ -53,7 +53,8 @@ defmodule Giulia.Inference.Orchestrator do
     project_path: nil,
     project_pid: nil,
     reply_to: nil,
-    request_id: nil,  # For event broadcasting
+    # For event broadcasting
+    request_id: nil,
 
     # State machine
     # :idle | :starting | :thinking | :waiting_for_approval | :paused
@@ -62,15 +63,18 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Loop tracking
     iteration: 0,
-    max_iterations: 15,
+    max_iterations: 50,
     consecutive_failures: 0,
     max_failures: 3,
 
     # History for context injection and loop detection
     last_action: nil,
-    repeat_count: 0,       # How many times the same action was called consecutively
-    action_history: [],    # Last N actions for context
-    recent_errors: [],     # For intervention messages
+    # How many times the same action was called consecutively
+    repeat_count: 0,
+    # Last N actions for context
+    action_history: [],
+    # For intervention messages
+    recent_errors: [],
 
     # Provider
     provider: nil,
@@ -87,21 +91,42 @@ defmodule Giulia.Inference.Orchestrator do
     test_status: :untested,
 
     # Baseline check - was project broken before we started?
-    baseline_status: :unknown,  # :clean | :dirty | :unknown
+    # :clean | :dirty | :unknown
+    baseline_status: :unknown,
 
     # Approval state - for non-blocking approval flow
-    pending_approval: nil,  # %{approval_id, tool, params, response} when waiting
+    # %{approval_id, tool, params, response} when waiting
+    pending_approval: nil,
 
     # HYBRID ESCALATION - track syntax repair failures
-    syntax_failures: 0,       # Count of failed syntax repair attempts
-    escalated: false,         # Have we already called Sonnet this session?
-    original_provider: nil,   # Remember original provider for switching back
-    last_compile_error: nil,  # Store compile error for escalation context
+    # Count of failed syntax repair attempts
+    syntax_failures: 0,
+    # Have we already called Sonnet this session?
+    escalated: false,
+    # Remember original provider for switching back
+    original_provider: nil,
+    # Store compile error for escalation context
+    last_compile_error: nil,
 
     # Transactional Exoskeleton — staging buffer for multi-file atomic changes
-    transaction_mode: false,      # Whether staging is active
-    staging_buffer: %{},          # %{file_path => new_content}
-    staging_backups: %{}          # %{file_path => original_content | :new_file}
+    # Whether staging is active
+    transaction_mode: false,
+    # %{file_path => new_content}
+    staging_buffer: %{},
+    # %{file_path => original_content | :new_file}
+    staging_backups: %{},
+    # Consecutive staging-lock blocks (cleared on non-respond action)
+    staging_lock_count: 0,
+
+    # Multi-action queue — when model batches multiple tool calls in one response
+    # [{tool_name, params}, ...] queued for sequential execution
+    pending_tool_calls: [],
+
+    # Goal Tracker — captures impact_map results to detect premature completion
+    # %{module: "X", dependents: ["A", "B", ...], count: N} | nil
+    last_impact_map: nil,
+    # Files actually modified during this session (set of paths)
+    modified_files: MapSet.new()
   ]
 
   # ============================================================================
@@ -113,11 +138,11 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   @doc """
-  Execute a task synchronously. Blocks until complete.
+  Execute synchronously. Blocks until the OODA loop completes.
   """
   def execute(orchestrator, prompt, opts \\ []) do
-    timeout = Keyword.get(opts, :timeout, 300_000)
-    GenServer.call(orchestrator, {:execute, prompt, opts}, timeout)
+    # 10-minute timeout — the OODA loop can run many iterations
+    GenServer.call(orchestrator, {:execute, prompt, opts}, 600_000)
   end
 
   @doc """
@@ -157,23 +182,25 @@ defmodule Giulia.Inference.Orchestrator do
     project_pid = Keyword.get(opts, :project_pid)
 
     # Read transaction preference from ProjectContext if available
-    transaction_pref = if project_pid do
-      try do
-        ProjectContext.transaction_preference(project_pid)
-      rescue
-        _ -> false
-      catch
-        _, _ -> false
+    transaction_pref =
+      if project_pid do
+        try do
+          ProjectContext.transaction_preference(project_pid)
+        rescue
+          _ -> false
+        catch
+          _, _ -> false
+        end
+      else
+        false
       end
-    else
-      false
-    end
 
     state = %__MODULE__{
       project_path: Keyword.get(opts, :project_path),
       project_pid: project_pid,
       transaction_mode: transaction_pref
     }
+
     {:ok, state}
   end
 
@@ -183,12 +210,7 @@ defmodule Giulia.Inference.Orchestrator do
     request_id = Keyword.get(opts, :request_id, make_ref() |> inspect())
 
     # Start the loop, reply will be sent via handle_continue
-    state = %{state |
-      task: prompt,
-      reply_to: from,
-      status: :starting,
-      request_id: request_id
-    }
+    state = %{state | task: prompt, reply_to: from, status: :starting, request_id: request_id}
     {:noreply, state, {:continue, {:start, prompt, opts}}}
   end
 
@@ -199,11 +221,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def handle_cast({:execute_async, prompt, opts, reply_pid}, state) do
-    state = %{state |
-      task: prompt,
-      reply_to: {:async, reply_pid},
-      status: :starting
-    }
+    state = %{state | task: prompt, reply_to: {:async, reply_pid}, status: :starting}
     {:noreply, state, {:continue, {:start, prompt, opts}}}
   end
 
@@ -245,6 +263,7 @@ defmodule Giulia.Inference.Orchestrator do
                 tool: tool_name
               })
             end
+
             # Continue with tool execution
             execute_tool_direct(tool_name, params, response, state)
 
@@ -258,6 +277,7 @@ defmodule Giulia.Inference.Orchestrator do
                 tool: tool_name
               })
             end
+
             handle_rejection(tool_name, params, response, state)
 
           {:timeout, reason} ->
@@ -270,6 +290,7 @@ defmodule Giulia.Inference.Orchestrator do
                 tool: tool_name
               })
             end
+
             handle_timeout(tool_name, params, response, state)
         end
 
@@ -287,6 +308,10 @@ defmodule Giulia.Inference.Orchestrator do
   @impl true
   def handle_continue({:start, prompt, _opts}, state) do
     Logger.info("Orchestrator starting: #{String.slice(prompt, 0, 50)}...")
+
+    # Clear model tier cache so we re-detect on each new inference
+    # (user may have loaded a different model in LM Studio)
+    Builder.clear_model_tier_cache()
 
     # BASELINE CHECK: Know the project state before we start
     baseline_status = check_baseline(state)
@@ -319,6 +344,7 @@ defmodule Giulia.Inference.Orchestrator do
           {:ok, classification.provider, provider_module}
         else
           fallback = Router.fallback(classification.provider)
+
           if fallback && Router.provider_available?(fallback) do
             Logger.info("Using fallback provider: #{fallback}")
             {:ok, fallback, Router.get_provider_module(fallback)}
@@ -329,29 +355,48 @@ defmodule Giulia.Inference.Orchestrator do
 
       case provider_result do
         {:ok, final_provider, final_module} ->
+          # Detect model tier for prompt tailoring (queries LM Studio /v1/models)
+          model_tier = Builder.detect_model_tier()
+          detected_name = Application.get_env(:giulia, :detected_model_name, "unknown")
+
+          if state.request_id do
+            Events.broadcast(state.request_id, %{
+              type: :model_detected,
+              model: detected_name,
+              tier: model_tier,
+              message: "Model: #{detected_name} (#{model_tier} tier)"
+            })
+          end
+
           # Build initial messages with distilled context (include baseline warning)
           messages = build_initial_messages(prompt, state, final_module)
 
           # Add baseline warning to messages if dirty
-          messages = if baseline_status == :dirty do
-            baseline_msg = %{role: "system", content: """
-            WARNING: This project has pre-existing compilation errors.
-            These errors existed BEFORE you started working.
-            Focus on the user's request. Don't try to fix unrelated existing errors unless asked.
-            """}
-            [Enum.at(messages, 0), baseline_msg | Enum.drop(messages, 1)]
-          else
-            messages
-          end
+          messages =
+            if baseline_status == :dirty do
+              baseline_msg = %{
+                role: "system",
+                content: """
+                WARNING: This project has pre-existing compilation errors.
+                These errors existed BEFORE you started working.
+                Focus on the user's request. Don't try to fix unrelated existing errors unless asked.
+                """
+              }
 
-          state = %{state |
-            status: :thinking,
-            messages: messages,
-            provider: final_provider,
-            provider_module: final_module,
-            iteration: 0,
-            consecutive_failures: 0,
-            action_history: []
+              [Enum.at(messages, 0), baseline_msg | Enum.drop(messages, 1)]
+            else
+              messages
+            end
+
+          state = %{
+            state
+            | status: :thinking,
+              messages: messages,
+              provider: final_provider,
+              provider_module: final_module,
+              iteration: 0,
+              consecutive_failures: 0,
+              action_history: []
           }
 
           {:noreply, state, {:continue, :step}}
@@ -392,6 +437,21 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   @impl true
+  def handle_continue(:step, %{pending_tool_calls: [next | rest]} = state) do
+    # BATCHED TOOL CALL: Pop the next queued action instead of calling the LLM
+    state = %{state | iteration: state.iteration + 1, pending_tool_calls: rest, status: :thinking}
+    tool_name = next["tool"]
+    params = next["parameters"] || %{}
+    Logger.info("Multi-action queue: executing #{tool_name} (#{length(rest)} remaining)")
+
+    # Build a synthetic response for the tool execution flow
+    synthetic_content = Jason.encode!(%{tool: tool_name, parameters: params})
+    synthetic_response = %{content: synthetic_content, tool_calls: nil}
+
+    execute_tool(tool_name, params, synthetic_response, state)
+  end
+
+  @impl true
   def handle_continue(:step, state) do
     state = %{state | iteration: state.iteration + 1, status: :thinking}
     Logger.debug("OODA Loop iteration #{state.iteration}")
@@ -407,10 +467,13 @@ defmodule Giulia.Inference.Orchestrator do
 
       {:error, reason} ->
         Logger.error("Provider error: #{inspect(reason)}")
-        state = %{state |
-          consecutive_failures: state.consecutive_failures + 1,
-          recent_errors: [reason | Enum.take(state.recent_errors, 4)]
+
+        state = %{
+          state
+          | consecutive_failures: state.consecutive_failures + 1,
+            recent_errors: [reason | Enum.take(state.recent_errors, 4)]
         }
+
         {:noreply, state, {:continue, :step}}
     end
   end
@@ -422,30 +485,58 @@ defmodule Giulia.Inference.Orchestrator do
     Logger.warning("Intervention triggered - CONTEXT PURGE")
 
     # Detect if we're stuck in a test loop — if so, use targeted intervention
-    intervention_msg = case state.last_action do
-      {"run_tests", test_params} ->
-        build_test_failure_intervention(test_params, state)
+    intervention_msg =
+      case state.last_action do
+        {"run_tests", test_params} ->
+          build_test_failure_intervention(test_params, state)
 
-      _ ->
-        target_file = extract_target_file(state)
-        fresh_content = if target_file, do: read_fresh_content(target_file, state), else: nil
-        build_intervention_message(state, target_file, fresh_content)
-    end
+        _ ->
+          target_file = extract_target_file(state)
+          fresh_content = if target_file, do: read_fresh_content(target_file, state), else: nil
+          build_intervention_message(state, target_file, fresh_content)
+      end
+
+    # Use correct tier prompt (not always minimal)
+    model_tier = Builder.detect_model_tier()
+
+    prompt_opts = [
+      transaction_mode: state.transaction_mode,
+      staged_files: Map.keys(state.staging_buffer)
+    ]
+
+    system_prompt = Builder.build_tiered_prompt(model_tier, prompt_opts)
+
+    # If model keeps failing with patch_function, inject a tool-switch directive
+    tool_switch_hint =
+      case state.last_action do
+        {"patch_function", _} ->
+          """
+
+          IMPORTANT: patch_function has failed repeatedly. For RENAMING function calls,
+          use edit_file instead: {"tool": "edit_file", "parameters": {"file": "path", "old_text": "old", "new_text": "new"}}
+          Do NOT use patch_function for renaming. Use edit_file.
+          """
+
+        _ ->
+          ""
+      end
 
     # Reset with fresh context - PURGE the poisoned history
     messages = [
-      %{role: "system", content: Builder.build_minimal_prompt()},
+      %{role: "system", content: system_prompt},
       %{role: "user", content: state.task},
       %{role: "assistant", content: "I need to try a different approach."},
-      %{role: "user", content: intervention_msg}
+      %{role: "user", content: intervention_msg <> tool_switch_hint}
     ]
 
-    state = %{state |
-      messages: messages,
-      consecutive_failures: 0,
-      action_history: [],
-      recent_errors: [],  # PURGE errors too
-      status: :thinking
+    state = %{
+      state
+      | messages: messages,
+        consecutive_failures: 0,
+        action_history: [],
+        # PURGE errors too
+        recent_errors: [],
+        status: :thinking
     }
 
     {:noreply, state, {:continue, :step}}
@@ -484,9 +575,14 @@ defmodule Giulia.Inference.Orchestrator do
           {:ok, %{"tool" => tool_name, "parameters" => params}} ->
             Logger.info("Senior Architect: Executing #{tool_name} directly")
 
-            # DIRECT EXECUTION — bypass local model
+            # DIRECT EXECUTION — bypass local model (wrapped for safety)
             tool_opts = build_tool_opts(state)
-            result = Registry.execute(tool_name, params, tool_opts)
+            result =
+              try do
+                Registry.execute(tool_name, params, tool_opts)
+              rescue
+                e -> {:error, "Tool #{tool_name} crashed: #{Exception.message(e)}"}
+              end
 
             case result do
               {:ok, success_msg} ->
@@ -501,25 +597,38 @@ defmodule Giulia.Inference.Orchestrator do
                 end
 
                 # Feed success back to local model as observation
-                observation = "Observation: Senior Architect fixed the build error using #{tool_name}. Build is now green."
+                observation =
+                  "Observation: Senior Architect fixed the build error using #{tool_name}. Build is now green."
+
                 messages = state.messages ++ [%{role: "user", content: observation}]
-                state = %{state |
-                  messages: messages,
-                  escalated: true,
-                  syntax_failures: 0,
-                  status: :thinking
+
+                state = %{
+                  state
+                  | messages: messages,
+                    escalated: true,
+                    syntax_failures: 0,
+                    status: :thinking
                 }
+
                 {:noreply, state, {:continue, {:verify, tool_name, result}}}
 
               {:error, tool_error} ->
                 Logger.error("Senior Architect tool execution failed: #{inspect(tool_error)}")
-                broadcast_escalation_failed(state, "Tool #{tool_name} failed: #{inspect(tool_error)}")
+
+                broadcast_escalation_failed(
+                  state,
+                  "Tool #{tool_name} failed: #{inspect(tool_error)}"
+                )
+
                 # Fall through to legacy line-fix
                 try_legacy_line_fix(response_text, target_file, provider_name, errors, state)
             end
 
           {:error, parse_reason} ->
-            Logger.info("Hybrid parse failed (#{inspect(parse_reason)}), trying legacy LINE:N/CODE: format")
+            Logger.info(
+              "Hybrid parse failed (#{inspect(parse_reason)}), trying legacy LINE:N/CODE: format"
+            )
+
             try_legacy_line_fix(response_text, target_file, provider_name, errors, state)
         end
 
@@ -546,11 +655,7 @@ defmodule Giulia.Inference.Orchestrator do
         """
 
         messages = state.messages ++ [%{role: "user", content: error_msg}]
-        state = %{state |
-          messages: messages,
-          escalated: true,
-          status: :thinking
-        }
+        state = %{state | messages: messages, escalated: true, status: :thinking}
 
         {:noreply, state, {:continue, :step}}
     end
@@ -635,6 +740,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Add line numbers to file content for easier reference
   defp add_line_numbers(nil), do: "(could not read file)"
+
   defp add_line_numbers(content) do
     content
     |> String.split("\n")
@@ -659,9 +765,10 @@ defmodule Giulia.Inference.Orchestrator do
   # No JSON = no escaping nightmares
   defp parse_line_fix(response) do
     # Clean up response - remove any markdown formatting
-    cleaned = response
-    |> String.replace(~r/```\w*\s*/, "")
-    |> String.trim()
+    cleaned =
+      response
+      |> String.replace(~r/```\w*\s*/, "")
+      |> String.trim()
 
     # Parse LINE:N and CODE:... format
     line_match = Regex.run(~r/LINE:\s*(\d+)/i, cleaned)
@@ -670,7 +777,8 @@ defmodule Giulia.Inference.Orchestrator do
     case {line_match, code_match} do
       {[_, line_str], [_, code]} ->
         line_num = String.to_integer(String.trim(line_str))
-        fixed_code = code  # Keep as-is, including leading whitespace
+        # Keep as-is, including leading whitespace
+        fixed_code = code
         {:ok, line_num, fixed_code}
 
       {nil, _} ->
@@ -689,10 +797,12 @@ defmodule Giulia.Inference.Orchestrator do
     sandbox = Keyword.get(tool_opts, :sandbox)
 
     # Resolve the path
-    safe_path = case PathSandbox.validate(sandbox, file_path) do
-      {:ok, path} -> path
-      {:error, _} -> file_path  # Fallback
-    end
+    safe_path =
+      case PathSandbox.validate(sandbox, file_path) do
+        {:ok, path} -> path
+        # Fallback
+        {:error, _} -> file_path
+      end
 
     case File.read(safe_path) do
       {:ok, content} ->
@@ -706,6 +816,7 @@ defmodule Giulia.Inference.Orchestrator do
           case File.write(safe_path, new_content) do
             :ok ->
               {:ok, "Line #{line_num} fixed in #{Path.basename(safe_path)}"}
+
             {:error, reason} ->
               {:error, "Write failed: #{inspect(reason)}"}
           end
@@ -723,7 +834,11 @@ defmodule Giulia.Inference.Orchestrator do
   # Returns {:ok, provider_name, response} or {:error, reason}
   defp call_senior_architect(prompt) do
     messages = [
-      %{role: "system", content: "You are a Senior Elixir Architect. Be precise and surgical. Output only the fix, no explanations."},
+      %{
+        role: "system",
+        content:
+          "You are a Senior Elixir Architect. Be precise and surgical. Output only the fix, no explanations."
+      },
       %{role: "user", content: prompt}
     ]
 
@@ -731,9 +846,11 @@ defmodule Giulia.Inference.Orchestrator do
     cond do
       Giulia.Provider.Groq.available?() ->
         Logger.info("Calling Groq (Llama 3.3 70B) as Senior Architect...")
+
         case Giulia.Provider.Groq.chat(messages, [], timeout: 60_000) do
           {:ok, response} ->
             {:ok, "Groq Llama 3.3 70B", response.content || "No response content"}
+
           {:error, reason} ->
             Logger.warning("Groq failed: #{inspect(reason)}, trying Gemini fallback...")
             try_gemini_fallback(messages)
@@ -753,6 +870,7 @@ defmodule Giulia.Inference.Orchestrator do
     case Giulia.Provider.Gemini.chat(messages, [], timeout: 60_000) do
       {:ok, response} ->
         {:ok, "Gemini 2.0 Flash", response.content || "No response content"}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -775,16 +893,19 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp build_direct_test_hint(nil, _state), do: ""
+
   defp build_direct_test_hint(target_file, state) do
     test_path = Giulia.Tools.RunTests.suggest_test_file(target_file)
 
-    resolved = if state.project_path do
-      sandbox = PathSandbox.new(state.project_path)
-      case PathSandbox.validate(sandbox, test_path) do
-        {:ok, resolved} -> resolved
-        {:error, _} -> nil
+    resolved =
+      if state.project_path do
+        sandbox = PathSandbox.new(state.project_path)
+
+        case PathSandbox.validate(sandbox, test_path) do
+          {:ok, resolved} -> resolved
+          {:error, _} -> nil
+        end
       end
-    end
 
     if resolved && File.exists?(resolved) do
       "Note: Tests exist at #{test_path}. You may run them with run_tests to verify behavior.\n"
@@ -796,19 +917,26 @@ defmodule Giulia.Inference.Orchestrator do
   # Graph-driven regression hint: if we modified a hub, suggest tests for its top dependents
   defp build_regression_hint(state) do
     case state.last_action do
-      {tool_name, params} when tool_name in ["patch_function", "write_function", "edit_file", "write_file"] ->
+      {tool_name, params}
+      when tool_name in ["patch_function", "write_function", "edit_file", "write_file"] ->
         module_name = resolve_module_from_params(tool_name, params)
+
         if module_name do
           case Giulia.Knowledge.Store.centrality(module_name) do
             {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
               top_3 = Enum.take(dependents, 3)
+
               "HUB IMPACT: #{module_name} has #{in_degree} dependents. Consider running tests for: #{Enum.join(top_3, ", ")}\n"
-            _ -> ""
+
+            _ ->
+              ""
           end
         else
           ""
         end
-      _ -> ""
+
+      _ ->
+        ""
     end
   rescue
     _ -> ""
@@ -822,18 +950,23 @@ defmodule Giulia.Inference.Orchestrator do
     task_file = extract_file_from_text(state.task)
 
     # Or from recent actions
-    action_file = state.action_history
-    |> Enum.find_value(fn
-      {tool, params, _} when tool in ["read_file", "edit_file", "write_file", "write_function", "patch_function"] ->
-        params["file"] || params["path"] || params[:file] || params[:path] ||
-          lookup_module_file(params["module"] || params[:module])
-      {_, _, _} -> nil
-    end)
+    action_file =
+      state.action_history
+      |> Enum.find_value(fn
+        {tool, params, _}
+        when tool in ["read_file", "edit_file", "write_file", "write_function", "patch_function"] ->
+          params["file"] || params["path"] || params[:file] || params[:path] ||
+            lookup_module_file(params["module"] || params[:module])
+
+        {_, _, _} ->
+          nil
+      end)
 
     task_file || action_file
   end
 
   defp lookup_module_file(nil), do: nil
+
   defp lookup_module_file(module_name) do
     case Store.find_module(module_name) do
       {:ok, %{file: file_path}} -> file_path
@@ -850,6 +983,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   defp read_fresh_content(file_path, state) do
     tool_opts = build_tool_opts(state)
+
     case Registry.execute("read_file", %{"path" => file_path}, tool_opts) do
       {:ok, content} ->
         # Truncate for context window
@@ -858,7 +992,9 @@ defmodule Giulia.Inference.Orchestrator do
         else
           content
         end
-      {:error, _} -> nil
+
+      {:error, _} ->
+        nil
     end
   end
 
@@ -878,6 +1014,7 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Run compile to check for errors
     tool_opts = build_tool_opts(state)
+
     case Registry.execute("run_mix", %{"command" => "compile"}, tool_opts) do
       {:ok, output} ->
         case parse_compile_result(output) do
@@ -940,8 +1077,11 @@ defmodule Giulia.Inference.Orchestrator do
             # HYBRID ESCALATION CHECK
             # Escalate when combined failures reach threshold (syntax + consecutive)
             total_failures = new_syntax_failures + state.consecutive_failures
+
             if (new_syntax_failures >= 2 or total_failures >= 2) and not state.escalated do
-              Logger.warning("HYBRID ESCALATION: Local model failed #{new_syntax_failures} times, calling Sonnet")
+              Logger.warning(
+                "HYBRID ESCALATION: Local model failed #{new_syntax_failures} times, calling Sonnet"
+              )
 
               # BROADCAST: Escalation triggered (provider determined at call time)
               if state.request_id do
@@ -952,11 +1092,13 @@ defmodule Giulia.Inference.Orchestrator do
               end
 
               # Store state and trigger escalation
-              state = %{state |
-                syntax_failures: new_syntax_failures,
-                last_compile_error: errors,
-                pending_verification: false
+              state = %{
+                state
+                | syntax_failures: new_syntax_failures,
+                  last_compile_error: errors,
+                  pending_verification: false
               }
+
               {:noreply, state, {:continue, {:escalate, tool_name, errors}}}
             else
               # Normal self-healing path
@@ -980,13 +1122,16 @@ defmodule Giulia.Inference.Orchestrator do
               messages = state.messages ++ [%{role: "user", content: error_msg}]
               # ITERATION BONUS: Grant +5 turns for self-healing
               new_max = state.max_iterations + 5
-              state = %{state |
-                messages: messages,
-                pending_verification: false,
-                max_iterations: new_max,
-                syntax_failures: new_syntax_failures,
-                last_compile_error: errors
+
+              state = %{
+                state
+                | messages: messages,
+                  pending_verification: false,
+                  max_iterations: new_max,
+                  syntax_failures: new_syntax_failures,
+                  last_compile_error: errors
               }
+
               Logger.info("Self-healing activated: max_iterations increased to #{new_max}")
               {:noreply, state, {:continue, :step}}
             end
@@ -1008,32 +1153,40 @@ defmodule Giulia.Inference.Orchestrator do
   @impl true
   def handle_continue({:auto_regress, tool_name, result, warnings}, state) do
     # Resolve which module was modified
-    module_name = case state.last_action do
-      {t, params} when t in ["patch_function", "write_function"] ->
-        params["module"] || params[:module]
-      {t, params} when t in ["edit_file", "write_file"] ->
-        path = params["file"] || params["path"] || params[:file] || params[:path]
-        case Store.find_module_by_file(path || "") do
-          {:ok, %{name: name}} -> name
-          _ -> nil
-        end
-      _ -> nil
-    end
+    module_name =
+      case state.last_action do
+        {t, params} when t in ["patch_function", "write_function"] ->
+          params["module"] || params[:module]
+
+        {t, params} when t in ["edit_file", "write_file"] ->
+          path = params["file"] || params["path"] || params[:file] || params[:path]
+
+          case Store.find_module_by_file(path || "") do
+            {:ok, %{name: name}} -> name
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
 
     project_path = state.project_path || File.cwd!()
 
     # Query the graph for test targets
-    test_targets = if module_name do
-      case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
-        {:ok, %{all_paths: paths}} when paths != [] -> paths
-        _ -> []
+    test_targets =
+      if module_name do
+        case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+          {:ok, %{all_paths: paths}} when paths != [] -> paths
+          _ -> []
+        end
+      else
+        []
       end
-    else
-      []
-    end
 
     if test_targets != [] do
-      Logger.info("AUTO-REGRESSION: Running #{length(test_targets)} targeted test file(s) for #{module_name}")
+      Logger.info(
+        "AUTO-REGRESSION: Running #{length(test_targets)} targeted test file(s) for #{module_name}"
+      )
 
       # BROADCAST: Auto-regression starting
       if state.request_id do
@@ -1046,18 +1199,25 @@ defmodule Giulia.Inference.Orchestrator do
 
       # Run each test file and collect results
       tool_opts = build_tool_opts(state)
-      test_results = Enum.map(test_targets, fn test_path ->
-        case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
-          {:ok, output} -> {test_path, :ok, output}
-          {:error, reason} -> {test_path, :error, inspect(reason)}
-        end
-      end)
+
+      test_results =
+        Enum.map(test_targets, fn test_path ->
+          case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
+            {:ok, output} -> {test_path, :ok, output}
+            {:error, reason} -> {test_path, :error, inspect(reason)}
+          end
+        end)
 
       # Check if any tests failed
-      failures = Enum.filter(test_results, fn
-        {_path, :ok, output} -> not (String.contains?(output, "0 failures") or String.starts_with?(output, "ALL TESTS PASSED"))
-        {_path, :error, _} -> true
-      end)
+      failures =
+        Enum.filter(test_results, fn
+          {_path, :ok, output} ->
+            not (String.contains?(output, "0 failures") or
+                   String.starts_with?(output, "ALL TESTS PASSED"))
+
+          {_path, :error, _} ->
+            true
+        end)
 
       if failures == [] do
         # All targeted tests passed — full green
@@ -1071,9 +1231,10 @@ defmodule Giulia.Inference.Orchestrator do
           })
         end
 
-        test_summary = Enum.map_join(test_results, "\n", fn {path, _, output} ->
-          "  ✅ #{path}: #{String.slice(output, 0, 80)}"
-        end)
+        test_summary =
+          Enum.map_join(test_results, "\n", fn {path, _, output} ->
+            "  ✅ #{path}: #{String.slice(output, 0, 80)}"
+          end)
 
         build_green_observation(tool_name, result, warnings, state, test_summary)
       else
@@ -1089,9 +1250,10 @@ defmodule Giulia.Inference.Orchestrator do
           })
         end
 
-        failure_details = Enum.map_join(failures, "\n\n", fn {path, _, output} ->
-          "❌ #{path}:\n#{String.slice(output, 0, 800)}"
-        end)
+        failure_details =
+          Enum.map_join(failures, "\n\n", fn {path, _, output} ->
+            "❌ #{path}:\n#{String.slice(output, 0, 800)}"
+          end)
 
         regression_msg = """
         #{Builder.format_observation(tool_name, result)}
@@ -1125,17 +1287,19 @@ defmodule Giulia.Inference.Orchestrator do
   defp build_green_observation(tool_name, result, warnings, state, test_summary) do
     test_hint = build_test_hint(state)
 
-    warnings_section = if warnings do
-      "\nCompiler warnings (pre-existing, not caused by your change):\n#{String.slice(warnings, 0, 500)}"
-    else
-      ""
-    end
+    warnings_section =
+      if warnings do
+        "\nCompiler warnings (pre-existing, not caused by your change):\n#{String.slice(warnings, 0, 500)}"
+      else
+        ""
+      end
 
-    auto_regress_section = if test_summary do
-      "\n🎯 AUTO-REGRESSION: All targeted tests passed:\n#{test_summary}\n"
-    else
-      ""
-    end
+    auto_regress_section =
+      if test_summary do
+        "\n🎯 AUTO-REGRESSION: All targeted tests passed:\n#{test_summary}\n"
+      else
+        ""
+      end
 
     observation = """
     #{Builder.format_observation(tool_name, result)}
@@ -1178,25 +1342,28 @@ defmodule Giulia.Inference.Orchestrator do
 
   defp extract_compile_errors(output) do
     # Extract specific error lines for cleaner feedback
-    specific_errors = output
-    |> String.split("\n")
-    |> Enum.filter(fn line ->
-      String.contains?(line, "error") or
-      String.contains?(line, "Error") or
-      String.contains?(line, "** (") or
-      String.contains?(line, "undefined") or
-      String.match?(line, ~r/^\s+\|/)  # caret lines
-    end)
-    |> Enum.take(30)
-    |> Enum.join("\n")
+    specific_errors =
+      output
+      |> String.split("\n")
+      |> Enum.filter(fn line ->
+        # caret lines
+        String.contains?(line, "error") or
+          String.contains?(line, "Error") or
+          String.contains?(line, "** (") or
+          String.contains?(line, "undefined") or
+          String.match?(line, ~r/^\s+\|/)
+      end)
+      |> Enum.take(30)
+      |> Enum.join("\n")
 
     # FALLBACK: If the surgical parser found nothing, send last 20 lines of raw output.
     # The model needs SOMETHING to work with for self-healing.
     if String.trim(specific_errors) == "" do
-      raw_tail = output
-      |> String.split("\n")
-      |> Enum.take(-20)
-      |> Enum.join("\n")
+      raw_tail =
+        output
+        |> String.split("\n")
+        |> Enum.take(-20)
+        |> Enum.join("\n")
 
       "The compiler failed but I couldn't parse a specific error. Raw output (last 20 lines):\n#{raw_tail}"
     else
@@ -1255,27 +1422,101 @@ defmodule Giulia.Inference.Orchestrator do
         cond do
           # STAGING-LOCK GATE: Block respond if there are uncommitted staged changes
           state.transaction_mode and map_size(state.staging_buffer) > 0 ->
-            Logger.warning("STAGING-LOCK: Model tried to respond with #{map_size(state.staging_buffer)} uncommitted staged file(s)")
-            staged_list = state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
-            lock_msg = """
-            BLOCKED: You have uncommitted staged changes in #{map_size(state.staging_buffer)} file(s):
-            #{staged_list}
+            lock_count = state.staging_lock_count + 1
 
-            You MUST call commit_changes before respond. This ensures all changes are verified atomically.
-            """
-            messages = state.messages ++ [%{role: "user", content: lock_msg}]
-            state = %{state | messages: messages}
-            {:noreply, state, {:continue, :step}}
+            Logger.warning(
+              "STAGING-LOCK: Model tried to respond with #{map_size(state.staging_buffer)} uncommitted staged file(s) (attempt #{lock_count})"
+            )
+
+            if lock_count >= 3 do
+              # Model is stuck — clear staging buffer and let it respond
+              Logger.warning(
+                "STAGING-LOCK: #{lock_count} consecutive blocks — clearing staging buffer to break deadlock"
+              )
+
+              Logger.info("=== TASK COMPLETE (staging-lock release) ===")
+              send_reply(state, {:ok, message})
+
+              state = %{
+                state
+                | staging_buffer: %{},
+                  staging_backups: %{},
+                  transaction_mode: false,
+                  staging_lock_count: 0
+              }
+
+              {:noreply, reset_state(state)}
+            else
+              staged_list =
+                state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
+
+              lock_msg = """
+              BLOCKED: You have uncommitted staged changes in #{map_size(state.staging_buffer)} file(s):
+              #{staged_list}
+
+              You MUST call commit_changes before respond. Or fix your changes and try again.
+              """
+
+              messages = state.messages ++ [%{role: "user", content: lock_msg}]
+              state = %{state | messages: messages, staging_lock_count: lock_count}
+              {:noreply, state, {:continue, :step}}
+            end
 
           # TEST-LOCK GATE: If tests were run and are still red, block respond
           state.test_status == :red ->
             Logger.warning("TEST-LOCK: Model tried to respond but tests are still RED")
+
             lock_msg = """
             BLOCKED: You cannot close this task. Tests are still FAILING.
             You MUST call run_tests and get 0 failures before you can respond.
             Do NOT claim success based on a green build alone.
             DEFINITION OF DONE: build green AND tests green AND verified.
             """
+
+            messages = state.messages ++ [%{role: "user", content: lock_msg}]
+            state = %{state | messages: messages}
+            {:noreply, state, {:continue, :step}}
+
+          # GOAL TRACKER GATE: Block respond if impact_map showed dependents but most were untouched
+          not is_nil(state.last_impact_map) and goal_tracker_blocks?(state) ->
+            im = state.last_impact_map
+            touched = MapSet.size(state.modified_files)
+
+            Logger.warning(
+              "GOAL TRACKER: Model tried to respond after touching #{touched}/#{im.count} dependents of #{im.module}"
+            )
+
+            # Broadcast for client visibility
+            if state.request_id do
+              Events.broadcast(state.request_id, %{
+                type: :goal_tracker_block,
+                module: im.module,
+                dependents: im.count,
+                modified: touched
+              })
+            end
+
+            untouched =
+              im.dependents
+              |> Enum.reject(fn dep ->
+                Enum.any?(MapSet.to_list(state.modified_files), &String.contains?(&1, module_to_path(dep)))
+              end)
+              |> Enum.take(10)
+
+            lock_msg = """
+            BLOCKED: You identified #{im.count} dependents of #{im.module} via get_impact_map, but you only modified #{touched} file(s).
+
+            Untouched dependents (showing up to 10):
+            #{Enum.map_join(untouched, "\n", &"  - #{&1}")}
+
+            You MUST either:
+            1. Use bulk_replace to batch-rename across all dependents
+            2. Manually edit each remaining file
+            3. Explain why these files don't need changes (call think first)
+
+            Do NOT claim the task is complete when #{im.count - touched} dependents are still unchanged.
+            """
+
             messages = state.messages ++ [%{role: "user", content: lock_msg}]
             state = %{state | messages: messages}
             {:noreply, state, {:continue, :step}}
@@ -1300,21 +1541,34 @@ defmodule Giulia.Inference.Orchestrator do
         if think_count >= 2 do
           # Force the model to respond after 2 thinks
           Logger.warning("Too many consecutive thinks (#{think_count}), forcing respond")
-          nudge_msg = "You have been thinking too long. Use respond NOW to answer the user's question based on what you know."
+
+          nudge_msg =
+            "You have been thinking too long. Use respond NOW to answer the user's question based on what you know."
+
           messages = state.messages ++ [%{role: "user", content: nudge_msg}]
           state = %{state | messages: messages, consecutive_failures: 0}
           {:noreply, state, {:continue, :step}}
         else
-          assistant_msg = response.content || Jason.encode!(%{tool: "think", parameters: %{thought: thought}})
+          assistant_msg =
+            response.content || Jason.encode!(%{tool: "think", parameters: %{thought: thought}})
+
           messages = state.messages ++ [%{role: "assistant", content: assistant_msg}]
           # Track think in action_history
-          state = %{state |
-            messages: messages,
-            consecutive_failures: 0,
-            action_history: [{"think", %{}, :ok} | Enum.take(state.action_history, 4)]
+          state = %{
+            state
+            | messages: messages,
+              consecutive_failures: 0,
+              action_history: [{"think", %{}, :ok} | Enum.take(state.action_history, 4)]
           }
+
           {:noreply, state, {:continue, :step}}
         end
+
+      {:multi_tool_call, tool_name, params, remaining} ->
+        # BATCHED: Execute first tool, queue the rest
+        Logger.info("Multi-action: executing #{tool_name}, queuing #{length(remaining)} more")
+        state = %{state | pending_tool_calls: remaining}
+        execute_tool(tool_name, params, response, state)
 
       {:tool_call, tool_name, params} ->
         # ACT: Execute the tool
@@ -1347,9 +1601,11 @@ defmodule Giulia.Inference.Orchestrator do
         """
 
         messages = state.messages ++ [%{role: "user", content: fix_message}]
-        state = %{state |
-          messages: messages,
-          consecutive_failures: state.consecutive_failures + 1
+
+        state = %{
+          state
+          | messages: messages,
+            consecutive_failures: state.consecutive_failures + 1
         }
 
         if state.consecutive_failures >= state.max_failures do
@@ -1379,12 +1635,13 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Loop detection — allow one repeat (e.g. run_tests → fix → run_tests again),
     # but intervene on the 3rd consecutive identical action
-    {state, looping?} = if current_action == state.last_action do
-      new_count = state.repeat_count + 1
-      {%{state | repeat_count: new_count}, new_count >= 2}
-    else
-      {%{state | repeat_count: 0}, false}
-    end
+    {state, looping?} =
+      if current_action == state.last_action do
+        new_count = state.repeat_count + 1
+        {%{state | repeat_count: new_count}, new_count >= 2}
+      else
+        {%{state | repeat_count: 0}, false}
+      end
 
     if looping? do
       Logger.warning("Same action repeated #{state.repeat_count}x")
@@ -1396,7 +1653,10 @@ defmodule Giulia.Inference.Orchestrator do
       # Supervisor — when the Probabilistic Component (LLM) fails its social step,
       # we close the loop ourselves.
       if tool_name in @read_only_tools do
-        Logger.warning("HEURISTIC COMPLETION: Read-only tool loop on #{tool_name}, delivering result directly")
+        Logger.warning(
+          "HEURISTIC COMPLETION: Read-only tool loop on #{tool_name}, delivering result directly"
+        )
+
         last_observation = find_last_successful_observation(state)
 
         if last_observation do
@@ -1407,6 +1667,7 @@ defmodule Giulia.Inference.Orchestrator do
           _Task completed via Heuristic Completion. The model retrieved this data but entered a response loop. \
           The Orchestrator is delivering the result directly._
           """
+
           send_reply(state, {:ok, heuristic_response})
           {:noreply, reset_state(state)}
         else
@@ -1452,10 +1713,13 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   # Check if model is trying edit_file right after a failed patch_function
-  defp edit_file_after_patch_failure?("edit_file", %{action_history: [{last_tool, _, {:error, _}} | _]})
+  defp edit_file_after_patch_failure?("edit_file", %{
+         action_history: [{last_tool, _, {:error, _}} | _]
+       })
        when last_tool in ["patch_function", "write_function"] do
     true
   end
+
   defp edit_file_after_patch_failure?(_, _), do: false
 
   # Block edit_file and force a read_file reset instead
@@ -1476,28 +1740,38 @@ defmodule Giulia.Inference.Orchestrator do
     """
 
     assistant_msg = response.content || ""
-    messages = state.messages ++ [
-      %{role: "assistant", content: assistant_msg},
-      %{role: "user", content: error_msg}
-    ]
 
-    state = %{state |
-      messages: messages,
-      action_history: [{"edit_file", params, {:error, :blocked_after_patch}} | Enum.take(state.action_history, 4)]
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: error_msg}
+        ]
+
+    state = %{
+      state
+      | messages: messages,
+        action_history: [
+          {"edit_file", params, {:error, :blocked_after_patch}}
+          | Enum.take(state.action_history, 4)
+        ]
     }
 
     {:noreply, state, {:continue, :step}}
   end
 
   # Pre-flight validation: catch obviously broken tool calls before approval
-  defp preflight_check(tool_name, params) when tool_name in ["patch_function", "write_function"] do
+  defp preflight_check(tool_name, params)
+       when tool_name in ["patch_function", "write_function"] do
     code = params["code"] || params[:code]
+
     if code && String.trim(code) != "" do
       :ok
     else
       {:error, :missing_code}
     end
   end
+
   defp preflight_check(_tool_name, _params), do: :ok
 
   # Handle preflight failure: tell model what went wrong without bothering user
@@ -1528,15 +1802,21 @@ defmodule Giulia.Inference.Orchestrator do
     """
 
     assistant_msg = response.content || ""
-    messages = state.messages ++ [
-      %{role: "assistant", content: assistant_msg},
-      %{role: "user", content: error_msg}
-    ]
 
-    state = %{state |
-      messages: messages,
-      action_history: [{tool_name, params, {:error, :missing_code}} | Enum.take(state.action_history, 4)],
-      consecutive_failures: state.consecutive_failures + 1
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: error_msg}
+        ]
+
+    state = %{
+      state
+      | messages: messages,
+        action_history: [
+          {tool_name, params, {:error, :missing_code}} | Enum.take(state.action_history, 4)
+        ],
+        consecutive_failures: state.consecutive_failures + 1
     }
 
     {:noreply, state, {:continue, :step}}
@@ -1557,11 +1837,12 @@ defmodule Giulia.Inference.Orchestrator do
     hub_warning = assess_hub_risk(tool_name, params)
 
     # Enrich preview with hub warning if applicable
-    preview = if hub_warning do
-      "#{hub_warning}\n\n#{preview}"
-    else
-      preview
-    end
+    preview =
+      if hub_warning do
+        "#{hub_warning}\n\n#{preview}"
+      else
+        preview
+      end
 
     # BROADCAST: Tool requires approval (with hub risk if applicable)
     broadcast_payload = %{
@@ -1574,11 +1855,12 @@ defmodule Giulia.Inference.Orchestrator do
     }
 
     # Add hub_risk field to broadcast if this is a critical hub
-    broadcast_payload = if hub_warning do
-      Map.put(broadcast_payload, :hub_risk, :high)
-    else
-      broadcast_payload
-    end
+    broadcast_payload =
+      if hub_warning do
+        Map.put(broadcast_payload, :hub_risk, :high)
+      else
+        broadcast_payload
+      end
 
     if state.request_id do
       Events.broadcast(state.request_id, broadcast_payload)
@@ -1591,7 +1873,8 @@ defmodule Giulia.Inference.Orchestrator do
       tool_name,
       params,
       preview,
-      self(),  # callback to this process
+      # callback to this process
+      self(),
       timeout: 300_000
     )
 
@@ -1603,10 +1886,7 @@ defmodule Giulia.Inference.Orchestrator do
       response: response
     }
 
-    state = %{state |
-      status: :waiting_for_approval,
-      pending_approval: pending
-    }
+    state = %{state | status: :waiting_for_approval, pending_approval: pending}
 
     # Return without continuing - we'll resume in handle_info
     {:noreply, state}
@@ -1628,6 +1908,14 @@ defmodule Giulia.Inference.Orchestrator do
       state.transaction_mode and tool_name == "read_file" ->
         execute_read_with_overlay(params, response, state)
 
+      # Intercept get_staged_files — return staging buffer info
+      tool_name == "get_staged_files" ->
+        execute_get_staged_files(response, state)
+
+      # Intercept bulk_replace — batch find-and-replace across multiple files
+      tool_name == "bulk_replace" ->
+        execute_bulk_replace(params, response, state)
+
       # Normal execution path
       true ->
         execute_tool_normal(tool_name, params, response, state)
@@ -1641,6 +1929,7 @@ defmodule Giulia.Inference.Orchestrator do
     # BROADCAST: Tool call starting (only if we have a request_id)
     if state.request_id do
       Logger.info("OODA BROADCAST: tool_call #{tool_name} to #{state.request_id}")
+
       Events.broadcast(state.request_id, %{
         type: :tool_call,
         iteration: state.iteration,
@@ -1653,17 +1942,27 @@ defmodule Giulia.Inference.Orchestrator do
     Logger.info("Tool: #{tool_name}")
     Logger.info("Params: #{inspect(params, pretty: true, limit: 500)}")
 
-    # EXECUTE - pass project context to tools
+    # EXECUTE - pass project context to tools (wrapped in try/rescue to prevent crashes)
     tool_opts = build_tool_opts(state)
-    result = Registry.execute(tool_name, params, tool_opts)
+    result =
+      try do
+        Registry.execute(tool_name, params, tool_opts)
+      rescue
+        e in FunctionClauseError ->
+          {:error, "Invalid parameters for #{tool_name}. Check required fields. Details: #{Exception.message(e)}"}
+        e ->
+          {:error, "Tool #{tool_name} crashed: #{Exception.message(e)}"}
+      end
 
-    # Log and broadcast the result
-    result_preview = case result do
-      {:ok, data} when is_binary(data) -> String.slice(data, 0, 200)
-      {:ok, data} -> inspect(data, pretty: true, limit: 200)
-      {:error, reason} -> "ERROR: #{inspect(reason)}"
-      other -> inspect(other, limit: 200)
-    end
+    # Log and broadcast the result (full content, no truncation)
+    result_preview =
+      case result do
+        {:ok, data} when is_binary(data) -> data
+        {:ok, data} -> inspect(data, pretty: true, limit: :infinity)
+        {:error, reason} -> "ERROR: #{inspect(reason)}"
+        other -> inspect(other, limit: :infinity)
+      end
+
     Logger.info("Result: #{result_preview}")
     Logger.info("=== END TOOL CALL ===")
 
@@ -1674,6 +1973,7 @@ defmodule Giulia.Inference.Orchestrator do
     # BROADCAST: Tool result (only if we have a request_id)
     if state.request_id do
       Logger.info("OODA BROADCAST: tool_result #{tool_name} to #{state.request_id}")
+
       Events.broadcast(state.request_id, %{
         type: :tool_result,
         tool: tool_name,
@@ -1686,31 +1986,73 @@ defmodule Giulia.Inference.Orchestrator do
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
     messages = state.messages ++ [%{role: "assistant", content: assistant_msg}]
 
-    state = %{state |
-      messages: messages,
-      last_action: current_action,
-      action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
-      consecutive_failures: 0
+    state = %{
+      state
+      | messages: messages,
+        last_action: current_action,
+        action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
+        consecutive_failures: 0
     }
 
     # TEST-LOCK: Track test results for respond gate
-    state = if tool_name == "run_tests" do
-      case result do
-        {:ok, result_str} when is_binary(result_str) ->
-          if String.contains?(result_str, "0 failures") or String.starts_with?(result_str, "ALL TESTS PASSED") do
-            Logger.info("TEST-LOCK: Tests are GREEN")
-            %{state | test_status: :green}
-          else
-            Logger.info("TEST-LOCK: Tests are RED")
+    state =
+      if tool_name == "run_tests" do
+        case result do
+          {:ok, result_str} when is_binary(result_str) ->
+            if String.contains?(result_str, "0 failures") or
+                 String.starts_with?(result_str, "ALL TESTS PASSED") do
+              Logger.info("TEST-LOCK: Tests are GREEN")
+              %{state | test_status: :green}
+            else
+              Logger.info("TEST-LOCK: Tests are RED")
+              %{state | test_status: :red}
+            end
+
+          _ ->
+            Logger.info("TEST-LOCK: Tests are RED (error)")
             %{state | test_status: :red}
-          end
-        _ ->
-          Logger.info("TEST-LOCK: Tests are RED (error)")
-          %{state | test_status: :red}
+        end
+      else
+        state
       end
-    else
-      state
-    end
+
+    # GOAL TRACKER: Capture impact_map results for premature completion detection
+    state =
+      if tool_name == "get_impact_map" do
+        case result do
+          {:ok, result_str} when is_binary(result_str) ->
+            # Parse the downstream dependents from the impact map output
+            dependents = extract_downstream_dependents(result_str)
+            module = params["module"] || params[:module] || "unknown"
+
+            if dependents != [] do
+              Logger.info("GOAL TRACKER: Captured #{length(dependents)} dependents for #{module}")
+              %{state | last_impact_map: %{module: module, dependents: dependents, count: length(dependents)}}
+            else
+              state
+            end
+
+          _ ->
+            state
+        end
+      else
+        state
+      end
+
+    # GOAL TRACKER: Track modified files for write operations
+    state =
+      if tool_name in @write_tools do
+        path = params["path"] || params[:path] || params["file"] || params[:file]
+
+        if path do
+          resolved = resolve_tool_path(path, state)
+          %{state | modified_files: MapSet.put(state.modified_files, resolved)}
+        else
+          state
+        end
+      else
+        state
+      end
 
     # VERIFY: Auto-compile after write operations
     if tool_name in @write_tools do
@@ -1745,31 +2087,36 @@ defmodule Giulia.Inference.Orchestrator do
     Logger.info("=== STAGED TOOL CALL [#{state.iteration}] ===")
     Logger.info("Tool: #{tool_name} (transaction mode)")
 
-    {result, state} = case tool_name do
-      "write_file" ->
-        stage_write_file(params, state)
+    {result, state} =
+      case tool_name do
+        "write_file" ->
+          stage_write_file(params, state)
 
-      "edit_file" ->
-        stage_edit_file(params, state)
+        "edit_file" ->
+          stage_edit_file(params, state)
 
-      tool when tool in ["patch_function", "write_function"] ->
-        stage_ast_tool(tool, params, state)
+        tool when tool in ["patch_function", "write_function"] ->
+          stage_ast_tool(tool, params, state)
 
-      _ ->
-        {{:error, "Unknown stageable tool: #{tool_name}"}, state}
-    end
+        _ ->
+          {{:error, "Unknown stageable tool: #{tool_name}"}, state}
+      end
 
     # Build observation with [STAGED] prefix
-    {result_preview, observation} = case result do
-      {:ok, msg} ->
-        staged_count = map_size(state.staging_buffer)
-        obs = "[STAGED] #{tool_name}: #{msg}\nCurrently staging #{staged_count} file(s). Use commit_changes to flush to disk."
-        {String.slice(msg, 0, 200), obs}
+    {result_preview, observation} =
+      case result do
+        {:ok, msg} ->
+          staged_count = map_size(state.staging_buffer)
 
-      {:error, reason} ->
-        error_str = if is_binary(reason), do: reason, else: inspect(reason)
-        {"ERROR: #{error_str}", "ERROR: #{tool_name} staging failed: #{error_str}"}
-    end
+          obs =
+            "[STAGED] #{tool_name}: #{msg}\nCurrently staging #{staged_count} file(s). Use commit_changes to flush to disk."
+
+          {String.slice(msg, 0, 200), obs}
+
+        {:error, reason} ->
+          error_str = if is_binary(reason), do: reason, else: inspect(reason)
+          {"ERROR: #{error_str}", "ERROR: #{tool_name} staging failed: #{error_str}"}
+      end
 
     Logger.info("Staged result: #{result_preview}")
     Logger.info("=== END STAGED TOOL CALL ===")
@@ -1787,16 +2134,20 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Record in history
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
-    messages = state.messages ++ [
-      %{role: "assistant", content: assistant_msg},
-      %{role: "user", content: observation}
-    ]
 
-    state = %{state |
-      messages: messages,
-      last_action: current_action,
-      action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
-      consecutive_failures: 0
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: observation}
+        ]
+
+    state = %{
+      state
+      | messages: messages,
+        last_action: current_action,
+        action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
+        consecutive_failures: 0
     }
 
     # No verification during staging — that happens at commit time
@@ -1826,14 +2177,17 @@ defmodule Giulia.Inference.Orchestrator do
     resolved_path = resolve_tool_path(file, state)
 
     # Read from staging buffer first, fall back to disk
-    current_content = case Map.get(state.staging_buffer, resolved_path) do
-      nil ->
-        case File.read(resolved_path) do
-          {:ok, content} -> content
-          {:error, _} -> nil
-        end
-      staged -> staged
-    end
+    current_content =
+      case Map.get(state.staging_buffer, resolved_path) do
+        nil ->
+          case File.read(resolved_path) do
+            {:ok, content} -> content
+            {:error, _} -> nil
+          end
+
+        staged ->
+          staged
+      end
 
     case current_content do
       nil ->
@@ -1878,9 +2232,14 @@ defmodule Giulia.Inference.Orchestrator do
           File.write(resolved_path, staged_content)
         end
 
-        # Let the AST tool operate on the (possibly temp) file
+        # Let the AST tool operate on the (possibly temp) file (wrapped for safety)
         tool_opts = build_tool_opts(state)
-        result = Registry.execute(tool_name, params, tool_opts)
+        result =
+          try do
+            Registry.execute(tool_name, params, tool_opts)
+          rescue
+            e -> {:error, "Tool #{tool_name} crashed: #{Exception.message(e)}"}
+          end
 
         # Read the result back into staging regardless of success/failure
         case result do
@@ -1894,7 +2253,9 @@ defmodule Giulia.Inference.Orchestrator do
                 # Restore original disk content
                 restore_disk_content(resolved_path, original_disk, state)
 
-                {{:ok, "#{module}.#{params["function_name"]}/#{params["arity"]} (AST patched in staging)"}, state}
+                {{:ok,
+                  "#{module}.#{params["function_name"]}/#{params["arity"]} (AST patched in staging)"},
+                 state}
 
               {:error, read_err} ->
                 restore_disk_content(resolved_path, original_disk, state)
@@ -1915,13 +2276,16 @@ defmodule Giulia.Inference.Orchestrator do
   # Backup original file content before first staging
   defp backup_original(resolved_path, state) do
     if Map.has_key?(state.staging_backups, resolved_path) do
-      state  # Already backed up
+      # Already backed up
+      state
     else
-      backup = case File.read(resolved_path) do
-        {:ok, content} -> content
-        {:error, :enoent} -> :new_file
-        {:error, _} -> :new_file
-      end
+      backup =
+        case File.read(resolved_path) do
+          {:ok, content} -> content
+          {:error, :enoent} -> :new_file
+          {:error, _} -> :new_file
+        end
+
       %{state | staging_backups: Map.put(state.staging_backups, resolved_path, backup)}
     end
   end
@@ -1956,6 +2320,7 @@ defmodule Giulia.Inference.Orchestrator do
             params: sanitize_params_for_broadcast(params),
             staged: true
           })
+
           Events.broadcast(state.request_id, %{
             type: :tool_result,
             tool: "read_file",
@@ -1966,21 +2331,375 @@ defmodule Giulia.Inference.Orchestrator do
         end
 
         # Record and continue
-        assistant_msg = response.content || Jason.encode!(%{tool: "read_file", parameters: params})
+        assistant_msg =
+          response.content || Jason.encode!(%{tool: "read_file", parameters: params})
+
         observation = Builder.format_observation("read_file", result)
-        messages = state.messages ++ [
+
+        messages =
+          state.messages ++
+            [
+              %{role: "assistant", content: assistant_msg},
+              %{role: "user", content: observation}
+            ]
+
+        state = %{
+          state
+          | messages: messages,
+            last_action: {"read_file", params},
+            action_history: [{"read_file", params, result} | Enum.take(state.action_history, 4)],
+            consecutive_failures: 0
+        }
+
+        {:noreply, state, {:continue, :step}}
+    end
+  end
+
+  # Intercept get_staged_files — return staging buffer contents to the model
+  defp execute_get_staged_files(response, state) do
+    file_list =
+      state.staging_buffer
+      |> Enum.map(fn {path, content} ->
+        "  - #{path} (#{byte_size(content)} bytes)"
+      end)
+      |> Enum.sort()
+      |> Enum.join("\n")
+
+    count = map_size(state.staging_buffer)
+
+    result_text =
+      if count == 0 do
+        "No files staged. Transaction mode: #{state.transaction_mode}"
+      else
+        "STAGED FILES (#{count}):\n#{file_list}\n\nTransaction mode: #{state.transaction_mode}"
+      end
+
+    result = {:ok, result_text}
+
+    # Record and continue
+    assistant_msg =
+      response.content || Jason.encode!(%{tool: "get_staged_files", parameters: %{}})
+
+    observation = Builder.format_observation("get_staged_files", result)
+
+    messages =
+      state.messages ++
+        [
           %{role: "assistant", content: assistant_msg},
           %{role: "user", content: observation}
         ]
 
-        state = %{state |
-          messages: messages,
-          last_action: {"read_file", params},
-          action_history: [{"read_file", params, result} | Enum.take(state.action_history, 4)],
-          consecutive_failures: 0
-        }
+    state = %{
+      state
+      | messages: messages,
+        last_action: {"get_staged_files", %{}},
+        action_history: [{"get_staged_files", %{}, :ok} | Enum.take(state.action_history, 4)],
+        consecutive_failures: 0
+    }
 
-        {:noreply, state, {:continue, :step}}
+    {:noreply, state, {:continue, :step}}
+  end
+
+  # ============================================================================
+  # Bulk Replace — Batch find-and-replace across multiple files
+  # ============================================================================
+
+  defp execute_bulk_replace(params, response, state) do
+    pattern = params["pattern"] || params[:pattern]
+    replacement = params["replacement"] || params[:replacement]
+    file_list = params["file_list"] || params[:file_list] || []
+    use_regex = params["regex"] || params[:regex] || false
+
+    cond do
+      is_nil(pattern) or pattern == "" ->
+        send_bulk_error("Missing required parameter: pattern", params, response, state)
+
+      is_nil(replacement) ->
+        send_bulk_error("Missing required parameter: replacement", params, response, state)
+
+      file_list == [] ->
+        send_bulk_error("file_list is empty. Use get_impact_map first to find dependents.", params, response, state)
+
+      true ->
+        do_bulk_replace(pattern, replacement, file_list, use_regex, params, response, state)
+    end
+  end
+
+  defp do_bulk_replace(pattern, replacement, file_list, use_regex, params, response, state) do
+    # Auto-enable transaction mode for bulk operations
+    state =
+      if not state.transaction_mode do
+        Logger.info("BULK_REPLACE: Auto-enabling transaction mode for batch operation")
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :transaction_auto_enabled,
+            reason: "bulk_replace across #{length(file_list)} files"
+          })
+        end
+
+        %{state | transaction_mode: true}
+      else
+        state
+      end
+
+    # Compile the regex if needed
+    regex =
+      if use_regex do
+        case Regex.compile(pattern) do
+          {:ok, r} -> r
+          {:error, _} -> nil
+        end
+      else
+        nil
+      end
+
+    if use_regex and is_nil(regex) do
+      send_bulk_error("Invalid regex pattern: #{pattern}", params, response, state)
+    else
+      # Process each file
+      results =
+        Enum.map(file_list, fn file_path ->
+          resolved_path = resolve_tool_path(file_path, state)
+
+          # Read from staging buffer first, then disk
+          content =
+            case Map.get(state.staging_buffer, resolved_path) do
+              nil ->
+                case File.read(resolved_path) do
+                  {:ok, c} -> c
+                  {:error, reason} -> {:error, "Cannot read #{file_path}: #{inspect(reason)}"}
+                end
+
+              staged -> staged
+            end
+
+          case content do
+            {:error, _} = err -> {file_path, resolved_path, err}
+            text ->
+              # Count occurrences before replacing
+              count =
+                if regex do
+                  length(Regex.scan(regex, text))
+                else
+                  # Count non-overlapping occurrences
+                  parts = String.split(text, pattern)
+                  length(parts) - 1
+                end
+
+              if count > 0 do
+                new_content =
+                  if regex do
+                    Regex.replace(regex, text, replacement)
+                  else
+                    String.replace(text, pattern, replacement)
+                  end
+
+                {file_path, resolved_path, {:replaced, count, new_content}}
+              else
+                {file_path, resolved_path, :no_match}
+              end
+          end
+        end)
+
+      # Stage all successful replacements
+      {state, staged, skipped, errors} =
+        Enum.reduce(results, {state, [], [], []}, fn
+          {file, resolved, {:replaced, count, new_content}}, {st, s, sk, e} ->
+            st = backup_original(resolved, st)
+            staging_buffer = Map.put(st.staging_buffer, resolved, new_content)
+            modified_files = MapSet.put(st.modified_files, resolved)
+            st = %{st | staging_buffer: staging_buffer, modified_files: modified_files}
+            {st, [{file, count} | s], sk, e}
+
+          {file, _resolved, :no_match}, {st, s, sk, e} ->
+            {st, s, [file | sk], e}
+
+          {file, _resolved, {:error, reason}}, {st, s, sk, e} ->
+            {st, s, sk, [{file, reason} | e]}
+        end)
+
+      # Build summary
+      staged_summary =
+        staged
+        |> Enum.reverse()
+        |> Enum.map_join("\n", fn {file, count} ->
+          "  [STAGED] #{Path.basename(file)} (#{count} replacement#{if count > 1, do: "s", else: ""})"
+        end)
+
+      skipped_summary =
+        if skipped != [] do
+          "\nSkipped (no matches):\n" <>
+            Enum.map_join(Enum.reverse(skipped), "\n", &"  - #{Path.basename(&1)}")
+        else
+          ""
+        end
+
+      error_summary =
+        if errors != [] do
+          "\nErrors:\n" <>
+            Enum.map_join(Enum.reverse(errors), "\n", fn {f, r} -> "  - #{Path.basename(f)}: #{r}" end)
+        else
+          ""
+        end
+
+      total_replacements = Enum.reduce(staged, 0, fn {_, c}, acc -> acc + c end)
+      staged_count = map_size(state.staging_buffer)
+
+      # DIAGNOSTIC FEEDBACK: If 0 matches, search for broader pattern and show what exists
+      diagnostic =
+        if staged == [] and skipped != [] do
+          broad_pattern = extract_broad_pattern(pattern)
+          bulk_diagnose(broad_pattern, file_list, state)
+        else
+          ""
+        end
+
+      observation =
+        if staged == [] do
+          """
+          [BULK_REPLACE] FAILED: '#{pattern}' → '#{replacement}'
+          0 files matched the exact pattern '#{pattern}' across #{length(file_list)} files.
+          #{diagnostic}#{error_summary}
+
+          HINT: Your pattern must match the EXACT text in the source code. Use a shorter, simpler pattern.
+          """
+        else
+          """
+          [BULK_REPLACE] '#{pattern}' → '#{replacement}'
+          #{length(staged)} file(s) staged, #{length(skipped)} skipped, #{length(errors)} error(s)
+          Total replacements: #{total_replacements}
+
+          Staged:
+          #{staged_summary}#{skipped_summary}#{error_summary}
+
+          Currently staging #{staged_count} file(s) total. Use commit_changes to flush to disk.
+          """
+        end
+
+      Logger.info("BULK_REPLACE: #{length(staged)} files staged, #{length(skipped)} skipped")
+
+      # BROADCAST
+      if state.request_id do
+        Events.broadcast(state.request_id, %{
+          type: :tool_call,
+          iteration: state.iteration,
+          tool: "bulk_replace",
+          params: %{pattern: pattern, replacement: replacement, files: length(file_list)},
+          staged: true
+        })
+
+        Events.broadcast(state.request_id, %{
+          type: :tool_result,
+          tool: "bulk_replace",
+          success: length(staged) > 0,
+          preview: "#{length(staged)} files staged, #{total_replacements} replacements",
+          staged: true
+        })
+      end
+
+      # Record in history
+      assistant_msg = response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
+
+      messages =
+        state.messages ++
+          [
+            %{role: "assistant", content: assistant_msg},
+            %{role: "user", content: String.trim(observation)}
+          ]
+
+      state = %{
+        state
+        | messages: messages,
+          last_action: {"bulk_replace", params},
+          action_history: [{"bulk_replace", params, {:ok, "staged"}} | Enum.take(state.action_history, 4)],
+          consecutive_failures: 0
+      }
+
+      {:noreply, state, {:continue, :step}}
+    end
+  end
+
+  defp send_bulk_error(reason, params, response, state) do
+    observation = "ERROR: bulk_replace failed: #{reason}"
+    assistant_msg = response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
+
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: observation}
+        ]
+
+    state = %{state | messages: messages, consecutive_failures: state.consecutive_failures + 1}
+    {:noreply, state, {:continue, :step}}
+  end
+
+  # Diagnostic: extract a broader search term from the failed pattern
+  # "def execute(params, opts)" → "def execute("
+  # "Registry.execute(" → "execute("
+  defp extract_broad_pattern(pattern) do
+    cond do
+      # "def execute(params, opts)" → "def execute("
+      String.starts_with?(pattern, "def ") ->
+        case String.split(pattern, "(", parts: 2) do
+          [prefix, _] -> prefix <> "("
+          _ -> pattern
+        end
+
+      # "Registry.execute(" → "execute("
+      String.contains?(pattern, ".") and String.contains?(pattern, "(") ->
+        case String.split(pattern, "(", parts: 2) do
+          [prefix, _] ->
+            func = prefix |> String.split(".") |> List.last()
+            func <> "("
+          _ -> pattern
+        end
+
+      true ->
+        pattern
+    end
+  end
+
+  # Scan the target files for the broader pattern and return sample matches
+  defp bulk_diagnose(broad_pattern, file_list, state) do
+    samples =
+      file_list
+      |> Enum.flat_map(fn file_path ->
+        resolved = resolve_tool_path(file_path, state)
+
+        content =
+          case Map.get(state.staging_buffer, resolved) do
+            nil -> File.read(resolved) |> elem(1)
+            staged -> staged
+          end
+
+        if is_binary(content) do
+          content
+          |> String.split("\n")
+          |> Enum.with_index(1)
+          |> Enum.filter(fn {line, _} ->
+            String.contains?(line, broad_pattern)
+          end)
+          |> Enum.map(fn {line, num} ->
+            "  #{Path.basename(file_path)}:#{num}: #{String.trim(line)}"
+          end)
+        else
+          []
+        end
+      end)
+      |> Enum.take(10)
+
+    if samples != [] do
+      """
+
+      DIAGNOSTIC: Your exact pattern was not found. Searching for '#{broad_pattern}' instead, I found these actual lines:
+      #{Enum.join(samples, "\n")}
+
+      Use one of these exact strings as your pattern instead.
+      """
+    else
+      "\nDIAGNOSTIC: No similar patterns found with '#{broad_pattern}' either. The files may not contain what you expect.\n"
     end
   end
 
@@ -1993,16 +2712,24 @@ defmodule Giulia.Inference.Orchestrator do
     if map_size(state.staging_buffer) == 0 do
       # Nothing to commit
       observation = "Nothing staged to commit. Use write_file or edit_file first."
-      assistant_msg = response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
-      messages = state.messages ++ [
-        %{role: "assistant", content: assistant_msg},
-        %{role: "user", content: observation}
-      ]
+
+      assistant_msg =
+        response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
+
+      messages =
+        state.messages ++
+          [
+            %{role: "assistant", content: assistant_msg},
+            %{role: "user", content: observation}
+          ]
+
       state = %{state | messages: messages, consecutive_failures: 0}
       {:noreply, state, {:continue, :step}}
     else
       # Proceed with commit via handle_continue to keep GenServer responsive
-      assistant_msg = response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
+      assistant_msg =
+        response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
+
       messages = state.messages ++ [%{role: "assistant", content: assistant_msg}]
       state = %{state | messages: messages}
       {:noreply, state, {:continue, {:commit_changes, params}}}
@@ -2029,27 +2756,31 @@ defmodule Giulia.Inference.Orchestrator do
     end
 
     # Phase 1: Ensure backups are current (re-read from disk for safety)
-    state = Enum.reduce(staged_files, state, fn path, acc ->
-      backup_original(path, acc)
-    end)
+    state =
+      Enum.reduce(staged_files, state, fn path, acc ->
+        backup_original(path, acc)
+      end)
 
     # Phase 2: Flush all staged files to disk
-    write_results = Enum.map(state.staging_buffer, fn {path, content} ->
-      {path, File.write(path, content)}
-    end)
+    write_results =
+      Enum.map(state.staging_buffer, fn {path, content} ->
+        {path, File.write(path, content)}
+      end)
 
     write_failures = Enum.filter(write_results, fn {_path, result} -> result != :ok end)
 
     if write_failures != [] do
       # Write failed — rollback
       Logger.warning("COMMIT: Write phase failed, rolling back")
-      rollback_staged_changes(state)
+      state = rollback_staged_changes(state)
 
       error_msg = "COMMIT FAILED (write phase): #{inspect(write_failures)}"
+
       if state.request_id do
         Events.broadcast(state.request_id, %{
           type: :commit_rollback,
           reason: "write_failure",
+          files: staged_files,
           message: error_msg
         })
       end
@@ -2066,26 +2797,33 @@ defmodule Giulia.Inference.Orchestrator do
         {:ok, output} ->
           case parse_compile_result(output) do
             :success ->
-              Logger.info("COMMIT: Compile passed, running auto-regression")
-              commit_auto_regress(staged_files, params, state)
+              Logger.info("COMMIT: Compile passed, running integrity check")
+              commit_integrity_check(staged_files, params, state)
 
             {:warnings, _warnings} ->
-              Logger.info("COMMIT: Compile passed with warnings, running auto-regression")
-              commit_auto_regress(staged_files, params, state)
+              Logger.info("COMMIT: Compile passed with warnings, running integrity check")
+              commit_integrity_check(staged_files, params, state)
 
             {:error, errors} ->
               # Compile failed — rollback
               Logger.warning("COMMIT: Compile failed, rolling back")
-              rollback_staged_changes(state)
+              state = rollback_staged_changes(state)
 
               error_msg = """
               COMMIT FAILED: Compilation errors after flushing staged changes. All changes have been ROLLED BACK.
+              All #{length(staged_files)} files are back to their ORIGINAL state. Your staging buffer is cleared.
 
               COMPILER ERRORS:
               #{String.slice(errors, 0, 1500)}
 
-              Your staged changes had errors. Fix them and try commit_changes again.
-              Currently staging #{map_size(state.staging_buffer)} file(s).
+              POST-ROLLBACK REALITY CHECK:
+              Your previous plan was INCONSISTENT. The most common cause is renaming function DEFINITIONS
+              without also renaming CALL SITES (or vice versa). In your next transaction, you MUST:
+              1. Rename DEFINITIONS (def old_name → def new_name) in all tool/module files
+              2. Rename CALL SITES (Module.old_name → Module.new_name) in all callers
+              3. Rename any @callback declarations if applicable
+              4. Stage ALL of these changes BEFORE calling commit_changes
+              Use bulk_replace multiple times — once per pattern — before committing.
               """
 
               if state.request_id do
@@ -2093,6 +2831,7 @@ defmodule Giulia.Inference.Orchestrator do
                   type: :commit_rollback,
                   reason: "compile_failure",
                   message: "Compilation failed — all changes rolled back",
+                  files: staged_files,
                   errors: String.slice(errors, 0, 500)
                 })
               end
@@ -2105,14 +2844,84 @@ defmodule Giulia.Inference.Orchestrator do
         {:error, reason} ->
           # Couldn't run compile — rollback to be safe
           Logger.warning("COMMIT: Could not run compile: #{inspect(reason)}, rolling back")
-          rollback_staged_changes(state)
+          state = rollback_staged_changes(state)
 
-          error_msg = "COMMIT FAILED: Could not verify compilation: #{inspect(reason)}. Changes rolled back."
+          error_msg =
+            "COMMIT FAILED: Could not verify compilation: #{inspect(reason)}. Changes rolled back. Staging buffer cleared."
+
           messages = state.messages ++ [%{role: "user", content: error_msg}]
           state = %{state | messages: messages}
           {:noreply, state, {:continue, :step}}
       end
     end
+  end
+
+  # Integrity check phase — between compile and auto-regression.
+  # Re-indexes modified files, rebuilds the knowledge graph, then checks
+  # that all behaviours and their implementers agree on function names.
+  defp commit_integrity_check(staged_files, params, state) do
+    # Re-index modified .ex/.exs files so ETS is fresh
+    staged_files
+    |> Enum.filter(fn path -> String.ends_with?(path, ".ex") or String.ends_with?(path, ".exs") end)
+    |> Enum.each(&Giulia.Context.Indexer.scan_file/1)
+
+    # Small delay for async scan_file casts to complete
+    Process.sleep(500)
+
+    # Rebuild knowledge graph with fresh data
+    Giulia.Knowledge.Store.rebuild(Giulia.Context.Store.all_asts())
+
+    # Check all behaviour-implementer contracts
+    case Giulia.Knowledge.Store.check_all_behaviours() do
+      {:ok, :consistent} ->
+        Logger.info("COMMIT: Integrity check passed, running auto-regression")
+        commit_auto_regress(staged_files, params, state)
+
+      {:error, fractures} ->
+        Logger.warning("COMMIT: Integrity check FAILED — architectural fracture detected")
+        state = rollback_staged_changes(state)
+
+        report = format_fracture_report(fractures)
+
+        error_msg = """
+        COMMIT FAILED: ARCHITECTURAL FRACTURE — behaviour-implementer mismatch detected.
+        All #{length(staged_files)} files have been ROLLED BACK to their original state.
+
+        #{report}
+
+        POST-ROLLBACK REALITY CHECK:
+        Your changes compiled (syntax OK) but fractured the architecture (semantics BROKEN).
+        A behaviour declares @callback functions that implementers MUST define.
+        In your next transaction, ensure ALL implementers define the callbacks declared by their behaviour.
+        Use get_impact_map to find all affected modules, then bulk_replace to fix consistently.
+        """
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :architectural_fracture,
+            reason: "behaviour_implementer_mismatch",
+            message: "Behaviour-implementer mismatch — all changes rolled back",
+            files: staged_files,
+            fractures: report
+          })
+        end
+
+        messages = state.messages ++ [%{role: "user", content: error_msg}]
+        state = %{state | messages: messages}
+        {:noreply, state, {:continue, :step}}
+    end
+  end
+
+  defp format_fracture_report(fractures) when is_map(fractures) do
+    Enum.map_join(fractures, "\n\n", fn {behaviour, impl_fractures} ->
+      impl_details =
+        Enum.map_join(impl_fractures, "\n", fn %{implementer: impl, missing: missing} ->
+          missing_str = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
+          "  - #{impl}: missing #{missing_str}"
+        end)
+
+      "BEHAVIOUR #{behaviour}:\n#{impl_details}"
+    end)
   end
 
   # Auto-regression phase of commit
@@ -2121,27 +2930,31 @@ defmodule Giulia.Inference.Orchestrator do
     tool_opts = build_tool_opts(state)
 
     # Collect test targets for all modified modules
-    all_test_targets = Enum.flat_map(staged_files, fn path ->
-      case Store.find_module_by_file(path) do
-        {:ok, %{name: module_name}} ->
-          case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
-            {:ok, %{all_paths: paths}} when paths != [] -> paths
-            _ -> []
-          end
-        _ -> []
-      end
-    end)
-    |> Enum.uniq()
+    all_test_targets =
+      Enum.flat_map(staged_files, fn path ->
+        case Store.find_module_by_file(path) do
+          {:ok, %{name: module_name}} ->
+            case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+              {:ok, %{all_paths: paths}} when paths != [] -> paths
+              _ -> []
+            end
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.uniq()
 
     if all_test_targets != [] do
       Logger.info("COMMIT: Running #{length(all_test_targets)} regression test file(s)")
 
-      test_results = Enum.map(all_test_targets, fn test_path ->
-        case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
-          {:ok, output} -> {test_path, :ok, output}
-          {:error, reason} -> {test_path, :error, inspect(reason)}
-        end
-      end)
+      test_results =
+        Enum.map(all_test_targets, fn test_path ->
+          case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
+            {:ok, output} -> {test_path, :ok, output}
+            {:error, reason} -> {test_path, :error, inspect(reason)}
+          end
+        end)
 
       failures = Enum.filter(test_results, fn {_, status, _} -> status == :error end)
 
@@ -2150,26 +2963,31 @@ defmodule Giulia.Inference.Orchestrator do
       else
         # Tests failed — rollback
         Logger.warning("COMMIT: Auto-regression failed, rolling back")
-        rollback_staged_changes(state)
+        state = rollback_staged_changes(state)
 
-        failure_summary = Enum.map_join(failures, "\n", fn {path, _, output} ->
-          "  - #{path}: #{String.slice(output, 0, 200)}"
-        end)
+        failure_summary =
+          Enum.map_join(failures, "\n", fn {path, _, output} ->
+            "  - #{path}: #{String.slice(output, 0, 200)}"
+          end)
 
         error_msg = """
         COMMIT FAILED: Auto-regression tests failed. All changes have been ROLLED BACK.
+        All #{length(staged_files)} files are back to their ORIGINAL state. Your staging buffer is cleared.
 
         Failed tests:
         #{failure_summary}
 
-        Fix the issues and try commit_changes again.
-        Currently staging #{map_size(state.staging_buffer)} file(s).
+        POST-ROLLBACK REALITY CHECK:
+        Your previous changes compiled but broke tests. Review the test failures above.
+        In your next transaction, ensure your changes are consistent across ALL affected modules.
+        Use bulk_replace for batch operations, then commit_changes to verify again.
         """
 
         if state.request_id do
           Events.broadcast(state.request_id, %{
             type: :commit_rollback,
             reason: "test_failure",
+            files: staged_files,
             message: "Auto-regression failed — all changes rolled back"
           })
         end
@@ -2195,6 +3013,7 @@ defmodule Giulia.Inference.Orchestrator do
       Events.broadcast(state.request_id, %{
         type: :commit_success,
         file_count: file_count,
+        files: Map.keys(state.staging_buffer),
         message: "All #{file_count} file(s) verified and written to disk"
       })
     end
@@ -2208,18 +3027,20 @@ defmodule Giulia.Inference.Orchestrator do
 
     messages = state.messages ++ [%{role: "user", content: observation}]
 
-    state = %{state |
-      messages: messages,
-      transaction_mode: false,
-      staging_buffer: %{},
-      staging_backups: %{},
-      consecutive_failures: 0
+    state = %{
+      state
+      | messages: messages,
+        transaction_mode: false,
+        staging_buffer: %{},
+        staging_backups: %{},
+        consecutive_failures: 0
     }
 
     {:noreply, state, {:continue, :step}}
   end
 
-  # Rollback all staged changes to their original state
+  # Rollback all staged changes to their original state and clear the staging buffer.
+  # Returns updated state with empty staging fields so the model isn't trapped in staging-lock.
   defp rollback_staged_changes(state) do
     Enum.each(state.staging_backups, fn
       {path, :new_file} ->
@@ -2231,7 +3052,27 @@ defmodule Giulia.Inference.Orchestrator do
         File.write(path, original_content)
     end)
 
-    Logger.info("ROLLBACK: Restored #{map_size(state.staging_backups)} file(s) to original state")
+    count = map_size(state.staging_backups)
+    Logger.info("ROLLBACK: Restored #{count} file(s) to original state")
+
+    # POST-ROLLBACK RE-VALIDATION: Recompile to resync the BEAM VM.
+    # The failed compile during commit may have purged modules from memory.
+    # Without recompiling, tools that depend on those modules will crash
+    # with "module is not available" errors (the "Stroke" scenario).
+    Logger.info("ROLLBACK: Re-validating BEAM state (recompiling clean files)")
+
+    case System.cmd("mix", ["compile", "--force"], cd: state.project_path || File.cwd!(), stderr_to_stdout: true) do
+      {_output, 0} ->
+        Logger.info("ROLLBACK: BEAM re-validation succeeded — all modules reloaded")
+
+      {output, _} ->
+        Logger.warning("ROLLBACK: BEAM re-validation had issues: #{String.slice(output, 0, 300)}")
+        # Even if recompile has warnings, the original code should be valid.
+        # The BEAM will at least have the clean modules loaded.
+    end
+
+    # Clear staging buffer so the model can make fresh edits or respond
+    %{state | staging_buffer: %{}, staging_backups: %{}}
   end
 
   # ============================================================================
@@ -2239,15 +3080,20 @@ defmodule Giulia.Inference.Orchestrator do
   # ============================================================================
 
   # Check if a write tool targets a hub module and auto-enable transaction mode
-  defp maybe_auto_enable_transaction(tool_name, params, state) when tool_name in @stageable_tools do
+  defp maybe_auto_enable_transaction(tool_name, params, state)
+       when tool_name in @stageable_tools do
     if state.transaction_mode do
-      state  # Already in transaction mode
+      # Already in transaction mode
+      state
     else
       module_name = resolve_module_from_params(tool_name, params)
+
       if module_name do
         case Giulia.Knowledge.Store.centrality(module_name) do
           {:ok, %{in_degree: in_degree}} when in_degree >= 3 ->
-            Logger.info("TRANSACTION AUTO-ENABLED: #{module_name} is a hub (#{in_degree} dependents)")
+            Logger.info(
+              "TRANSACTION AUTO-ENABLED: #{module_name} is a hub (#{in_degree} dependents)"
+            )
 
             if state.request_id do
               Events.broadcast(state.request_id, %{
@@ -2258,7 +3104,9 @@ defmodule Giulia.Inference.Orchestrator do
               })
             end
 
-            %{state | transaction_mode: true}
+            # Bump max_iterations for transaction runs (need headroom for staging 16+ files)
+            new_max = max(state.max_iterations, 40)
+            %{state | transaction_mode: true, max_iterations: new_max}
 
           _ ->
             state
@@ -2287,15 +3135,21 @@ defmodule Giulia.Inference.Orchestrator do
     """
 
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
-    messages = state.messages ++ [
-      %{role: "assistant", content: assistant_msg},
-      %{role: "user", content: rejection_msg}
-    ]
 
-    state = %{state |
-      messages: messages,
-      action_history: [{tool_name, params, {:error, :rejected}} | Enum.take(state.action_history, 4)],
-      consecutive_failures: 0
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: rejection_msg}
+        ]
+
+    state = %{
+      state
+      | messages: messages,
+        action_history: [
+          {tool_name, params, {:error, :rejected}} | Enum.take(state.action_history, 4)
+        ],
+        consecutive_failures: 0
     }
 
     {:noreply, state, {:continue, :step}}
@@ -2311,15 +3165,21 @@ defmodule Giulia.Inference.Orchestrator do
     """
 
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
-    messages = state.messages ++ [
-      %{role: "assistant", content: assistant_msg},
-      %{role: "user", content: timeout_msg}
-    ]
 
-    state = %{state |
-      messages: messages,
-      action_history: [{tool_name, params, {:error, :timeout}} | Enum.take(state.action_history, 4)],
-      consecutive_failures: 0
+    messages =
+      state.messages ++
+        [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: timeout_msg}
+        ]
+
+    state = %{
+      state
+      | messages: messages,
+        action_history: [
+          {tool_name, params, {:error, :timeout}} | Enum.take(state.action_history, 4)
+        ],
+        consecutive_failures: 0
     }
 
     {:noreply, state, {:continue, :step}}
@@ -2360,6 +3220,7 @@ defmodule Giulia.Inference.Orchestrator do
       "run_tests" ->
         file = params["file"] || params[:file]
         test_name = params["test_name"] || params[:test_name]
+
         cond do
           file && test_name -> "Run tests in #{file} matching '#{test_name}'"
           file -> "Run tests in #{file}"
@@ -2395,7 +3256,7 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp generate_edit_preview(params, state) do
-    file = params["file"] || params[:file]
+    file = params["file"] || params[:file] || params["path"] || params[:path]
     old_text = params["old_text"] || params[:old_text] || ""
     new_text = params["new_text"] || params[:new_text] || ""
 
@@ -2427,6 +3288,7 @@ defmodule Giulia.Inference.Orchestrator do
     case Store.find_module(module) do
       {:ok, %{file: file_path}} ->
         resolved = resolve_tool_path(file_path, state)
+
         case File.read(resolved) do
           {:ok, content} ->
             # Try to extract the old function for a proper diff
@@ -2434,6 +3296,7 @@ defmodule Giulia.Inference.Orchestrator do
 
             if old_code do
               diff = Diff.colorized(old_code, new_code, file_path: Path.basename(file_path))
+
               """
               Module: #{module}
               Function: #{func_name}/#{arity}
@@ -2475,26 +3338,31 @@ defmodule Giulia.Inference.Orchestrator do
       {:ok, {:defmodule, _meta, [_alias, [{_do_key, body}]]}} ->
         extract_function_from_body(source, body, func_atom, arity)
 
-      _ -> nil
+      _ ->
+        nil
     end
   rescue
     _ -> nil
   end
 
   defp extract_function_from_body(source, {:__block__, _meta, statements}, func_atom, arity) do
-    ranges = Enum.flat_map(statements, fn stmt ->
-      case match_func_def(stmt, func_atom, arity) do
-        {:ok, range} -> [range]
-        _ -> []
-      end
-    end)
+    ranges =
+      Enum.flat_map(statements, fn stmt ->
+        case match_func_def(stmt, func_atom, arity) do
+          {:ok, range} -> [range]
+          _ -> []
+        end
+      end)
 
     case ranges do
-      [] -> nil
+      [] ->
+        nil
+
       [first | _] ->
         last = List.last(ranges)
         lines = String.split(source, "\n")
         end_line = min(last.end_line || length(lines), length(lines))
+
         lines
         |> Enum.slice((first.start_line - 1)..(end_line - 1))
         |> Enum.join("\n")
@@ -2506,10 +3374,13 @@ defmodule Giulia.Inference.Orchestrator do
       {:ok, range} ->
         lines = String.split(source, "\n")
         end_line = min(range.end_line || length(lines), length(lines))
+
         lines
         |> Enum.slice((range.start_line - 1)..(end_line - 1))
         |> Enum.join("\n")
-      _ -> nil
+
+      _ ->
+        nil
     end
   end
 
@@ -2539,9 +3410,12 @@ defmodule Giulia.Inference.Orchestrator do
 
   defp match_func_def(_, _, _), do: :no_match
 
+  defp resolve_tool_path(nil, _state), do: nil
+
   defp resolve_tool_path(path, state) do
     if state.project_path do
       sandbox = PathSandbox.new(state.project_path)
+
       case PathSandbox.validate(sandbox, path) do
         {:ok, resolved} -> resolved
         {:error, _} -> path
@@ -2557,7 +3431,8 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Assess the risk of modifying a module by checking its centrality in the
   # Knowledge Graph. Returns a warning string for hubs (>3 dependents), nil otherwise.
-  defp assess_hub_risk(tool_name, params) when tool_name in ["edit_file", "patch_function", "write_function", "write_file"] do
+  defp assess_hub_risk(tool_name, params)
+       when tool_name in ["edit_file", "patch_function", "write_function", "write_file"] do
     module_name = resolve_module_from_params(tool_name, params)
 
     if module_name do
@@ -2597,7 +3472,8 @@ defmodule Giulia.Inference.Orchestrator do
     module_from_file_path(path)
   end
 
-  defp resolve_module_from_params(tool_name, params) when tool_name in ["patch_function", "write_function"] do
+  defp resolve_module_from_params(tool_name, params)
+       when tool_name in ["patch_function", "write_function"] do
     params["module"] || params[:module]
   end
 
@@ -2605,6 +3481,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Best-effort: convert a file path to a module name via the context store
   defp module_from_file_path(nil), do: nil
+
   defp module_from_file_path(path) do
     case Store.find_module_by_file(path) do
       {:ok, %{name: name}} -> name
@@ -2624,6 +3501,7 @@ defmodule Giulia.Inference.Orchestrator do
     end)
     |> Map.new()
   end
+
   defp sanitize_params_for_broadcast(params), do: params
 
   defp handle_plain_text_response(text, response, state) do
@@ -2632,11 +3510,13 @@ defmodule Giulia.Inference.Orchestrator do
         case Jason.decode(json) do
           {:ok, _parsed} ->
             handle_model_response(%{response | content: json}, state)
+
           {:error, _} ->
             # Accept as final response after cleanup
             send_reply(state, {:ok, clean_model_output(text)})
             {:noreply, reset_state(state)}
         end
+
       {:error, _} ->
         # Plain text - accept as response after cleanup
         send_reply(state, {:ok, clean_model_output(text)})
@@ -2651,7 +3531,8 @@ defmodule Giulia.Inference.Orchestrator do
     |> String.replace(~r/<\|im_start\|>.*?(<\|im_end\|>)?/s, "")
     |> String.replace(~r/<\|im_end\|>/, "")
     |> String.replace(~r/<action>.*?<\/action>/s, "")
-    |> String.replace(~r/<action>.*$/s, "")  # Unclosed action tag
+    # Unclosed action tag
+    |> String.replace(~r/<action>.*$/s, "")
     |> String.replace(~r/<\/?think>/s, "")
     # Trim whitespace
     |> String.trim()
@@ -2707,16 +3588,21 @@ defmodule Giulia.Inference.Orchestrator do
 
   defp build_context_reminder(state) do
     # Last 3 actions
-    recent_actions = state.action_history
-    |> Enum.take(3)
-    |> Enum.map(fn {tool, params, result} ->
-      status = case result do
-        {:ok, _} -> "OK"
-        {:error, _} -> "FAILED"
-      end
-      "- #{tool}(#{format_params_brief(params)}) -> #{status}"
-    end)
-    |> Enum.join("\n")
+    recent_actions =
+      state.action_history
+      |> Enum.take(3)
+      |> Enum.map(fn {tool, params, result} ->
+        status =
+          case result do
+            {:ok, _} -> "OK"
+            {:error, _} -> "FAILED"
+            :ok -> "OK"
+            _ -> "?"
+          end
+
+        "- #{tool}(#{format_params_brief(params)}) -> #{status}"
+      end)
+      |> Enum.join("\n")
 
     # Current state
     modules_count = length(Store.list_modules())
@@ -2768,22 +3654,25 @@ defmodule Giulia.Inference.Orchestrator do
     opts = build_tool_opts(state)
 
     # Re-run tests to get fresh failure data
-    test_result = case Giulia.Tools.RunTests.execute(test_params, opts) do
-      {:ok, result} -> result
-      {:error, reason} -> "Test run failed: #{inspect(reason)}"
-    end
+    test_result =
+      case Giulia.Tools.RunTests.execute(test_params, opts) do
+        {:ok, result} -> result
+        {:error, reason} -> "Test run failed: #{inspect(reason)}"
+      end
 
     # Read the test file content
-    test_content = if test_file do
-      project_path = state.project_path || File.cwd!()
-      full_path = Path.join(project_path, test_file)
-      case File.read(full_path) do
-        {:ok, content} -> content
-        {:error, _} -> "(could not read test file)"
+    test_content =
+      if test_file do
+        project_path = state.project_path || File.cwd!()
+        full_path = Path.join(project_path, test_file)
+
+        case File.read(full_path) do
+          {:ok, content} -> content
+          {:error, _} -> "(could not read test file)"
+        end
+      else
+        "(no test file specified)"
       end
-    else
-      "(no test file specified)"
-    end
 
     """
     INTERVENTION: You keep running tests but not fixing the failure. STOP running tests.
@@ -2820,10 +3709,11 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Intervention for read-only tool loops — force respond
   defp build_readonly_intervention(tool_name, state) do
-    last_result = case state.action_history do
-      [{_tool, _params, result} | _] -> inspect(result, limit: 200)
-      _ -> "(no result available)"
-    end
+    last_result =
+      case state.action_history do
+        [{_tool, _params, result} | _] -> inspect(result, limit: 200)
+        _ -> "(no result available)"
+      end
 
     """
     REPETITION ERROR: You called "#{tool_name}" #{state.repeat_count + 1} times with the same parameters.
@@ -2843,31 +3733,34 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Intervention for write-tool loops — existing behavior (build/syntax focused)
   defp build_write_intervention(state, target_file, fresh_content) do
-    error_summary = state.recent_errors
-    |> Enum.take(3)
-    |> Enum.map(&"- #{inspect(&1)}")
-    |> Enum.join("\n")
+    error_summary =
+      state.recent_errors
+      |> Enum.take(3)
+      |> Enum.map(&"- #{inspect(&1)}")
+      |> Enum.join("\n")
 
-    action_summary = state.action_history
-    |> Enum.take(3)
-    |> Enum.map(fn {tool, params, _} -> "- #{tool}: #{format_params_brief(params)}" end)
-    |> Enum.join("\n")
+    action_summary =
+      state.action_history
+      |> Enum.take(3)
+      |> Enum.map(fn {tool, params, _} -> "- #{tool}: #{format_params_brief(params)}" end)
+      |> Enum.join("\n")
 
     # Build fresh content section if available
-    fresh_section = if target_file && fresh_content do
-      """
+    fresh_section =
+      if target_file && fresh_content do
+        """
 
-      === CONTEXT PURGE: Fresh file content ===
-      Target file: #{target_file}
+        === CONTEXT PURGE: Fresh file content ===
+        Target file: #{target_file}
 
-      #{fresh_content}
-      === END FRESH CONTENT ===
+        #{fresh_content}
+        === END FRESH CONTENT ===
 
-      The above is the CURRENT state of the file. Your previous attempts may have been based on stale data.
-      """
-    else
-      ""
-    end
+        The above is the CURRENT state of the file. Your previous attempts may have been based on stale data.
+        """
+      else
+        ""
+      end
 
     """
     INTERVENTION: You appear to be stuck in a loop. Your context has been PURGED.
@@ -2905,9 +3798,12 @@ defmodule Giulia.Inference.Orchestrator do
 
       String.contains?(prompt_lower, "function") ->
         functions = Store.list_functions()
-        list = functions
-        |> Enum.take(20)
-        |> Enum.map_join("\n", &"- #{&1.module}.#{&1.name}/#{&1.arity}")
+
+        list =
+          functions
+          |> Enum.take(20)
+          |> Enum.map_join("\n", &"- #{&1.module}.#{&1.name}/#{&1.arity}")
+
         {:ok, "Functions (first 20):\n#{list}"}
 
       String.contains?(prompt_lower, "status") ->
@@ -2934,17 +3830,39 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Try hybrid parser first when <payload> or <action> tags are present
     if Parser.hybrid_format?(content) or String.contains?(content, "<action>") do
-      case Parser.parse_response(content) do
-        {:ok, %{"tool" => tool, "parameters" => params}} ->
-          Logger.info("Parsed via hybrid Parser: tool=#{tool}")
-          {:tool_call, tool, params}
+      # Check for multiple <action> blocks first (batched tool calls)
+      action_count = length(Regex.scan(~r/<action>/, content))
 
-        {:error, reason} ->
-          Logger.warning("Hybrid parse failed (#{inspect(reason)}), falling back to JSON path")
-          parse_model_response_json(content)
+      if action_count > 1 do
+        case Parser.parse_all_actions(content) do
+          {:ok, [first | rest]} ->
+            Logger.info(
+              "Parsed #{action_count} batched actions via Parser (executing sequentially)"
+            )
+
+            {:multi_tool_call, first["tool"], first["parameters"], rest}
+
+          {:error, reason} ->
+            Logger.warning("Multi-action parse failed (#{inspect(reason)}), trying single")
+            parse_single_action(content)
+        end
+      else
+        parse_single_action(content)
       end
     else
       parse_model_response_json(content)
+    end
+  end
+
+  defp parse_single_action(content) do
+    case Parser.parse_response(content) do
+      {:ok, %{"tool" => tool, "parameters" => params}} ->
+        Logger.info("Parsed via hybrid Parser: tool=#{tool}")
+        {:tool_call, tool, params}
+
+      {:error, reason} ->
+        Logger.warning("Hybrid parse failed (#{inspect(reason)}), falling back to JSON path")
+        parse_model_response_json(content)
     end
   end
 
@@ -2961,24 +3879,30 @@ defmodule Giulia.Inference.Orchestrator do
         # Trim and clean JSON before decode
         clean_json = String.trim(json)
         Logger.info("Extracted JSON (#{byte_size(clean_json)} bytes): #{clean_json}")
+
         case Jason.decode(clean_json) do
           {:ok, %{"tool" => tool, "parameters" => params}} ->
             {:tool_call, tool, params}
+
           {:ok, %{"tool" => tool}} ->
             # Model didn't include parameters - log warning
             Logger.warning("Tool call missing parameters: #{tool}")
             {:tool_call, tool, %{}}
+
           {:ok, decoded} ->
             Logger.warning("Invalid tool format: #{inspect(decoded)}")
             {:error, :invalid_tool_format}
+
           {:error, %Jason.DecodeError{position: pos} = decode_error} ->
             # JSON decode failed - return structured error for self-healing retry
             Logger.warning("JSON decode error at position #{pos}: #{inspect(decode_error)}")
             {:error, {:json_escape_error, pos, clean_json}}
+
           {:error, decode_error} ->
             Logger.warning("JSON decode error: #{inspect(decode_error)}")
             {:error, {:json_decode_error, decode_error}}
         end
+
       {:error, reason} ->
         Logger.debug("No JSON found: #{inspect(reason)}")
         {:text, content}
@@ -2992,6 +3916,7 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp get_constitution(nil), do: nil
+
   defp get_constitution(pid) when is_pid(pid) do
     try do
       ProjectContext.get_constitution(pid)
@@ -3001,9 +3926,11 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp send_reply(%{reply_to: nil}, _result), do: :ok
+
   defp send_reply(%{reply_to: {:async, pid}}, result) do
     send(pid, {:orchestrator_result, result})
   end
+
   defp send_reply(%{reply_to: from}, result) do
     GenServer.reply(from, result)
   end
@@ -3015,23 +3942,27 @@ defmodule Giulia.Inference.Orchestrator do
       Trace.store(trace)
     end
 
-    %{state |
-      task: nil,
-      status: :idle,
-      messages: [],
-      reply_to: nil,
-      iteration: 0,
-      consecutive_failures: 0,
-      last_action: nil,
-      repeat_count: 0,
-      action_history: [],
-      recent_errors: [],
-      final_response: nil,
-      pending_verification: false,
-      test_status: :untested,
-      transaction_mode: false,
-      staging_buffer: %{},
-      staging_backups: %{}
+    %{
+      state
+      | task: nil,
+        status: :idle,
+        messages: [],
+        reply_to: nil,
+        iteration: 0,
+        consecutive_failures: 0,
+        last_action: nil,
+        repeat_count: 0,
+        action_history: [],
+        recent_errors: [],
+        final_response: nil,
+        pending_verification: false,
+        test_status: :untested,
+        transaction_mode: false,
+        staging_buffer: %{},
+        staging_backups: %{},
+        pending_tool_calls: [],
+        last_impact_map: nil,
+        modified_files: MapSet.new()
     }
   end
 
@@ -3039,26 +3970,29 @@ defmodule Giulia.Inference.Orchestrator do
     opts = []
 
     # Add project path for tools like run_mix
-    opts = if state.project_path do
-      Keyword.put(opts, :project_path, state.project_path)
-    else
-      opts
-    end
+    opts =
+      if state.project_path do
+        Keyword.put(opts, :project_path, state.project_path)
+      else
+        opts
+      end
 
     # Add project pid for dirty state tracking
-    opts = if state.project_pid do
-      Keyword.put(opts, :project_pid, state.project_pid)
-    else
-      opts
-    end
+    opts =
+      if state.project_pid do
+        Keyword.put(opts, :project_pid, state.project_pid)
+      else
+        opts
+      end
 
     # Add sandbox for file operations
-    opts = if state.project_path do
-      sandbox = Giulia.Core.PathSandbox.new(state.project_path)
-      Keyword.put(opts, :sandbox, sandbox)
-    else
-      opts
-    end
+    opts =
+      if state.project_path do
+        sandbox = Giulia.Core.PathSandbox.new(state.project_path)
+        Keyword.put(opts, :sandbox, sandbox)
+      else
+        opts
+      end
 
     opts
   end
@@ -3079,11 +4013,13 @@ defmodule Giulia.Inference.Orchestrator do
       case Registry.execute("read_file", %{"path" => file_path}, tool_opts) do
         {:ok, file_content} ->
           # Truncate for context window
-          truncated = if String.length(file_content) > 2000 do
-            String.slice(file_content, 0, 2000) <> "\n\n... [truncated, #{String.length(file_content)} bytes total]"
-          else
-            file_content
-          end
+          truncated =
+            if String.length(file_content) > 2000 do
+              String.slice(file_content, 0, 2000) <>
+                "\n\n... [truncated, #{String.length(file_content)} bytes total]"
+            else
+              file_content
+            end
 
           enhanced_error = """
           #{reason}
@@ -3094,6 +4030,7 @@ defmodule Giulia.Inference.Orchestrator do
 
           Use this content to construct a correct edit_file call.
           """
+
           Logger.info("Auto Read-Back injected for #{file_path}")
           {:error, enhanced_error}
 
@@ -3136,4 +4073,57 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp get_file_path_from_params(_tool, _params), do: nil
+
+  # ============================================================================
+  # Goal Tracker — Premature Completion Detection
+  # ============================================================================
+
+  # Should the Goal Tracker block the respond call?
+  # Returns true if:
+  # 1. An impact_map was captured with >= 3 dependents
+  # 2. The number of modified files is less than 50% of dependents
+  defp goal_tracker_blocks?(state) do
+    im = state.last_impact_map
+    touched = MapSet.size(state.modified_files)
+
+    # Only block if there were significant dependents (>= 3)
+    # and the model touched less than half of them
+    im.count >= 3 and touched < div(im.count, 2)
+  end
+
+  # Extract downstream dependent module names from the impact map output text
+  defp extract_downstream_dependents(result_str) do
+    # The impact map format has a "DOWNSTREAM" section with lines like:
+    #   - Giulia.Tools.EditFile (direct)
+    #   - Giulia.Agent.Orchestrator (depth 2)
+    case String.split(result_str, "DOWNSTREAM (what depends on me):") do
+      [_, downstream_section] ->
+        downstream_section
+        |> String.split("\n")
+        |> Enum.map(&String.trim/1)
+        |> Enum.filter(&String.starts_with?(&1, "- "))
+        |> Enum.map(fn line ->
+          line
+          |> String.trim_leading("- ")
+          |> String.split(" (")
+          |> List.first()
+          |> String.trim()
+        end)
+        |> Enum.reject(&(&1 == "" or &1 == "(none — nothing depends on this)"))
+        # Stop at the FUNCTIONS section or end
+        |> Enum.take_while(&(not String.starts_with?(&1, "FUNCTIONS")))
+
+      _ ->
+        []
+    end
+  end
+
+  # Convert a module name to a path fragment for fuzzy matching
+  # "Giulia.Tools.EditFile" -> "edit_file"
+  defp module_to_path(module_name) do
+    module_name
+    |> String.split(".")
+    |> List.last()
+    |> Macro.underscore()
+  end
 end
