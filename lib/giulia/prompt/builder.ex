@@ -18,6 +18,107 @@ defmodule Giulia.Prompt.Builder do
   alias Giulia.Context.Store
 
   @type message :: %{role: String.t(), content: String.t()}
+  @type model_tier :: :small | :medium | :large
+
+  @doc """
+  Detect model size tier from the LM Studio model name.
+
+  Priority:
+  1. Query LM Studio /v1/models for the ACTUAL loaded model (cached in app env)
+  2. Fall back to GIULIA_LM_STUDIO_MODEL env var
+  3. Default to :medium
+
+  Tiers:
+  - :small  (<=7B)  — ultra-constrained, one step at a time
+  - :medium (8-16B) — workflow hints, edit_file examples
+  - :large  (>=17B) — fuller instructions, can plan multi-step
+  """
+  @spec detect_model_tier() :: model_tier()
+  def detect_model_tier do
+    # Check cache first (avoid hitting LM Studio on every iteration)
+    case Application.get_env(:giulia, :detected_model_tier) do
+      nil ->
+        {tier, model_name} = detect_model_from_lm_studio()
+        Application.put_env(:giulia, :detected_model_tier, tier)
+        Application.put_env(:giulia, :detected_model_name, model_name)
+        require Logger
+        Logger.info("MODEL TIER DETECTION: #{model_name} → #{tier}")
+        tier
+
+      cached_tier ->
+        cached_tier
+    end
+  end
+
+  @doc """
+  Query LM Studio /v1/models to discover the actual loaded model.
+  Returns {tier, model_name}.
+  """
+  @spec detect_model_from_lm_studio() :: {model_tier(), String.t()}
+  def detect_model_from_lm_studio do
+    url = Giulia.Core.PathMapper.lm_studio_models_url()
+
+    case Req.get(url, receive_timeout: 3000, retry: false) do
+      {:ok, %{status: 200, body: %{"data" => models}}} when is_list(models) and models != [] ->
+        # Prefer the model matching GIULIA_LM_STUDIO_MODEL env var
+        # (LM Studio can have multiple models loaded simultaneously)
+        env_model = System.get_env("GIULIA_LM_STUDIO_MODEL")
+        model_ids = Enum.map(models, &Map.get(&1, "id", "unknown"))
+
+        model_id = if env_model do
+          # Find model matching env var (partial match: "qwen/qwen2.5-coder-14b" matches "qwen2.5-coder-14b")
+          env_lower = String.downcase(env_model)
+          Enum.find(model_ids, List.first(model_ids), fn id ->
+            id_lower = String.downcase(id)
+            String.contains?(id_lower, env_lower) or String.contains?(env_lower, id_lower)
+          end)
+        else
+          List.first(model_ids)
+        end
+
+        {detect_model_tier(model_id), model_id}
+
+      _ ->
+        # Can't reach LM Studio, fall back to env var
+        model_name = System.get_env("GIULIA_LM_STUDIO_MODEL") ||
+                     Application.get_env(:giulia, :lm_studio_model, "unknown")
+        {detect_model_tier(model_name), model_name}
+    end
+  rescue
+    _ ->
+      model_name = System.get_env("GIULIA_LM_STUDIO_MODEL") || "unknown"
+      {detect_model_tier(model_name), model_name}
+  end
+
+  @doc """
+  Clear the cached model tier (call when model changes, e.g. on new inference).
+  """
+  @spec clear_model_tier_cache() :: :ok
+  def clear_model_tier_cache do
+    Application.delete_env(:giulia, :detected_model_tier)
+    Application.delete_env(:giulia, :detected_model_name)
+    :ok
+  end
+
+  @spec detect_model_tier(String.t()) :: model_tier()
+  def detect_model_tier(model_name) when is_binary(model_name) do
+    # Extract parameter count from model name (e.g., "14b", "3b", "24b", "32b")
+    case Regex.run(~r/(\d+)b/i, String.downcase(model_name)) do
+      [_, size_str] ->
+        size = String.to_integer(size_str)
+        cond do
+          size <= 7  -> :small
+          size <= 16 -> :medium
+          true       -> :large
+        end
+
+      nil ->
+        # Can't determine size, default to medium (safe middle ground)
+        :medium
+    end
+  end
+
+  def detect_model_tier(_), do: :medium
 
   # ============================================================================
   # System Prompt Generation
@@ -113,6 +214,7 @@ defmodule Giulia.Prompt.Builder do
     - When searching for PATTERNS in code: Use "search_code"
     - When you need FUNCTION SOURCE but don't know the file: Use "lookup_function"
     - When REPLACING/REFACTORING a function: Use "patch_function" — code goes in ```elixir block after </action>
+    - When RENAMING function calls across files: Use "edit_file" (old_text="OldName", new_text="NewName") — one file at a time
     - When making SMALL TEXT EDITS (imports, module attrs, config): Use "edit_file" (requires exact old_text match)
     - When RUNNING TESTS after code changes: Use "run_tests" (structured failure analysis)
     - When asked about CHANGE IMPACT or "what breaks if I change X": Use "get_impact_map"
@@ -184,97 +286,159 @@ defmodule Giulia.Prompt.Builder do
   @spec build_minimal_prompt(keyword()) :: String.t()
   def build_minimal_prompt(opts \\ []) do
     tools = Registry.list_tools()
-    # Only include module names, not full summary
-    modules = Store.list_modules() |> Enum.map(& &1.name) |> Enum.take(10)
 
     """
-    You are Giulia. You MUST wrap your response in <action> tags.
+    You are Giulia, an autonomous AI dev agent. Respond ONLY with <action> tags.
 
-    AVAILABLE TOOLS: #{Enum.map_join(tools, ", ", & &1.name)}
+    TOOLS: #{Enum.map_join(tools, ", ", & &1.name)}
 
-    PROJECT MODULES: #{Enum.join(modules, ", ")}
-
-    RESPONSE FORMAT (REQUIRED):
-
-    For NON-CODE tools (read, search, respond, think):
+    FORMAT — non-code tools:
     <action>
     {"tool": "TOOL_NAME", "parameters": {"PARAM": "VALUE"}}
     </action>
 
-    For CODE tools (patch_function, write_function):
+    FORMAT — code tools (patch_function, write_function):
     <action>
-    {"tool": "patch_function", "parameters": {"module": "Module.Name", "function_name": "func", "arity": 2}}
+    {"tool": "patch_function", "parameters": {"module": "M", "function_name": "f", "arity": 2}}
     </action>
 
     ```elixir
-    defp func(arg1, arg2) do
+    def f(a, b), do: a + b
+    ```
+
+    Code goes in ```elixir block AFTER </action>. NOT inside JSON.
+
+    RULES: lookup_function for known functions. read_file for files. patch_function for code changes. edit_file for small text edits (rename, imports, config). bulk_replace for renaming across many files. commit_changes after multi-file edits. run_tests to verify. respond when done.
+
+    WORKFLOW for multi-file refactoring:
+    1. get_impact_map to find all dependents of the target module
+    2. bulk_replace with pattern, replacement, and the file_list from the impact map
+    3. commit_changes to verify all edits compile
+    4. respond with summary
+
+    bulk_replace example — rename a function call across 22 files:
+    <action>
+    {"tool": "bulk_replace", "parameters": {"pattern": "Registry.execute(", "replacement": "Registry.dispatch(", "file_list": ["lib/giulia/tools/edit_file.ex", "lib/giulia/tools/read_file.ex", "..."]}}
+    </action>
+
+    WARNING: If you used get_impact_map and found N dependents, you MUST modify all of them before responding. The system tracks your progress and will block respond if you skip files.
+
+    #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
+    You are autonomous — fix errors yourself. Goal: green build + green tests.
+    #{format_constitution_minimal(opts[:constitution])}
+    """
+  end
+
+  # ============================================================================
+  # Model-Tier Prompt Dispatch
+  # ============================================================================
+
+  @doc """
+  Select prompt based on model size tier.
+
+  - :small  (<=7B)  — ultra-constrained, `build_minimal_prompt` (one action per turn)
+  - :medium (8-16B) — `build_minimal_prompt` with workflow hints (current default)
+  - :large  (>=17B) — `build_large_model_prompt` with planning capability
+  """
+  @spec build_tiered_prompt(model_tier(), keyword()) :: String.t()
+  def build_tiered_prompt(:small, opts), do: build_small_model_prompt(opts)
+  def build_tiered_prompt(:medium, opts), do: build_minimal_prompt(opts)
+  def build_tiered_prompt(:large, opts), do: build_large_model_prompt(opts)
+  def build_tiered_prompt(_, opts), do: build_minimal_prompt(opts)
+
+  @doc """
+  Ultra-constrained prompt for small models (<=7B).
+
+  Key differences from :medium:
+  - No multi-step workflow hints (model can't plan ahead)
+  - Fewer examples (save context space)
+  - Explicit "do ONE action per response" constraint
+  """
+  @spec build_small_model_prompt(keyword()) :: String.t()
+  def build_small_model_prompt(opts \\ []) do
+    tools = Registry.list_tools()
+
+    """
+    You are Giulia, an AI dev agent. Respond with ONE <action> tag per response.
+
+    TOOLS: #{Enum.map_join(tools, ", ", & &1.name)}
+
+    FORMAT:
+    <action>
+    {"tool": "TOOL_NAME", "parameters": {"PARAM": "VALUE"}}
+    </action>
+
+    Code tools (patch_function, write_function) — code in ```elixir block AFTER </action>.
+    #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
+    ONE action per response. Fix errors yourself. respond when done.
+    """
+  end
+
+  @doc """
+  Extended prompt for large models (>=17B).
+
+  Key differences from :medium:
+  - Includes planning workflow for multi-file tasks
+  - More tool descriptions and examples
+  - Can handle multi-step reasoning
+  """
+  @spec build_large_model_prompt(keyword()) :: String.t()
+  def build_large_model_prompt(opts \\ []) do
+    tools = Registry.list_tools()
+
+    """
+    You are Giulia, an autonomous AI development agent working in an Elixir project.
+    Respond ONLY with <action> tags containing JSON tool calls.
+
+    ## Available Tools
+    #{format_tools_for_prompt(tools)}
+
+    ## Response Format
+
+    Non-code tools:
+    <action>
+    {"tool": "TOOL_NAME", "parameters": {"PARAM": "VALUE"}}
+    </action>
+
+    Code tools (patch_function, write_function):
+    <action>
+    {"tool": "patch_function", "parameters": {"module": "Giulia.Example", "function_name": "my_func", "arity": 2}}
+    </action>
+
+    ```elixir
+    def my_func(arg1, arg2) do
       arg1 + arg2
     end
     ```
 
-    CRITICAL: For code tools, place the code in a ```elixir fenced block after </action>.
-    Do NOT put code in JSON. Do NOT add any text after the closing ```.
+    Code goes in ```elixir block AFTER </action>. NOT inside JSON.
 
-    EXAMPLES:
+    ## Tool Selection
+    - SPECIFIC FUNCTION by name: "lookup_function" (fast, uses index)
+    - Whole FILE: "read_file"
+    - PATTERNS in code: "search_code"
+    - RENAMING function calls across files: "bulk_replace" with pattern/replacement/file_list — ONE call replaces ALL files
+    - REPLACING a function BODY (rewriting logic): "patch_function" — code in ```elixir block
+    - SMALL TEXT EDITS (imports, attrs): "edit_file" (exact old_text match)
+    - TESTS: "run_tests" after code changes
+    - CHANGE IMPACT: "get_impact_map" before modifying shared modules
+    - MULTI-FILE EDITS: call "commit_changes" after all edits to verify atomically
 
-    To look up a function:
-    <action>
-    {"tool": "lookup_function", "parameters": {"function_name": "try_repair_json"}}
-    </action>
-
-    To read a file:
-    <action>
-    {"tool": "read_file", "parameters": {"path": "lib/giulia/client.ex"}}
-    </action>
-
-    To replace a function (code in fenced block):
-    <action>
-    {"tool": "patch_function", "parameters": {"module": "Giulia.Example", "function_name": "hello", "arity": 1}}
-    </action>
-
-    ```elixir
-    def hello(name) do
-      "Hello, " <> name <> "!"
-    end
-    ```
-
-    To respond:
-    <action>
-    {"tool": "respond", "parameters": {"message": "The function does X..."}}
-    </action>
-
-    RULES:
-    1. For FUNCTION questions: Use lookup_function (fast, uses index)
-    2. For FILE questions: Use read_file
-    3. For REPLACING functions: Use patch_function — code in ```elixir block after </action>
-    4. For SMALL TEXT EDITS (imports, config): Use edit_file
-    5. ONE action per response
-    6. After lookup_function returns code, use "respond" to analyze it
-    7. After BUILD GREEN, if tests exist, use run_tests to verify behavior
-    8. After multiple file edits, call commit_changes to atomically verify
+    ## Workflow for Multi-File Refactoring (IMPORTANT)
+    1. get_impact_map to identify ALL dependents of the module you're changing
+    2. bulk_replace with the pattern, replacement, and file_list from the impact map
+    3. commit_changes — atomically compiles and tests everything
+    4. If commit fails: read the error, fix the issue, commit_changes again
+    5. respond with summary only after green build
+    WARNING: The system tracks how many dependents you found vs how many you modified. If you skip files, respond will be BLOCKED.
 
     #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
 
-    DEFINITION OF DONE:
-    1. Build green (mix compile)
-    2. Tests green (run_tests returns 0 failures)
-    3. Downstream regression green (Giulia auto-verifies dependents)
-    4. You verified ALL before using respond
-    NEVER claim success from compile alone. If tests or downstream regression failed, fix and re-run.
-
-    GRAPH-AWARE:
-    When you see "HUB IMPACT" or "CRITICAL HUB WARNING", be extra careful.
-    Hub modules have many dependents — do NOT change their public function signatures.
-    Use get_impact_map to check before modifying unfamiliar modules.
-
-    AGENTIC MANDATE:
-    You are the AUTONOMOUS DEVELOPER. If you see a syntax error or build failure:
-    - DO NOT ask the user to fix it
-    - USE patch_function or edit_file to FIX IT YOURSELF
-    - Goal: GREEN BUILD + GREEN TESTS
-
-    Do NOT generate fake tool results.
-    After a tool succeeds, use RESPOND to give your answer.
+    ## Constraints
+    - ONLY use tools from the Available Tools list
+    - NEVER access files outside the project root
+    - You are autonomous — fix errors yourself, don't report them
+    - Goal: green build + passing tests before responding
     #{format_constitution_minimal(opts[:constitution])}
     """
   end
@@ -290,7 +454,8 @@ defmodule Giulia.Prompt.Builder do
   def build_messages(user_prompt, opts \\ []) do
     system_prompt =
       if opts[:minimal] do
-        build_minimal_prompt(opts)
+        tier = opts[:model_tier] || detect_model_tier()
+        build_tiered_prompt(tier, opts)
       else
         build_system_prompt(opts)
       end
@@ -457,6 +622,7 @@ defmodule Giulia.Prompt.Builder do
     ## TRANSACTION MODE (Active)
     Your writes are being STAGED, not written to disk.
     - write_file, edit_file, patch_function, write_function → buffer only
+    - bulk_replace → batch find-and-replace across multiple files (all staged)
     - read_file → returns staged content if available
     - commit_changes → atomically flush all changes, compile, test, rollback on failure
     - You MUST call commit_changes before respond
@@ -471,6 +637,7 @@ defmodule Giulia.Prompt.Builder do
     ## TRANSACTION MODE (Active)
     Your writes are being STAGED, not written to disk.
     - write_file, edit_file, patch_function, write_function → buffer only
+    - bulk_replace → batch find-and-replace across multiple files (all staged)
     - read_file → returns staged content if available
     - commit_changes → atomically flush all changes, compile, test, rollback on failure
     - You MUST call commit_changes before respond

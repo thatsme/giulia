@@ -17,9 +17,9 @@ defmodule Giulia.Tools.WriteFile do
 
   @primary_key false
   embedded_schema do
-    field :path, :string
-    field :content, :string
-    field :explanation, :string
+    field(:path, :string)
+    field(:content, :string)
+    field(:explanation, :string)
   end
 
   # Registry callbacks
@@ -28,16 +28,24 @@ defmodule Giulia.Tools.WriteFile do
   def name, do: "write_file"
 
   @impl true
-  def description, do: "Write content to a file (must be within project root). Creates parent directories if needed."
+  def description,
+    do:
+      "Write content to a file (must be within project root). Creates parent directories if needed."
 
   @impl true
   def parameters do
     %{
       type: "object",
       properties: %{
-        path: %{type: "string", description: "Path to the file (relative to project root or absolute within project)"},
+        path: %{
+          type: "string",
+          description: "Path to the file (relative to project root or absolute within project)"
+        },
         content: %{type: "string", description: "Content to write to the file"},
-        explanation: %{type: "string", description: "Why this change is being made (for audit trail)"}
+        explanation: %{
+          type: "string",
+          description: "Why this change is being made (for audit trail)"
+        }
       },
       required: ["path", "content"]
     }
@@ -57,39 +65,8 @@ defmodule Giulia.Tools.WriteFile do
   If a sandbox is provided (from ProjectContext), validates path security.
   Otherwise, uses a default sandbox from the current working directory.
   """
-  def execute(input, opts \\ [])
-
-  def execute(%__MODULE__{path: path, content: content, explanation: explanation}, opts) do
-    sandbox = get_sandbox(opts)
-
-    case PathSandbox.validate(sandbox, path) do
-      {:ok, safe_path} ->
-        # Pass opts through for bypass_safeguard option
-        result = do_write(safe_path, content, explanation, opts)
-
-        # Mark file as dirty in project context for verification tracking
-        if match?({:ok, _}, result) do
-          if project_pid = Keyword.get(opts, :project_pid) do
-            ProjectContext.mark_dirty(project_pid, safe_path)
-          end
-        end
-
-        result
-
-      {:error, :sandbox_violation} ->
-        {:error, PathSandbox.violation_message(path, sandbox)}
-    end
-  end
-
-  def execute(%{"path" => _} = params, opts) do
-    case Giulia.StructuredOutput.parse_map(params, __MODULE__) do
-      {:ok, struct} -> execute(struct, opts)
-      {:error, _} = error -> error
-    end
-  end
-
-  def execute(%{path: _} = params, opts) do
-    case Giulia.StructuredOutput.parse_map(stringify_keys(params), __MODULE__) do
+  def execute(input, opts \\ []) do
+    case Giulia.StructuredOutput.parse_map(input, __MODULE__) do
       {:ok, struct} -> execute(struct, opts)
       {:error, _} = error -> error
     end
@@ -133,18 +110,19 @@ defmodule Giulia.Tools.WriteFile do
             old_lines = existing_content |> String.split("\n") |> length()
             new_lines = new_content |> String.split("\n") |> length()
 
-            {:error, """
-            DESTRUCTIVE WRITE BLOCKED: You attempted to reduce file size by #{Float.round(reduction * 100, 1)}%.
+            {:error,
+             """
+             DESTRUCTIVE WRITE BLOCKED: You attempted to reduce file size by #{Float.round(reduction * 100, 1)}%.
 
-            File: #{Path.basename(path)}
-            Original: #{old_lines} lines (#{old_size} bytes)
-            Proposed: #{new_lines} lines (#{new_size} bytes)
+             File: #{Path.basename(path)}
+             Original: #{old_lines} lines (#{old_size} bytes)
+             Proposed: #{new_lines} lines (#{new_size} bytes)
 
-            This looks like you may be writing to the WRONG FILE or have incomplete content.
+             This looks like you may be writing to the WRONG FILE or have incomplete content.
 
-            If this was intentional (deleting code), use edit_file with the specific section to remove.
-            Otherwise, check your file path and try again.
-            """}
+             If this was intentional (deleting code), use edit_file with the specific section to remove.
+             Otherwise, check your file path and try again.
+             """}
           else
             :ok
           end

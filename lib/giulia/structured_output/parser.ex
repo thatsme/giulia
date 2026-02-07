@@ -262,6 +262,65 @@ defmodule Giulia.StructuredOutput.Parser do
   end
 
   # ============================================================================
+  # Multi-Action Parsing — extract ALL <action> blocks from one response
+  # ============================================================================
+
+  @doc """
+  Parse ALL action blocks from a model response. Returns a list of parsed tool calls.
+  Used when the model batches multiple tool calls in a single response.
+
+  Returns `{:ok, [%{"tool" => ..., "parameters" => ...}, ...]}` or falls back
+  to single-action parsing if only one action is found.
+  """
+  @spec parse_all_actions(String.t()) :: {:ok, [map()]} | {:error, term()}
+  def parse_all_actions(response) when is_binary(response) do
+    # Find all <action>...</action> blocks with their trailing content
+    # Pattern: each <action>JSON</action> optionally followed by ```elixir code```
+    case extract_action_blocks(response) do
+      [] -> {:error, :no_actions_found}
+      [single] -> {:ok, [single]}
+      multiple -> {:ok, multiple}
+    end
+  end
+
+  defp extract_action_blocks(response) do
+    # Split response at each <action> tag
+    # Regex captures: (action_json) and (trailing content until next <action> or end)
+    pattern = ~r/<action>\s*(.*?)\s*<\/action>(.*?)(?=<action>|\z)/s
+    matches = Regex.scan(pattern, response)
+
+    matches
+    |> Enum.map(fn [_full, action_json, trailing] ->
+      parse_single_action_block(action_json, trailing)
+    end)
+    |> Enum.filter(fn result -> result != nil end)
+  end
+
+  defp parse_single_action_block(action_json, trailing) do
+    case Jason.decode(String.trim(action_json)) do
+      {:ok, %{"tool" => tool, "parameters" => params}} when is_map(params) ->
+        trailing_code = extract_trailing_code(trailing)
+
+        if tool in @code_tools and trailing_code != nil do
+          %{"tool" => tool, "parameters" => Map.put(params, "code", trailing_code)}
+        else
+          %{"tool" => tool, "parameters" => params}
+        end
+
+      {:ok, %{"tool" => tool}} ->
+        trailing_code = extract_trailing_code(trailing)
+
+        if tool in @code_tools and trailing_code != nil do
+          %{"tool" => tool, "parameters" => %{"code" => trailing_code}}
+        else
+          %{"tool" => tool, "parameters" => %{}}
+        end
+
+      _ -> nil
+    end
+  end
+
+  # ============================================================================
   # JSON Repair for Action Tags
   # ============================================================================
 

@@ -27,8 +27,8 @@ defmodule Giulia.Tools.CycleCheck do
 
   @primary_key false
   embedded_schema do
-    field :label, :string, default: "all"
-    field :fail_above, :integer, default: -1
+    field(:label, :string, default: "all")
+    field(:fail_above, :integer, default: -1)
   end
 
   @impl true
@@ -37,9 +37,9 @@ defmodule Giulia.Tools.CycleCheck do
   @impl true
   def description do
     "Detect compile-time cyclic dependencies in the project. " <>
-    "Returns cycles found by mix xref. Use label 'compile-connected', " <>
-    "'compile', or 'all' (default, runs both). " <>
-    "Set fail_above to a number to fail if cycles exceed that count."
+      "Returns cycles found by mix xref. Use label 'compile-connected', " <>
+      "'compile', or 'all' (default, runs both). " <>
+      "Set fail_above to a number to fail if cycles exceed that count."
   end
 
   @impl true
@@ -53,7 +53,8 @@ defmodule Giulia.Tools.CycleCheck do
         },
         fail_above: %{
           type: "integer",
-          description: "Fail if cycle count exceeds this number (-1 = no limit, 0 = no cycles allowed)"
+          description:
+            "Fail if cycle count exceeds this number (-1 = no limit, 0 = no cycles allowed)"
         }
       },
       required: []
@@ -66,42 +67,8 @@ defmodule Giulia.Tools.CycleCheck do
     |> validate_inclusion(:label, ["compile-connected", "compile", "all"])
   end
 
-  def execute(params, opts \\ [])
-
-  def execute(%__MODULE__{label: label, fail_above: fail_above}, opts) do
-    project_path = Keyword.get(opts, :project_path) || File.cwd!()
-
-    # Step 1: Check Elixir version
-    case check_elixir_version(project_path) do
-      {:ok, version} ->
-        Logger.info("Elixir #{version} detected — cycle check supported")
-
-        # Step 2: Run xref for requested labels
-        labels = if label == "all", do: @labels, else: [label]
-
-        results =
-          Enum.map(labels, fn l ->
-            {l, run_xref(l, fail_above, project_path)}
-          end)
-
-        format_results(results, version)
-
-      {:error, reason} ->
-        {:ok, reason}
-    end
-  end
-
-  def execute(%{"label" => _} = params, opts) do
-    case parse_params(params) do
-      {:ok, struct} -> execute(struct, opts)
-      {:error, _} = error -> error
-    end
-  end
-
-  def execute(%{} = params, opts) do
-    # Handle atom keys or empty params
-    params = stringify_keys(params)
-    case parse_params(params) do
+  def execute(params, opts \\ []) do
+    case Giulia.StructuredOutput.parse_map(params, __MODULE__) do
       {:ok, struct} -> execute(struct, opts)
       {:error, _} = error -> error
     end
@@ -122,10 +89,10 @@ defmodule Giulia.Tools.CycleCheck do
                 {:ok, "#{major}.#{minor}"}
               else
                 {:error,
-                  "⚠ Elixir #{major}.#{minor} detected. " <>
-                  "Cycle detection requires Elixir 1.19+ for accurate results. " <>
-                  "Earlier versions may report phantom cycles or miss real ones. " <>
-                  "Upgrade with: asdf install elixir 1.19.0 (or your version manager)"}
+                 "⚠ Elixir #{major}.#{minor} detected. " <>
+                   "Cycle detection requires Elixir 1.19+ for accurate results. " <>
+                   "Earlier versions may report phantom cycles or miss real ones. " <>
+                   "Upgrade with: asdf install elixir 1.19.0 (or your version manager)"}
               end
 
             _ ->
@@ -215,6 +182,7 @@ defmodule Giulia.Tools.CycleCheck do
         case result do
           {:ok, %{cycles: cycles, count: count, passed: passed}} ->
             status = if passed, do: "✓ PASS", else: "✗ FAIL"
+
             cycle_detail =
               if count == 0 do
                 "  No cycles found."
@@ -222,7 +190,7 @@ defmodule Giulia.Tools.CycleCheck do
                 cycles
                 |> Enum.with_index(1)
                 |> Enum.map(fn {%{header: header, modules: modules}, idx} ->
-                  mods = Enum.map(modules, &("      #{&1}")) |> Enum.join("\n")
+                  mods = Enum.map(modules, &"      #{&1}") |> Enum.join("\n")
                   "  #{idx}. #{header}\n#{mods}"
                 end)
                 |> Enum.join("\n\n")
@@ -240,7 +208,10 @@ defmodule Giulia.Tools.CycleCheck do
 
     total_cycles =
       results
-      |> Enum.map(fn {_, {:ok, %{count: c}}} -> c; _ -> 0 end)
+      |> Enum.map(fn
+        {_, {:ok, %{count: c}}} -> c
+        _ -> 0
+      end)
       |> Enum.sum()
 
     summary =
@@ -262,14 +233,16 @@ defmodule Giulia.Tools.CycleCheck do
         """
       end
 
-    {:ok, "Cycle Check (Elixir #{elixir_version})\n" <>
-          "==================================\n\n" <>
-          Enum.join(sections, "\n") <>
-          summary}
+    {:ok,
+     "Cycle Check (Elixir #{elixir_version})\n" <>
+       "==================================\n\n" <>
+       Enum.join(sections, "\n") <>
+       summary}
   end
 
   defp parse_params(params) do
     changeset = changeset(params)
+
     if changeset.valid? do
       {:ok, Ecto.Changeset.apply_changes(changeset)}
     else

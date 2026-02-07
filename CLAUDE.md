@@ -138,6 +138,65 @@ PathSandbox.validate(sandbox, path)
 - Router classifies tasks and picks the right brain
 - Don't use a sledgehammer (Claude) to hang a picture frame
 
+## Build Counter (MANDATORY)
+
+Every code modification MUST increment `@build` in `mix.exs` before building.
+This is how we track which version is running on client vs server.
+
+```elixir
+# In mix.exs — increment this on EVERY change
+@build 34
+```
+
+## Using Giulia's API for Code Analysis (PREFERRED)
+
+When the Giulia daemon is running (Docker or local), **always prefer querying the live API** over raw file searches for code status and analysis. The daemon has pre-indexed AST data, a Knowledge Graph, and function metadata — use it.
+
+**Index API** (ETS-backed, instant):
+```bash
+# All modules in the project
+curl http://localhost:4000/api/index/modules
+
+# Functions in a specific module (with arities, line numbers, types)
+curl http://localhost:4000/api/index/functions?module=Giulia.Tools.Registry
+
+# Full project summary (modules, functions, types, specs, structs, callbacks)
+curl http://localhost:4000/api/index/summary
+
+# Indexer status (idle/scanning, file count, last scan time)
+curl http://localhost:4000/api/index/status
+```
+
+**Knowledge Graph API** (dependency topology):
+```bash
+# Graph statistics (vertices, edges, components, top hubs)
+curl http://localhost:4000/api/knowledge/stats
+
+# Who depends on module X (downstream blast radius)
+curl http://localhost:4000/api/knowledge/dependents?module=Giulia.Tools.Registry
+
+# What module X depends on (upstream dependencies)
+curl http://localhost:4000/api/knowledge/dependencies?module=Giulia.Tools.Registry
+
+# Hub score (in-degree, out-degree — high = dangerous to modify)
+curl http://localhost:4000/api/knowledge/centrality?module=Giulia.Tools.Registry
+
+# Full impact map (upstream + downstream at depth N)
+curl "http://localhost:4000/api/knowledge/impact?module=Giulia.Tools.Registry&depth=2"
+
+# Shortest path between two modules
+curl "http://localhost:4000/api/knowledge/path?from=Giulia.Client&to=Giulia.Tools.Registry"
+```
+
+**When to use what:**
+- **Verify interface contracts** → `/api/index/functions?module=X` (shows all arities)
+- **Assess blast radius before refactoring** → `/api/knowledge/dependents?module=X`
+- **Check if module is a hub** → `/api/knowledge/centrality?module=X`
+- **Understand project shape** → `/api/index/summary`
+- **Find dependency chains** → `/api/knowledge/path?from=A&to=B`
+
+**Rule**: If Giulia's daemon is up, query it first. Don't grep for what ETS already knows.
+
 ## Development Commands
 
 ```bash
