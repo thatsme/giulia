@@ -47,6 +47,8 @@ defmodule Giulia.Prompt.Builder do
     ## Current Project Context
     #{project_summary}
 
+    #{build_topology_summary()}
+
     #{format_constitution(constitution)}
 
     ## Response Schema
@@ -112,6 +114,31 @@ defmodule Giulia.Prompt.Builder do
     - When you need FUNCTION SOURCE but don't know the file: Use "lookup_function"
     - When REPLACING/REFACTORING a function: Use "patch_function" — code goes in ```elixir block after </action>
     - When making SMALL TEXT EDITS (imports, module attrs, config): Use "edit_file" (requires exact old_text match)
+    - When RUNNING TESTS after code changes: Use "run_tests" (structured failure analysis)
+    - When asked about CHANGE IMPACT or "what breaks if I change X": Use "get_impact_map"
+    - When asked HOW modules are connected: Use "trace_path"
+
+    ## DEFINITION OF DONE (CRITICAL)
+    A task is ONLY complete when ALL of these are true:
+    1. The build is green (mix compile succeeds)
+    2. All relevant tests pass (run_tests returns 0 failures)
+    3. You have VERIFIED the fix by running run_tests AFTER your edit
+    NEVER claim success based only on a green build. If tests exist, you MUST run them.
+    If run_tests showed failures, you CANNOT use respond until run_tests shows 0 failures.
+
+    ## AUTO-REGRESSION (Graph-Targeted Testing)
+    When you modify a module, Giulia automatically verifies all downstream dependents.
+    After BUILD GREEN, targeted tests for the modified module AND its dependents run automatically.
+    If a downstream test fails, it is YOUR responsibility to fix the regression before claiming success.
+    You are an Elite Engineer — you own the blast radius of every change you make.
+
+    ## Topological Awareness (Graph-Aware Constraints)
+    You are graph-aware. The Knowledge Graph tracks every module dependency.
+    - When you see a "CRITICAL HUB WARNING" in an approval, you MUST prioritize backward compatibility.
+    - Do NOT change public function signatures of Hub modules (>3 dependents) without a multi-step transition plan.
+    - Hub modules include: Registry, Orchestrator, PathSandbox, PathMapper, Store. Treat them as load-bearing walls.
+    - Leaf modules (0-1 dependents) are safe for aggressive refactoring.
+    - Use get_impact_map before modifying any module you're unsure about.
 
     ## Constraints
     1. ONLY use tools from the Available Tools list
@@ -220,12 +247,25 @@ defmodule Giulia.Prompt.Builder do
     4. For SMALL TEXT EDITS (imports, config): Use edit_file
     5. ONE action per response
     6. After lookup_function returns code, use "respond" to analyze it
+    7. After BUILD GREEN, if tests exist, use run_tests to verify behavior
+
+    DEFINITION OF DONE:
+    1. Build green (mix compile)
+    2. Tests green (run_tests returns 0 failures)
+    3. Downstream regression green (Giulia auto-verifies dependents)
+    4. You verified ALL before using respond
+    NEVER claim success from compile alone. If tests or downstream regression failed, fix and re-run.
+
+    GRAPH-AWARE:
+    When you see "HUB IMPACT" or "CRITICAL HUB WARNING", be extra careful.
+    Hub modules have many dependents — do NOT change their public function signatures.
+    Use get_impact_map to check before modifying unfamiliar modules.
 
     AGENTIC MANDATE:
     You are the AUTONOMOUS DEVELOPER. If you see a syntax error or build failure:
     - DO NOT ask the user to fix it
     - USE patch_function or edit_file to FIX IT YOURSELF
-    - Goal: GREEN BUILD (mix compile success)
+    - Goal: GREEN BUILD + GREEN TESTS
 
     Do NOT generate fake tool results.
     After a tool succeeds, use RESPOND to give your answer.
@@ -359,6 +399,31 @@ defmodule Giulia.Prompt.Builder do
   # ============================================================================
   # Private - Formatting
   # ============================================================================
+
+  defp build_topology_summary do
+    try do
+      case Giulia.Knowledge.Store.stats() do
+        %{vertices: 0} ->
+          ""
+
+        %{vertices: v, edges: e, components: c, hubs: hubs} ->
+          hub_list =
+            hubs
+            |> Enum.take(3)
+            |> Enum.map_join(", ", fn {name, degree} -> "#{name} (#{degree} deps)" end)
+
+          """
+          ## Project Topology
+          Modules: #{v} vertices, Dependencies: #{e} edges, Components: #{c}
+          Key hubs: #{hub_list}
+          """
+      end
+    rescue
+      _ -> ""
+    catch
+      _, _ -> ""
+    end
+  end
 
   defp format_tools_for_prompt(tools) do
     tools

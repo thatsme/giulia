@@ -205,6 +205,29 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  Find the primary module defined in a file path.
+  Returns {:ok, %{name: module_name}} or :not_found.
+  """
+  def find_module_by_file(file_path) do
+    # Normalize path separators for matching
+    normalized = String.replace(file_path, "\\", "/")
+
+    all_asts()
+    |> Enum.find_value(:not_found, fn {path, ast_data} ->
+      path_normalized = String.replace(path, "\\", "/")
+      if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
+        modules = ast_data[:modules] || []
+        case modules do
+          [first | _] -> {:ok, %{name: first.name}}
+          _ -> nil
+        end
+      else
+        nil
+      end
+    end)
+  end
+
+  @doc """
   Find a specific function by name (optionally with arity).
   Returns a list of matches across all modules.
   """

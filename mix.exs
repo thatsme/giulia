@@ -20,7 +20,7 @@ defmodule Giulia.MixProject do
 
   def application do
     [
-      extra_applications: [:logger],
+      extra_applications: [:logger, :tools],
       mod: {Giulia.Application, []}
     ]
   end
@@ -85,6 +85,9 @@ defmodule Giulia.MixProject do
 
       # SQLite for conversation history
       {:exqlite, "~> 0.20"},
+
+      # Knowledge graph (pure Elixir, no NIFs)
+      {:libgraph, "~> 0.16"},
 
       # Binary compilation (client only)
       {:burrito, "~> 1.0", runtime: false}

@@ -144,7 +144,10 @@ defmodule Giulia.Tools.EditFile do
           end
 
         count > 1 ->
-          {:error, "Found #{count} occurrences of old_text. Please provide more context to make it unique."}
+          # Show line numbers of all matches so the model can target the right one
+          match_lines = find_match_line_numbers(content, old_text)
+          lines_str = Enum.join(match_lines, ", ")
+          {:error, "Found #{count} occurrences of old_text at lines #{lines_str}. Include more surrounding context in old_text to make it unique (e.g. the full line or adjacent lines)."}
 
         true ->
           # Exactly one match - perform replacement
@@ -225,6 +228,16 @@ defmodule Giulia.Tools.EditFile do
         end
       end)
     end
+  end
+
+  defp find_match_line_numbers(content, pattern) do
+    lines = String.split(content, "\n")
+    pattern_first_line = pattern |> String.split("\n") |> List.first()
+
+    lines
+    |> Enum.with_index(1)
+    |> Enum.filter(fn {line, _idx} -> String.contains?(line, pattern_first_line) end)
+    |> Enum.map(fn {_line, idx} -> idx end)
   end
 
   defp count_occurrences(content, pattern) do

@@ -40,6 +40,10 @@ defmodule Giulia.Inference.Orchestrator do
   # Tools that modify code and need verification
   @write_tools ["write_file", "edit_file", "write_function", "patch_function"]
 
+  # Read-only tools that never modify code — loops on these need Heuristic Completion, not context purge
+  @read_only_tools ~w(get_impact_map trace_path get_module_info search_code read_file
+                       list_files lookup_function get_function get_context cycle_check)
+
   defstruct [
     # Task info
     task: nil,
@@ -61,6 +65,7 @@ defmodule Giulia.Inference.Orchestrator do
 
     # History for context injection and loop detection
     last_action: nil,
+    repeat_count: 0,       # How many times the same action was called consecutively
     action_history: [],    # Last N actions for context
     recent_errors: [],     # For intervention messages
 
@@ -73,6 +78,10 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Verification
     pending_verification: false,
+
+    # Test-Lock: tracks whether tests have been run and their last status
+    # :untested | :red | :green
+    test_status: :untested,
 
     # Baseline check - was project broken before we started?
     baseline_status: :unknown,  # :clean | :dirty | :unknown
@@ -388,11 +397,16 @@ defmodule Giulia.Inference.Orchestrator do
   def handle_continue(:intervene, state) do
     Logger.warning("Intervention triggered - CONTEXT PURGE")
 
-    # Extract target file from task or recent actions
-    target_file = extract_target_file(state)
-    fresh_content = if target_file, do: read_fresh_content(target_file, state), else: nil
+    # Detect if we're stuck in a test loop — if so, use targeted intervention
+    intervention_msg = case state.last_action do
+      {"run_tests", test_params} ->
+        build_test_failure_intervention(test_params, state)
 
-    intervention_msg = build_intervention_message(state, target_file, fresh_content)
+      _ ->
+        target_file = extract_target_file(state)
+        fresh_content = if target_file, do: read_fresh_content(target_file, state), else: nil
+        build_intervention_message(state, target_file, fresh_content)
+    end
 
     # Reset with fresh context - PURGE the poisoned history
     messages = [
@@ -720,6 +734,64 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
+  # Build a test hint for BUILD GREEN observations.
+  # If a test file exists for the modified source, nudge the model to run it.
+  # Also checks hub centrality to suggest regression tests for dependents.
+  defp build_test_hint(state) do
+    target_file = extract_target_file(state)
+    direct_hint = build_direct_test_hint(target_file, state)
+    regression_hint = build_regression_hint(state)
+
+    case {direct_hint, regression_hint} do
+      {"", ""} -> ""
+      {d, ""} -> d
+      {"", r} -> r
+      {d, r} -> d <> r
+    end
+  end
+
+  defp build_direct_test_hint(nil, _state), do: ""
+  defp build_direct_test_hint(target_file, state) do
+    test_path = Giulia.Tools.RunTests.suggest_test_file(target_file)
+
+    resolved = if state.project_path do
+      sandbox = PathSandbox.new(state.project_path)
+      case PathSandbox.validate(sandbox, test_path) do
+        {:ok, resolved} -> resolved
+        {:error, _} -> nil
+      end
+    end
+
+    if resolved && File.exists?(resolved) do
+      "Note: Tests exist at #{test_path}. You may run them with run_tests to verify behavior.\n"
+    else
+      ""
+    end
+  end
+
+  # Graph-driven regression hint: if we modified a hub, suggest tests for its top dependents
+  defp build_regression_hint(state) do
+    case state.last_action do
+      {tool_name, params} when tool_name in ["patch_function", "write_function", "edit_file", "write_file"] ->
+        module_name = resolve_module_from_params(tool_name, params)
+        if module_name do
+          case Giulia.Knowledge.Store.centrality(module_name) do
+            {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
+              top_3 = Enum.take(dependents, 3)
+              "HUB IMPACT: #{module_name} has #{in_degree} dependents. Consider running tests for: #{Enum.join(top_3, ", ")}\n"
+            _ -> ""
+          end
+        else
+          ""
+        end
+      _ -> ""
+    end
+  rescue
+    _ -> ""
+  catch
+    _, _ -> ""
+  end
+
   # Extract the file we're supposed to be working on
   defp extract_target_file(state) do
     # Try to find file from task description
@@ -786,7 +858,7 @@ defmodule Giulia.Inference.Orchestrator do
       {:ok, output} ->
         case parse_compile_result(output) do
           :success ->
-            # Compilation succeeded - mark clean and continue
+            # Compilation succeeded - mark clean
             Logger.info("Verification passed")
             if state.project_pid, do: ProjectContext.mark_clean(state.project_pid)
 
@@ -799,19 +871,12 @@ defmodule Giulia.Inference.Orchestrator do
               })
             end
 
-            observation = """
-            #{Builder.format_observation(tool_name, result)}
-
-            ✅ BUILD GREEN. mix compile succeeded with zero errors.
-            Your task is COMPLETE. Use the "respond" tool NOW to tell the user what you did.
-            Do NOT make any more changes. Do NOT patch the same function again.
-            """
-            messages = state.messages ++ [%{role: "user", content: observation}]
-            state = %{state | messages: messages, pending_verification: false}
-            {:noreply, state, {:continue, :step}}
+            # Route to auto-regression (targeted tests) before telling model "done"
+            state = %{state | pending_verification: false}
+            {:noreply, state, {:continue, {:auto_regress, tool_name, result, nil}}}
 
           {:warnings, warnings} ->
-            # Warnings only - mark clean but inform model
+            # Warnings only - mark clean
             Logger.info("Verification passed with warnings")
             if state.project_pid, do: ProjectContext.mark_clean(state.project_pid)
 
@@ -825,19 +890,8 @@ defmodule Giulia.Inference.Orchestrator do
               })
             end
 
-            observation = """
-            #{Builder.format_observation(tool_name, result)}
-
-            ✅ BUILD GREEN. mix compile succeeded (warnings only, no errors).
-            Your task is COMPLETE. Use the "respond" tool NOW to tell the user what you did.
-            Do NOT make any more changes. Do NOT patch the same function again.
-
-            Compiler warnings (pre-existing, not caused by your change):
-            #{String.slice(warnings, 0, 500)}
-            """
-            messages = state.messages ++ [%{role: "user", content: observation}]
-            state = %{state | messages: messages, pending_verification: false}
-            {:noreply, state, {:continue, :step}}
+            state = %{state | pending_verification: false}
+            {:noreply, state, {:continue, {:auto_regress, tool_name, result, warnings}}}
 
           {:error, errors} ->
             # Compilation failed - mark failed and force model to fix
@@ -922,6 +976,155 @@ defmodule Giulia.Inference.Orchestrator do
         state = %{state | messages: messages, pending_verification: false}
         {:noreply, state, {:continue, :step}}
     end
+  end
+
+  # Auto-regression step — Graph-Targeted Testing
+  # After BUILD GREEN, automatically run tests for the modified module and its dependents.
+  # This is the "Sniper Rifle" — not all tests, just the ones the graph says matter.
+  @impl true
+  def handle_continue({:auto_regress, tool_name, result, warnings}, state) do
+    # Resolve which module was modified
+    module_name = case state.last_action do
+      {t, params} when t in ["patch_function", "write_function"] ->
+        params["module"] || params[:module]
+      {t, params} when t in ["edit_file", "write_file"] ->
+        path = params["file"] || params["path"] || params[:file] || params[:path]
+        case Store.find_module_by_file(path || "") do
+          {:ok, %{name: name}} -> name
+          _ -> nil
+        end
+      _ -> nil
+    end
+
+    project_path = state.project_path || File.cwd!()
+
+    # Query the graph for test targets
+    test_targets = if module_name do
+      case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+        {:ok, %{all_paths: paths}} when paths != [] -> paths
+        _ -> []
+      end
+    else
+      []
+    end
+
+    if test_targets != [] do
+      Logger.info("AUTO-REGRESSION: Running #{length(test_targets)} targeted test file(s) for #{module_name}")
+
+      # BROADCAST: Auto-regression starting
+      if state.request_id do
+        Events.broadcast(state.request_id, %{
+          type: :auto_regression_started,
+          module: module_name,
+          test_files: test_targets
+        })
+      end
+
+      # Run each test file and collect results
+      tool_opts = build_tool_opts(state)
+      test_results = Enum.map(test_targets, fn test_path ->
+        case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
+          {:ok, output} -> {test_path, :ok, output}
+          {:error, reason} -> {test_path, :error, inspect(reason)}
+        end
+      end)
+
+      # Check if any tests failed
+      failures = Enum.filter(test_results, fn
+        {_path, :ok, output} -> not (String.contains?(output, "0 failures") or String.starts_with?(output, "ALL TESTS PASSED"))
+        {_path, :error, _} -> true
+      end)
+
+      if failures == [] do
+        # All targeted tests passed — full green
+        Logger.info("AUTO-REGRESSION: All #{length(test_targets)} test files passed")
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :auto_regression_passed,
+            module: module_name,
+            test_count: length(test_targets)
+          })
+        end
+
+        test_summary = Enum.map_join(test_results, "\n", fn {path, _, output} ->
+          "  ✅ #{path}: #{String.slice(output, 0, 80)}"
+        end)
+
+        build_green_observation(tool_name, result, warnings, state, test_summary)
+      else
+        # Some tests failed — model must fix the regression
+        Logger.warning("AUTO-REGRESSION: #{length(failures)} test file(s) failed")
+        state = %{state | test_status: :red}
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :auto_regression_failed,
+            module: module_name,
+            failed_count: length(failures)
+          })
+        end
+
+        failure_details = Enum.map_join(failures, "\n\n", fn {path, _, output} ->
+          "❌ #{path}:\n#{String.slice(output, 0, 800)}"
+        end)
+
+        regression_msg = """
+        #{Builder.format_observation(tool_name, result)}
+
+        ✅ BUILD GREEN — but ❌ DOWNSTREAM REGRESSION DETECTED.
+
+        Giulia automatically verified #{length(test_targets)} test file(s) for #{module_name} and its dependents.
+        #{length(failures)} file(s) have failing tests:
+
+        #{failure_details}
+
+        You modified a module that other code depends on. Your change broke downstream logic.
+        You MUST fix the regression. Use read_file to examine the failing test, then edit_file or patch_function to fix.
+        Do NOT use respond until ALL tests pass.
+        """
+
+        messages = state.messages ++ [%{role: "user", content: regression_msg}]
+        # Grant extra iterations for regression fixing
+        new_max = state.max_iterations + 5
+        state = %{state | messages: messages, max_iterations: new_max}
+        {:noreply, state, {:continue, :step}}
+      end
+    else
+      # No test targets found — proceed with normal BUILD GREEN
+      Logger.debug("AUTO-REGRESSION: No test targets found for #{module_name || "unknown"}")
+      build_green_observation(tool_name, result, warnings, state, nil)
+    end
+  end
+
+  # Build the final BUILD GREEN observation (shared by auto-regress pass and no-tests paths)
+  defp build_green_observation(tool_name, result, warnings, state, test_summary) do
+    test_hint = build_test_hint(state)
+
+    warnings_section = if warnings do
+      "\nCompiler warnings (pre-existing, not caused by your change):\n#{String.slice(warnings, 0, 500)}"
+    else
+      ""
+    end
+
+    auto_regress_section = if test_summary do
+      "\n🎯 AUTO-REGRESSION: All targeted tests passed:\n#{test_summary}\n"
+    else
+      ""
+    end
+
+    observation = """
+    #{Builder.format_observation(tool_name, result)}
+
+    ✅ BUILD GREEN. mix compile succeeded.
+    #{auto_regress_section}#{test_hint}Your task is COMPLETE. Use the "respond" tool NOW to tell the user what you did.
+    Do NOT make any more changes. Do NOT patch the same function again.
+    #{warnings_section}
+    """
+
+    messages = state.messages ++ [%{role: "user", content: observation}]
+    state = %{state | messages: messages}
+    {:noreply, state, {:continue, :step}}
   end
 
   # Parse mix compile output to determine success/warnings/errors
@@ -1025,12 +1228,26 @@ defmodule Giulia.Inference.Orchestrator do
   defp handle_model_response(response, state) do
     case parse_model_response(response) do
       {:tool_call, "respond", %{"message" => message}} ->
-        # Task complete!
-        Logger.info("=== TASK COMPLETE ===")
-        Logger.info("Iterations: #{state.iteration}")
-        Logger.info("Response: #{String.slice(message, 0, 300)}")
-        send_reply(state, {:ok, message})
-        {:noreply, reset_state(state)}
+        # TEST-LOCK GATE: If tests were run and are still red, block respond
+        if state.test_status == :red do
+          Logger.warning("TEST-LOCK: Model tried to respond but tests are still RED")
+          lock_msg = """
+          BLOCKED: You cannot close this task. Tests are still FAILING.
+          You MUST call run_tests and get 0 failures before you can respond.
+          Do NOT claim success based on a green build alone.
+          DEFINITION OF DONE: build green AND tests green AND verified.
+          """
+          messages = state.messages ++ [%{role: "user", content: lock_msg}]
+          state = %{state | messages: messages}
+          {:noreply, state, {:continue, :step}}
+        else
+          # Task complete!
+          Logger.info("=== TASK COMPLETE ===")
+          Logger.info("Iterations: #{state.iteration}")
+          Logger.info("Response: #{String.slice(message, 0, 300)}")
+          send_reply(state, {:ok, message})
+          {:noreply, reset_state(state)}
+        end
 
       {:tool_call, "think", %{"thought" => thought}} ->
         # Model reasoning - log and continue, but limit consecutive thinks
@@ -1120,10 +1337,46 @@ defmodule Giulia.Inference.Orchestrator do
   defp execute_tool(tool_name, params, response, state) do
     current_action = {tool_name, params}
 
-    # Loop detection
-    if current_action == state.last_action do
-      Logger.warning("Same action repeated - intervening")
-      {:noreply, state, {:continue, :intervene}}
+    # Loop detection — allow one repeat (e.g. run_tests → fix → run_tests again),
+    # but intervene on the 3rd consecutive identical action
+    {state, looping?} = if current_action == state.last_action do
+      new_count = state.repeat_count + 1
+      {%{state | repeat_count: new_count}, new_count >= 2}
+    else
+      {%{state | repeat_count: 0}, false}
+    end
+
+    if looping? do
+      Logger.warning("Same action repeated #{state.repeat_count}x")
+
+      # HEURISTIC COMPLETION: If a read-only tool is looping, the model has the data
+      # but can't bring itself to call "respond". Instead of purging context (which
+      # causes amnesia and re-triggers the same call), we deliver the last successful
+      # observation directly to the user. The Orchestrator becomes the Deterministic
+      # Supervisor — when the Probabilistic Component (LLM) fails its social step,
+      # we close the loop ourselves.
+      if tool_name in @read_only_tools do
+        Logger.warning("HEURISTIC COMPLETION: Read-only tool loop on #{tool_name}, delivering result directly")
+        last_observation = find_last_successful_observation(state)
+
+        if last_observation do
+          heuristic_response = """
+          #{last_observation}
+
+          ---
+          _Task completed via Heuristic Completion. The model retrieved this data but entered a response loop. \
+          The Orchestrator is delivering the result directly._
+          """
+          send_reply(state, {:ok, heuristic_response})
+          {:noreply, reset_state(state)}
+        else
+          # No usable observation — fall back to intervention
+          {:noreply, state, {:continue, :intervene}}
+        end
+      else
+        Logger.warning("Write-tool loop — intervening with context purge")
+        {:noreply, state, {:continue, :intervene}}
+      end
     else
       # GUARD: Block edit_file after a failed patch_function on the same module.
       # The model CANNOT fix AST surgery with search-and-replace — it will corrupt the file.
@@ -1251,16 +1504,35 @@ defmodule Giulia.Inference.Orchestrator do
     # Use URL-safe approval ID (reference contains <> which break URL routing)
     approval_id = "approval-#{:erlang.phash2(state.request_id)}-#{state.iteration}"
 
-    # BROADCAST: Tool requires approval
+    # HUB ALARM: Check centrality of the target module
+    hub_warning = assess_hub_risk(tool_name, params)
+
+    # Enrich preview with hub warning if applicable
+    preview = if hub_warning do
+      "#{hub_warning}\n\n#{preview}"
+    else
+      preview
+    end
+
+    # BROADCAST: Tool requires approval (with hub risk if applicable)
+    broadcast_payload = %{
+      type: :tool_requires_approval,
+      approval_id: approval_id,
+      iteration: state.iteration,
+      tool: tool_name,
+      params: sanitize_params_for_broadcast(params),
+      preview: preview
+    }
+
+    # Add hub_risk field to broadcast if this is a critical hub
+    broadcast_payload = if hub_warning do
+      Map.put(broadcast_payload, :hub_risk, :high)
+    else
+      broadcast_payload
+    end
+
     if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :tool_requires_approval,
-        approval_id: approval_id,
-        iteration: state.iteration,
-        tool: tool_name,
-        params: sanitize_params_for_broadcast(params),
-        preview: preview
-      })
+      Events.broadcast(state.request_id, broadcast_payload)
     end
 
     # Request approval ASYNC - does not block!
@@ -1350,6 +1622,25 @@ defmodule Giulia.Inference.Orchestrator do
       consecutive_failures: 0
     }
 
+    # TEST-LOCK: Track test results for respond gate
+    state = if tool_name == "run_tests" do
+      case result do
+        {:ok, result_str} when is_binary(result_str) ->
+          if String.contains?(result_str, "0 failures") or String.starts_with?(result_str, "ALL TESTS PASSED") do
+            Logger.info("TEST-LOCK: Tests are GREEN")
+            %{state | test_status: :green}
+          else
+            Logger.info("TEST-LOCK: Tests are RED")
+            %{state | test_status: :red}
+          end
+        _ ->
+          Logger.info("TEST-LOCK: Tests are RED (error)")
+          %{state | test_status: :red}
+      end
+    else
+      state
+    end
+
     # VERIFY: Auto-compile after write operations
     if tool_name in @write_tools do
       {:noreply, %{state | pending_verification: true}, {:continue, {:verify, tool_name, result}}}
@@ -1421,6 +1712,9 @@ defmodule Giulia.Inference.Orchestrator do
     command not in ["compile", "help"]
   end
 
+  # run_tests is read-only (runs ExUnit, reports results) — auto-approve
+  defp requires_approval?("run_tests", _params, _state), do: false
+
   defp requires_approval?(tool_name, _params, _state) do
     tool_name in @write_tools
   end
@@ -1439,6 +1733,16 @@ defmodule Giulia.Inference.Orchestrator do
 
       "patch_function" ->
         generate_function_preview(params, state)
+
+      "run_tests" ->
+        file = params["file"] || params[:file]
+        test_name = params["test_name"] || params[:test_name]
+        cond do
+          file && test_name -> "Run tests in #{file} matching '#{test_name}'"
+          file -> "Run tests in #{file}"
+          test_name -> "Run all tests matching '#{test_name}'"
+          true -> "Run ALL project tests"
+        end
 
       _ ->
         "Tool: #{tool_name}\nParams: #{inspect(params, pretty: true, limit: 500)}"
@@ -1624,6 +1928,67 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
+  # ============================================================================
+  # Hub Alarm — Topological Risk Assessment
+  # ============================================================================
+
+  # Assess the risk of modifying a module by checking its centrality in the
+  # Knowledge Graph. Returns a warning string for hubs (>3 dependents), nil otherwise.
+  defp assess_hub_risk(tool_name, params) when tool_name in ["edit_file", "patch_function", "write_function", "write_file"] do
+    module_name = resolve_module_from_params(tool_name, params)
+
+    if module_name do
+      case Giulia.Knowledge.Store.centrality(module_name) do
+        {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
+          top_dependents = Enum.take(dependents, 3) |> Enum.join(", ")
+
+          """
+          ⚠️  CRITICAL HUB WARNING ⚠️
+          You are modifying #{module_name}. This module is a Hub with #{in_degree} dependents.
+          A mistake here will break: #{top_dependents}#{if in_degree > 3, do: " (+#{in_degree - 3} more)", else: ""}
+          Suggested regression: run tests for #{top_dependents}
+          """
+
+        _ ->
+          nil
+      end
+    else
+      nil
+    end
+  rescue
+    _ -> nil
+  catch
+    _, _ -> nil
+  end
+
+  defp assess_hub_risk(_tool_name, _params), do: nil
+
+  # Resolve the module name from tool params (different tools use different param keys)
+  defp resolve_module_from_params("edit_file", params) do
+    file = params["file"] || params[:file]
+    module_from_file_path(file)
+  end
+
+  defp resolve_module_from_params("write_file", params) do
+    path = params["path"] || params[:path]
+    module_from_file_path(path)
+  end
+
+  defp resolve_module_from_params(tool_name, params) when tool_name in ["patch_function", "write_function"] do
+    params["module"] || params[:module]
+  end
+
+  defp resolve_module_from_params(_, _), do: nil
+
+  # Best-effort: convert a file path to a module name via the context store
+  defp module_from_file_path(nil), do: nil
+  defp module_from_file_path(path) do
+    case Store.find_module_by_file(path) do
+      {:ok, %{name: name}} -> name
+      _ -> nil
+    end
+  end
+
   # Sanitize params for broadcasting (truncate large content)
   defp sanitize_params_for_broadcast(params) when is_map(params) do
     params
@@ -1769,7 +2134,90 @@ defmodule Giulia.Inference.Orchestrator do
   # Intervention
   # ============================================================================
 
+  # Targeted intervention for test failure loops.
+  # The 3B model sees "1 failure" but doesn't know to read + edit.
+  # We re-run the tests ourselves, read the test file, and give the model
+  # everything it needs to call edit_file in one shot.
+  defp build_test_failure_intervention(test_params, state) do
+    test_file = test_params["file"] || test_params[:file]
+    opts = build_tool_opts(state)
+
+    # Re-run tests to get fresh failure data
+    test_result = case Giulia.Tools.RunTests.execute(test_params, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> "Test run failed: #{inspect(reason)}"
+    end
+
+    # Read the test file content
+    test_content = if test_file do
+      project_path = state.project_path || File.cwd!()
+      full_path = Path.join(project_path, test_file)
+      case File.read(full_path) do
+        {:ok, content} -> content
+        {:error, _} -> "(could not read test file)"
+      end
+    else
+      "(no test file specified)"
+    end
+
+    """
+    INTERVENTION: You keep running tests but not fixing the failure. STOP running tests.
+
+    TEST RESULTS:
+    #{test_result}
+
+    TEST FILE (#{test_file}):
+    #{test_content}
+
+    The test has a WRONG ASSERTION. The test input says one value but the assert checks a different value.
+    You MUST use edit_file to fix the wrong assertion in the test file.
+
+    EXAMPLE — to fix a wrong assertion:
+    <action>
+    {"tool": "edit_file", "parameters": {"path": "#{test_file}", "old_text": "assert result == \\"wrong_value\\"", "new_text": "assert result == \\"correct_value\\""}}
+    </action>
+
+    DO NOT run tests again. Use edit_file NOW to fix the assertion, then use respond.
+    """
+  end
+
   defp build_intervention_message(state, target_file, fresh_content) do
+    # Detect if the loop is on a read-only tool — if so, the model needs to use respond,
+    # not more build/edit tools
+    case state.last_action do
+      {tool_name, _params} when tool_name in @read_only_tools ->
+        build_readonly_intervention(tool_name, state)
+
+      _ ->
+        build_write_intervention(state, target_file, fresh_content)
+    end
+  end
+
+  # Intervention for read-only tool loops — force respond
+  defp build_readonly_intervention(tool_name, state) do
+    last_result = case state.action_history do
+      [{_tool, _params, result} | _] -> inspect(result, limit: 200)
+      _ -> "(no result available)"
+    end
+
+    """
+    REPETITION ERROR: You called "#{tool_name}" #{state.repeat_count + 1} times with the same parameters.
+    The tool returned the same result each time. Repeating it will NOT change the outcome.
+
+    Last result: #{last_result}
+
+    You are PROHIBITED from calling #{tool_name} again with those parameters.
+    You MUST do ONE of these instead:
+    1. Use "respond" to answer the user with whatever information you have gathered
+    2. Try a DIFFERENT tool (e.g., get_module_info, search_code, list_files)
+    3. Try the SAME tool with DIFFERENT parameters (e.g., a shorter module name)
+
+    Use respond NOW to give the user your analysis.
+    """
+  end
+
+  # Intervention for write-tool loops — existing behavior (build/syntax focused)
+  defp build_write_intervention(state, target_file, fresh_content) do
     error_summary = state.recent_errors
     |> Enum.take(3)
     |> Enum.map(&"- #{inspect(&1)}")
@@ -1950,10 +2398,12 @@ defmodule Giulia.Inference.Orchestrator do
       iteration: 0,
       consecutive_failures: 0,
       last_action: nil,
+      repeat_count: 0,
       action_history: [],
       recent_errors: [],
       final_response: nil,
-      pending_verification: false
+      pending_verification: false,
+      test_status: :untested
     }
   end
 
@@ -2030,6 +2480,19 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Pass through successes and other tools unchanged
   defp maybe_inject_readback(_tool_name, _params, result, _tool_opts), do: result
+
+  # Find the best successful tool observation from action_history.
+  # Used by Heuristic Completion to deliver data when the model loops on read-only tools.
+  # Picks the LONGEST successful result — substantive data (impact maps, traces) is always
+  # longer than error messages ("not found in graph").
+  defp find_last_successful_observation(state) do
+    state.action_history
+    |> Enum.flat_map(fn
+      {_tool, _params, {:ok, data}} when is_binary(data) and data != "" -> [data]
+      _ -> []
+    end)
+    |> Enum.max_by(&String.length/1, fn -> nil end)
+  end
 
   # Extract the file path from tool params
   defp get_file_path_from_params("edit_file", params) do
