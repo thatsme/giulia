@@ -40,6 +40,9 @@ defmodule Giulia.Inference.Orchestrator do
   # Tools that modify code and need verification
   @write_tools ["write_file", "edit_file", "write_function", "patch_function"]
 
+  # Subset of write tools that are staged when transaction_mode is active
+  @stageable_tools ["write_file", "edit_file", "write_function", "patch_function"]
+
   # Read-only tools that never modify code — loops on these need Heuristic Completion, not context purge
   @read_only_tools ~w(get_impact_map trace_path get_module_info search_code read_file
                        list_files lookup_function get_function get_context cycle_check)
@@ -93,7 +96,12 @@ defmodule Giulia.Inference.Orchestrator do
     syntax_failures: 0,       # Count of failed syntax repair attempts
     escalated: false,         # Have we already called Sonnet this session?
     original_provider: nil,   # Remember original provider for switching back
-    last_compile_error: nil   # Store compile error for escalation context
+    last_compile_error: nil,  # Store compile error for escalation context
+
+    # Transactional Exoskeleton — staging buffer for multi-file atomic changes
+    transaction_mode: false,      # Whether staging is active
+    staging_buffer: %{},          # %{file_path => new_content}
+    staging_backups: %{}          # %{file_path => original_content | :new_file}
   ]
 
   # ============================================================================
@@ -146,9 +154,25 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def init(opts) do
+    project_pid = Keyword.get(opts, :project_pid)
+
+    # Read transaction preference from ProjectContext if available
+    transaction_pref = if project_pid do
+      try do
+        ProjectContext.transaction_preference(project_pid)
+      rescue
+        _ -> false
+      catch
+        _, _ -> false
+      end
+    else
+      false
+    end
+
     state = %__MODULE__{
       project_path: Keyword.get(opts, :project_path),
-      project_pid: Keyword.get(opts, :project_pid)
+      project_pid: project_pid,
+      transaction_mode: transaction_pref
     }
     {:ok, state}
   end
@@ -1228,25 +1252,41 @@ defmodule Giulia.Inference.Orchestrator do
   defp handle_model_response(response, state) do
     case parse_model_response(response) do
       {:tool_call, "respond", %{"message" => message}} ->
-        # TEST-LOCK GATE: If tests were run and are still red, block respond
-        if state.test_status == :red do
-          Logger.warning("TEST-LOCK: Model tried to respond but tests are still RED")
-          lock_msg = """
-          BLOCKED: You cannot close this task. Tests are still FAILING.
-          You MUST call run_tests and get 0 failures before you can respond.
-          Do NOT claim success based on a green build alone.
-          DEFINITION OF DONE: build green AND tests green AND verified.
-          """
-          messages = state.messages ++ [%{role: "user", content: lock_msg}]
-          state = %{state | messages: messages}
-          {:noreply, state, {:continue, :step}}
-        else
-          # Task complete!
-          Logger.info("=== TASK COMPLETE ===")
-          Logger.info("Iterations: #{state.iteration}")
-          Logger.info("Response: #{String.slice(message, 0, 300)}")
-          send_reply(state, {:ok, message})
-          {:noreply, reset_state(state)}
+        cond do
+          # STAGING-LOCK GATE: Block respond if there are uncommitted staged changes
+          state.transaction_mode and map_size(state.staging_buffer) > 0 ->
+            Logger.warning("STAGING-LOCK: Model tried to respond with #{map_size(state.staging_buffer)} uncommitted staged file(s)")
+            staged_list = state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
+            lock_msg = """
+            BLOCKED: You have uncommitted staged changes in #{map_size(state.staging_buffer)} file(s):
+            #{staged_list}
+
+            You MUST call commit_changes before respond. This ensures all changes are verified atomically.
+            """
+            messages = state.messages ++ [%{role: "user", content: lock_msg}]
+            state = %{state | messages: messages}
+            {:noreply, state, {:continue, :step}}
+
+          # TEST-LOCK GATE: If tests were run and are still red, block respond
+          state.test_status == :red ->
+            Logger.warning("TEST-LOCK: Model tried to respond but tests are still RED")
+            lock_msg = """
+            BLOCKED: You cannot close this task. Tests are still FAILING.
+            You MUST call run_tests and get 0 failures before you can respond.
+            Do NOT claim success based on a green build alone.
+            DEFINITION OF DONE: build green AND tests green AND verified.
+            """
+            messages = state.messages ++ [%{role: "user", content: lock_msg}]
+            state = %{state | messages: messages}
+            {:noreply, state, {:continue, :step}}
+
+          true ->
+            # Task complete!
+            Logger.info("=== TASK COMPLETE ===")
+            Logger.info("Iterations: #{state.iteration}")
+            Logger.info("Response: #{String.slice(message, 0, 300)}")
+            send_reply(state, {:ok, message})
+            {:noreply, reset_state(state)}
         end
 
       {:tool_call, "think", %{"thought" => thought}} ->
@@ -1383,14 +1423,23 @@ defmodule Giulia.Inference.Orchestrator do
       if edit_file_after_patch_failure?(tool_name, state) do
         handle_blocked_edit_file(params, response, state)
       else
+        # TRANSACTIONAL EXOSKELETON: Auto-enable for hub modules
+        state = maybe_auto_enable_transaction(tool_name, params, state)
+
         # Pre-flight check: catch obviously broken calls before approval
         case preflight_check(tool_name, params) do
           :ok ->
             # Check if tool requires approval (interactive consent gate)
-            if requires_approval?(tool_name, params, state) do
-              execute_with_approval(tool_name, params, response, state)
-            else
+            # When transaction_mode is active and tool is stageable, skip approval
+            # (changes go to staging buffer, not disk — approval happens at commit)
+            if state.transaction_mode and tool_name in @stageable_tools do
               execute_tool_direct(tool_name, params, response, state)
+            else
+              if requires_approval?(tool_name, params, state) do
+                execute_with_approval(tool_name, params, response, state)
+              else
+                execute_tool_direct(tool_name, params, response, state)
+              end
             end
 
           {:error, preflight_error} ->
@@ -1565,6 +1614,28 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Execute tool directly (no approval needed or already approved)
   defp execute_tool_direct(tool_name, params, response, state) do
+    # TRANSACTIONAL EXOSKELETON: Intercept writes when staging is active
+    cond do
+      # Intercept commit_changes — handled entirely by orchestrator
+      tool_name == "commit_changes" ->
+        execute_commit_changes(params, response, state)
+
+      # Stage write tools when transaction mode is on
+      state.transaction_mode and tool_name in @stageable_tools ->
+        execute_tool_staged(tool_name, params, response, state)
+
+      # Overlay read_file with staged content when transaction mode is on
+      state.transaction_mode and tool_name == "read_file" ->
+        execute_read_with_overlay(params, response, state)
+
+      # Normal execution path
+      true ->
+        execute_tool_normal(tool_name, params, response, state)
+    end
+  end
+
+  # Normal tool execution (original execute_tool_direct logic)
+  defp execute_tool_normal(tool_name, params, response, state) do
     current_action = {tool_name, params}
 
     # BROADCAST: Tool call starting (only if we have a request_id)
@@ -1651,6 +1722,558 @@ defmodule Giulia.Inference.Orchestrator do
       {:noreply, %{state | messages: messages}, {:continue, :step}}
     end
   end
+
+  # ============================================================================
+  # Transactional Exoskeleton — Staging Logic
+  # ============================================================================
+
+  # Execute a write tool in staged mode (buffer in memory, don't write to disk)
+  defp execute_tool_staged(tool_name, params, response, state) do
+    current_action = {tool_name, params}
+
+    # BROADCAST: Staged tool call
+    if state.request_id do
+      Events.broadcast(state.request_id, %{
+        type: :tool_call,
+        iteration: state.iteration,
+        tool: tool_name,
+        params: sanitize_params_for_broadcast(params),
+        staged: true
+      })
+    end
+
+    Logger.info("=== STAGED TOOL CALL [#{state.iteration}] ===")
+    Logger.info("Tool: #{tool_name} (transaction mode)")
+
+    {result, state} = case tool_name do
+      "write_file" ->
+        stage_write_file(params, state)
+
+      "edit_file" ->
+        stage_edit_file(params, state)
+
+      tool when tool in ["patch_function", "write_function"] ->
+        stage_ast_tool(tool, params, state)
+
+      _ ->
+        {{:error, "Unknown stageable tool: #{tool_name}"}, state}
+    end
+
+    # Build observation with [STAGED] prefix
+    {result_preview, observation} = case result do
+      {:ok, msg} ->
+        staged_count = map_size(state.staging_buffer)
+        obs = "[STAGED] #{tool_name}: #{msg}\nCurrently staging #{staged_count} file(s). Use commit_changes to flush to disk."
+        {String.slice(msg, 0, 200), obs}
+
+      {:error, reason} ->
+        error_str = if is_binary(reason), do: reason, else: inspect(reason)
+        {"ERROR: #{error_str}", "ERROR: #{tool_name} staging failed: #{error_str}"}
+    end
+
+    Logger.info("Staged result: #{result_preview}")
+    Logger.info("=== END STAGED TOOL CALL ===")
+
+    # BROADCAST: Staged result
+    if state.request_id do
+      Events.broadcast(state.request_id, %{
+        type: :tool_result,
+        tool: tool_name,
+        success: match?({:ok, _}, result),
+        preview: result_preview,
+        staged: true
+      })
+    end
+
+    # Record in history
+    assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
+    messages = state.messages ++ [
+      %{role: "assistant", content: assistant_msg},
+      %{role: "user", content: observation}
+    ]
+
+    state = %{state |
+      messages: messages,
+      last_action: current_action,
+      action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
+      consecutive_failures: 0
+    }
+
+    # No verification during staging — that happens at commit time
+    {:noreply, state, {:continue, :step}}
+  end
+
+  # Stage write_file: store content in staging buffer
+  defp stage_write_file(params, state) do
+    path = params["path"] || params[:path]
+    content = params["content"] || params[:content] || ""
+    resolved_path = resolve_tool_path(path, state)
+
+    # Backup original content if not already backed up
+    state = backup_original(resolved_path, state)
+
+    staging_buffer = Map.put(state.staging_buffer, resolved_path, content)
+    state = %{state | staging_buffer: staging_buffer}
+
+    {{:ok, "#{path} (#{byte_size(content)} bytes)"}, state}
+  end
+
+  # Stage edit_file: apply search/replace in memory (using staged content as overlay)
+  defp stage_edit_file(params, state) do
+    file = params["file"] || params[:file]
+    old_text = params["old_text"] || params[:old_text] || ""
+    new_text = params["new_text"] || params[:new_text] || ""
+    resolved_path = resolve_tool_path(file, state)
+
+    # Read from staging buffer first, fall back to disk
+    current_content = case Map.get(state.staging_buffer, resolved_path) do
+      nil ->
+        case File.read(resolved_path) do
+          {:ok, content} -> content
+          {:error, _} -> nil
+        end
+      staged -> staged
+    end
+
+    case current_content do
+      nil ->
+        {{:error, "File not found: #{file}"}, state}
+
+      content ->
+        if String.contains?(content, old_text) do
+          # Backup original content if not already backed up
+          state = backup_original(resolved_path, state)
+
+          new_content = String.replace(content, old_text, new_text, global: false)
+          staging_buffer = Map.put(state.staging_buffer, resolved_path, new_content)
+          state = %{state | staging_buffer: staging_buffer}
+          {{:ok, "#{file} (edit applied in staging)"}, state}
+        else
+          {{:error, "old_text not found in #{file} (checked staging buffer)"}, state}
+        end
+    end
+  end
+
+  # Stage AST tools (patch_function/write_function): use temp file strategy
+  # 1. Write staged content to temp file (or use original)
+  # 2. Let the tool operate on the temp file
+  # 3. Read result back into staging_buffer
+  # 4. Restore original file from backup
+  defp stage_ast_tool(tool_name, params, state) do
+    module = params["module"] || params[:module]
+
+    # Find the file for this module
+    case Store.find_module(module) do
+      {:ok, %{file: file_path}} ->
+        resolved_path = resolve_tool_path(file_path, state)
+
+        # Backup original if not already backed up
+        state = backup_original(resolved_path, state)
+
+        # If we have staged content, write it to disk temporarily
+        staged_content = Map.get(state.staging_buffer, resolved_path)
+        original_disk = if staged_content, do: File.read(resolved_path), else: nil
+
+        if staged_content do
+          File.write(resolved_path, staged_content)
+        end
+
+        # Let the AST tool operate on the (possibly temp) file
+        tool_opts = build_tool_opts(state)
+        result = Registry.execute(tool_name, params, tool_opts)
+
+        # Read the result back into staging regardless of success/failure
+        case result do
+          {:ok, _msg} ->
+            # Read the modified file back into staging buffer
+            case File.read(resolved_path) do
+              {:ok, new_content} ->
+                staging_buffer = Map.put(state.staging_buffer, resolved_path, new_content)
+                state = %{state | staging_buffer: staging_buffer}
+
+                # Restore original disk content
+                restore_disk_content(resolved_path, original_disk, state)
+
+                {{:ok, "#{module}.#{params["function_name"]}/#{params["arity"]} (AST patched in staging)"}, state}
+
+              {:error, read_err} ->
+                restore_disk_content(resolved_path, original_disk, state)
+                {{:error, "Failed to read back after #{tool_name}: #{inspect(read_err)}"}, state}
+            end
+
+          {:error, reason} ->
+            # Restore original disk content on failure too
+            restore_disk_content(resolved_path, original_disk, state)
+            {{:error, reason}, state}
+        end
+
+      :not_found ->
+        {{:error, "Module #{module} not found in index"}, state}
+    end
+  end
+
+  # Backup original file content before first staging
+  defp backup_original(resolved_path, state) do
+    if Map.has_key?(state.staging_backups, resolved_path) do
+      state  # Already backed up
+    else
+      backup = case File.read(resolved_path) do
+        {:ok, content} -> content
+        {:error, :enoent} -> :new_file
+        {:error, _} -> :new_file
+      end
+      %{state | staging_backups: Map.put(state.staging_backups, resolved_path, backup)}
+    end
+  end
+
+  # Restore original disk content after AST tool temp-file operation
+  defp restore_disk_content(_path, nil, _state), do: :ok
+  defp restore_disk_content(path, {:ok, original}, _state), do: File.write(path, original)
+  defp restore_disk_content(_path, {:error, _}, _state), do: :ok
+
+  # Read file with staging overlay
+  defp execute_read_with_overlay(params, response, state) do
+    path = params["path"] || params[:path] || params["file"] || params[:file]
+    resolved_path = resolve_tool_path(path, state)
+
+    case Map.get(state.staging_buffer, resolved_path) do
+      nil ->
+        # Not in staging buffer — proceed with normal read
+        execute_tool_normal("read_file", params, response, state)
+
+      staged_content ->
+        # Return staged content with marker
+        Logger.info("READ OVERLAY: Returning staged content for #{path}")
+
+        result = {:ok, "[STAGED VERSION — not yet on disk]\n#{staged_content}"}
+
+        # BROADCAST
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :tool_call,
+            iteration: state.iteration,
+            tool: "read_file",
+            params: sanitize_params_for_broadcast(params),
+            staged: true
+          })
+          Events.broadcast(state.request_id, %{
+            type: :tool_result,
+            tool: "read_file",
+            success: true,
+            preview: "[STAGED] #{String.slice(staged_content, 0, 100)}",
+            staged: true
+          })
+        end
+
+        # Record and continue
+        assistant_msg = response.content || Jason.encode!(%{tool: "read_file", parameters: params})
+        observation = Builder.format_observation("read_file", result)
+        messages = state.messages ++ [
+          %{role: "assistant", content: assistant_msg},
+          %{role: "user", content: observation}
+        ]
+
+        state = %{state |
+          messages: messages,
+          last_action: {"read_file", params},
+          action_history: [{"read_file", params, result} | Enum.take(state.action_history, 4)],
+          consecutive_failures: 0
+        }
+
+        {:noreply, state, {:continue, :step}}
+    end
+  end
+
+  # ============================================================================
+  # Transactional Exoskeleton — Commit/Rollback
+  # ============================================================================
+
+  # Execute the commit_changes pseudo-tool
+  defp execute_commit_changes(params, response, state) do
+    if map_size(state.staging_buffer) == 0 do
+      # Nothing to commit
+      observation = "Nothing staged to commit. Use write_file or edit_file first."
+      assistant_msg = response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
+      messages = state.messages ++ [
+        %{role: "assistant", content: assistant_msg},
+        %{role: "user", content: observation}
+      ]
+      state = %{state | messages: messages, consecutive_failures: 0}
+      {:noreply, state, {:continue, :step}}
+    else
+      # Proceed with commit via handle_continue to keep GenServer responsive
+      assistant_msg = response.content || Jason.encode!(%{tool: "commit_changes", parameters: params})
+      messages = state.messages ++ [%{role: "assistant", content: assistant_msg}]
+      state = %{state | messages: messages}
+      {:noreply, state, {:continue, {:commit_changes, params}}}
+    end
+  end
+
+  @impl true
+  def handle_continue({:commit_changes, params}, state) do
+    staged_files = Map.keys(state.staging_buffer)
+    file_count = length(staged_files)
+    message = params["message"] || "Committing #{file_count} staged file(s)"
+
+    Logger.info("COMMIT: #{message}")
+    Logger.info("COMMIT: Flushing #{file_count} file(s) to disk")
+
+    # BROADCAST: Commit started
+    if state.request_id do
+      Events.broadcast(state.request_id, %{
+        type: :commit_started,
+        file_count: file_count,
+        files: staged_files,
+        message: message
+      })
+    end
+
+    # Phase 1: Ensure backups are current (re-read from disk for safety)
+    state = Enum.reduce(staged_files, state, fn path, acc ->
+      backup_original(path, acc)
+    end)
+
+    # Phase 2: Flush all staged files to disk
+    write_results = Enum.map(state.staging_buffer, fn {path, content} ->
+      {path, File.write(path, content)}
+    end)
+
+    write_failures = Enum.filter(write_results, fn {_path, result} -> result != :ok end)
+
+    if write_failures != [] do
+      # Write failed — rollback
+      Logger.warning("COMMIT: Write phase failed, rolling back")
+      rollback_staged_changes(state)
+
+      error_msg = "COMMIT FAILED (write phase): #{inspect(write_failures)}"
+      if state.request_id do
+        Events.broadcast(state.request_id, %{
+          type: :commit_rollback,
+          reason: "write_failure",
+          message: error_msg
+        })
+      end
+
+      messages = state.messages ++ [%{role: "user", content: error_msg}]
+      state = %{state | messages: messages}
+      {:noreply, state, {:continue, :step}}
+    else
+      # Phase 3: Compile
+      Logger.info("COMMIT: Compile phase")
+      tool_opts = build_tool_opts(state)
+
+      case Registry.execute("run_mix", %{"command" => "compile"}, tool_opts) do
+        {:ok, output} ->
+          case parse_compile_result(output) do
+            :success ->
+              Logger.info("COMMIT: Compile passed, running auto-regression")
+              commit_auto_regress(staged_files, params, state)
+
+            {:warnings, _warnings} ->
+              Logger.info("COMMIT: Compile passed with warnings, running auto-regression")
+              commit_auto_regress(staged_files, params, state)
+
+            {:error, errors} ->
+              # Compile failed — rollback
+              Logger.warning("COMMIT: Compile failed, rolling back")
+              rollback_staged_changes(state)
+
+              error_msg = """
+              COMMIT FAILED: Compilation errors after flushing staged changes. All changes have been ROLLED BACK.
+
+              COMPILER ERRORS:
+              #{String.slice(errors, 0, 1500)}
+
+              Your staged changes had errors. Fix them and try commit_changes again.
+              Currently staging #{map_size(state.staging_buffer)} file(s).
+              """
+
+              if state.request_id do
+                Events.broadcast(state.request_id, %{
+                  type: :commit_rollback,
+                  reason: "compile_failure",
+                  message: "Compilation failed — all changes rolled back",
+                  errors: String.slice(errors, 0, 500)
+                })
+              end
+
+              messages = state.messages ++ [%{role: "user", content: error_msg}]
+              state = %{state | messages: messages}
+              {:noreply, state, {:continue, :step}}
+          end
+
+        {:error, reason} ->
+          # Couldn't run compile — rollback to be safe
+          Logger.warning("COMMIT: Could not run compile: #{inspect(reason)}, rolling back")
+          rollback_staged_changes(state)
+
+          error_msg = "COMMIT FAILED: Could not verify compilation: #{inspect(reason)}. Changes rolled back."
+          messages = state.messages ++ [%{role: "user", content: error_msg}]
+          state = %{state | messages: messages}
+          {:noreply, state, {:continue, :step}}
+      end
+    end
+  end
+
+  # Auto-regression phase of commit
+  defp commit_auto_regress(staged_files, _params, state) do
+    project_path = state.project_path || File.cwd!()
+    tool_opts = build_tool_opts(state)
+
+    # Collect test targets for all modified modules
+    all_test_targets = Enum.flat_map(staged_files, fn path ->
+      case Store.find_module_by_file(path) do
+        {:ok, %{name: module_name}} ->
+          case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+            {:ok, %{all_paths: paths}} when paths != [] -> paths
+            _ -> []
+          end
+        _ -> []
+      end
+    end)
+    |> Enum.uniq()
+
+    if all_test_targets != [] do
+      Logger.info("COMMIT: Running #{length(all_test_targets)} regression test file(s)")
+
+      test_results = Enum.map(all_test_targets, fn test_path ->
+        case Giulia.Tools.RunTests.execute(%{"file" => test_path}, tool_opts) do
+          {:ok, output} -> {test_path, :ok, output}
+          {:error, reason} -> {test_path, :error, inspect(reason)}
+        end
+      end)
+
+      failures = Enum.filter(test_results, fn {_, status, _} -> status == :error end)
+
+      if failures == [] do
+        commit_success(state)
+      else
+        # Tests failed — rollback
+        Logger.warning("COMMIT: Auto-regression failed, rolling back")
+        rollback_staged_changes(state)
+
+        failure_summary = Enum.map_join(failures, "\n", fn {path, _, output} ->
+          "  - #{path}: #{String.slice(output, 0, 200)}"
+        end)
+
+        error_msg = """
+        COMMIT FAILED: Auto-regression tests failed. All changes have been ROLLED BACK.
+
+        Failed tests:
+        #{failure_summary}
+
+        Fix the issues and try commit_changes again.
+        Currently staging #{map_size(state.staging_buffer)} file(s).
+        """
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :commit_rollback,
+            reason: "test_failure",
+            message: "Auto-regression failed — all changes rolled back"
+          })
+        end
+
+        messages = state.messages ++ [%{role: "user", content: error_msg}]
+        state = %{state | messages: messages}
+        {:noreply, state, {:continue, :step}}
+      end
+    else
+      # No tests to run — commit succeeds
+      commit_success(state)
+    end
+  end
+
+  # Commit succeeded — clear staging and continue
+  defp commit_success(state) do
+    file_count = map_size(state.staging_buffer)
+    file_list = state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
+
+    Logger.info("COMMIT: Success! #{file_count} file(s) committed")
+
+    if state.request_id do
+      Events.broadcast(state.request_id, %{
+        type: :commit_success,
+        file_count: file_count,
+        message: "All #{file_count} file(s) verified and written to disk"
+      })
+    end
+
+    observation = """
+    COMMIT SUCCESS: #{file_count} file(s) atomically written to disk and verified.
+    #{file_list}
+
+    Build: GREEN. All changes are now on disk.
+    """
+
+    messages = state.messages ++ [%{role: "user", content: observation}]
+
+    state = %{state |
+      messages: messages,
+      transaction_mode: false,
+      staging_buffer: %{},
+      staging_backups: %{},
+      consecutive_failures: 0
+    }
+
+    {:noreply, state, {:continue, :step}}
+  end
+
+  # Rollback all staged changes to their original state
+  defp rollback_staged_changes(state) do
+    Enum.each(state.staging_backups, fn
+      {path, :new_file} ->
+        # File didn't exist before — delete it
+        File.rm(path)
+
+      {path, original_content} when is_binary(original_content) ->
+        # Restore original content
+        File.write(path, original_content)
+    end)
+
+    Logger.info("ROLLBACK: Restored #{map_size(state.staging_backups)} file(s) to original state")
+  end
+
+  # ============================================================================
+  # Transactional Exoskeleton — Auto-Enable for Hub Modules
+  # ============================================================================
+
+  # Check if a write tool targets a hub module and auto-enable transaction mode
+  defp maybe_auto_enable_transaction(tool_name, params, state) when tool_name in @stageable_tools do
+    if state.transaction_mode do
+      state  # Already in transaction mode
+    else
+      module_name = resolve_module_from_params(tool_name, params)
+      if module_name do
+        case Giulia.Knowledge.Store.centrality(module_name) do
+          {:ok, %{in_degree: in_degree}} when in_degree >= 3 ->
+            Logger.info("TRANSACTION AUTO-ENABLED: #{module_name} is a hub (#{in_degree} dependents)")
+
+            if state.request_id do
+              Events.broadcast(state.request_id, %{
+                type: :transaction_auto_enabled,
+                module: module_name,
+                centrality: in_degree,
+                message: "Transaction mode auto-enabled for hub module #{module_name}"
+              })
+            end
+
+            %{state | transaction_mode: true}
+
+          _ ->
+            state
+        end
+      else
+        state
+      end
+    end
+  rescue
+    _ -> state
+  catch
+    _, _ -> state
+  end
+
+  defp maybe_auto_enable_transaction(_tool_name, _params, state), do: state
 
   # Handle rejected approval - inform model and continue
   defp handle_rejection(tool_name, params, response, state) do
@@ -2055,7 +2678,9 @@ defmodule Giulia.Inference.Orchestrator do
       constitution: constitution,
       minimal: minimal,
       project_summary: project_summary,
-      cwd: cwd
+      cwd: cwd,
+      transaction_mode: state.transaction_mode,
+      staged_files: Map.keys(state.staging_buffer)
     ]
 
     Builder.build_messages(prompt, opts)
@@ -2403,7 +3028,10 @@ defmodule Giulia.Inference.Orchestrator do
       recent_errors: [],
       final_response: nil,
       pending_verification: false,
-      test_status: :untested
+      test_status: :untested,
+      transaction_mode: false,
+      staging_buffer: %{},
+      staging_backups: %{}
     }
   end
 

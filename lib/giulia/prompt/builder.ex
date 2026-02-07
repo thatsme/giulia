@@ -117,6 +117,9 @@ defmodule Giulia.Prompt.Builder do
     - When RUNNING TESTS after code changes: Use "run_tests" (structured failure analysis)
     - When asked about CHANGE IMPACT or "what breaks if I change X": Use "get_impact_map"
     - When asked HOW modules are connected: Use "trace_path"
+    - After multiple file edits, call "commit_changes" to atomically verify all changes
+
+    #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
 
     ## DEFINITION OF DONE (CRITICAL)
     A task is ONLY complete when ALL of these are true:
@@ -248,6 +251,9 @@ defmodule Giulia.Prompt.Builder do
     5. ONE action per response
     6. After lookup_function returns code, use "respond" to analyze it
     7. After BUILD GREEN, if tests exist, use run_tests to verify behavior
+    8. After multiple file edits, call commit_changes to atomically verify
+
+    #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
 
     DEFINITION OF DONE:
     1. Build green (mix compile)
@@ -444,6 +450,34 @@ defmodule Giulia.Prompt.Builder do
   end
 
   defp format_parameters(_), do: "none"
+
+  defp build_transaction_section(true, staged_files) when is_list(staged_files) and staged_files != [] do
+    file_list = Enum.map_join(staged_files, "\n", &"  - #{&1}")
+    """
+    ## TRANSACTION MODE (Active)
+    Your writes are being STAGED, not written to disk.
+    - write_file, edit_file, patch_function, write_function → buffer only
+    - read_file → returns staged content if available
+    - commit_changes → atomically flush all changes, compile, test, rollback on failure
+    - You MUST call commit_changes before respond
+
+    Currently staged files:
+    #{file_list}
+    """
+  end
+
+  defp build_transaction_section(true, _) do
+    """
+    ## TRANSACTION MODE (Active)
+    Your writes are being STAGED, not written to disk.
+    - write_file, edit_file, patch_function, write_function → buffer only
+    - read_file → returns staged content if available
+    - commit_changes → atomically flush all changes, compile, test, rollback on failure
+    - You MUST call commit_changes before respond
+    """
+  end
+
+  defp build_transaction_section(_, _), do: ""
 
   defp format_constitution(nil), do: ""
   defp format_constitution(%{taboos: taboos, patterns: patterns}) when taboos != [] or patterns != [] do
