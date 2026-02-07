@@ -167,7 +167,12 @@ defmodule Giulia.Tools.Registry do
 
       # Build/Test
       Giulia.Tools.RunMix,           # Safe mix commands only
+      Giulia.Tools.RunTests,         # Structured ExUnit test runner
       Giulia.Tools.CycleCheck,       # Detect compile-time cyclic dependencies
+
+      # Knowledge graph
+      Giulia.Tools.GetImpactMap,
+      Giulia.Tools.TracePath,
 
       # Pseudo-tools for orchestration
       Giulia.Tools.Respond,

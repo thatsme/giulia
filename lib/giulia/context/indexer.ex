@@ -110,18 +110,27 @@ defmodule Giulia.Context.Indexer do
     {:ok, state}
   end
 
+  # Project root markers — at least one must exist for a valid scan target
+  @project_markers ["mix.exs", "GIULIA.md", "package.json", "Cargo.toml", "go.mod"]
+
   @impl true
   def handle_cast({:scan, project_path}, state) do
-    Logger.info("Starting project scan: #{project_path}")
+    if valid_project_root?(project_path) do
+      Logger.info("Starting project scan: #{project_path}")
 
-    new_state = %{state | project_path: project_path, status: :scanning}
+      new_state = %{state | project_path: project_path, status: :scanning}
 
-    Task.start(fn ->
-      do_scan(project_path)
-      GenServer.cast(__MODULE__, :scan_complete)
-    end)
+      Task.start(fn ->
+        do_scan(project_path)
+        GenServer.cast(__MODULE__, :scan_complete)
+      end)
 
-    {:noreply, new_state}
+      {:noreply, new_state}
+    else
+      Logger.error("SCAN REFUSED: No project root marker found at #{project_path}. " <>
+        "Expected one of: #{Enum.join(@project_markers, ", ")}")
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -155,6 +164,9 @@ defmodule Giulia.Context.Indexer do
 
     # Debug: Inspect what's actually in ETS
     Giulia.Context.Store.debug_inspect()
+
+    # Rebuild knowledge graph from fresh AST data
+    Giulia.Knowledge.Store.rebuild()
 
     {:noreply, new_state}
   end
@@ -268,5 +280,11 @@ defmodule Giulia.Context.Indexer do
         Logger.warning("AST parse exit in #{file_path}: #{inspect(reason)}")
         {:error, {:parse_exit, reason}}
     end
+  end
+
+  defp valid_project_root?(path) do
+    Enum.any?(@project_markers, fn marker ->
+      Path.join(path, marker) |> File.exists?()
+    end)
   end
 end

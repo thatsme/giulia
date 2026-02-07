@@ -54,7 +54,7 @@ defmodule Giulia.StructuredOutput do
     case Regex.run(~r/\{/, str, return: :index) do
       [{start, _}] ->
         json_str = String.slice(str, start..-1//1)
-        find_matching_brace(json_str, 0, 0, false, 0)
+        find_matching_brace(json_str, 0, 0, false, false)
 
       nil ->
         case Regex.run(~r/\[/, str, return: :index) do
@@ -199,6 +199,10 @@ defmodule Giulia.StructuredOutput do
 
   defp tool_schema("run_mix") do
     Giulia.Tools.RunMix
+  end
+
+  defp tool_schema("run_tests") do
+    Giulia.Tools.RunTests
   end
 
   defp tool_schema("respond") do

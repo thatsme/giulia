@@ -9,8 +9,7 @@ erl_crash.dump
 # Static artifacts
 node_modules/
 
-# Test and development
-test/
+# Development only
 .git/
 .gitignore
 

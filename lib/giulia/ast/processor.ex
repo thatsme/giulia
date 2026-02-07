@@ -424,6 +424,7 @@ defmodule Giulia.AST.Processor do
       {_ast, imports} = Macro.prewalk(ast, [], fn node, acc ->
         case safe_extract_import_info(node) do
           {:ok, import_info} -> {node, [import_info | acc]}
+          {:ok_multi, entries} -> {node, Enum.reverse(entries) ++ acc}
           :skip -> {node, acc}
         end
       end)
@@ -439,7 +440,10 @@ defmodule Giulia.AST.Processor do
   # Safe wrapper that never crashes
   defp safe_extract_import_info(node) do
     try do
-      extract_import_info(node)
+      case extract_import_info(node) do
+        {:ok_multi, entries} -> {:ok_multi, entries}
+        other -> other
+      end
     rescue
       _ -> :skip
     catch
@@ -448,6 +452,46 @@ defmodule Giulia.AST.Processor do
   end
 
   # Extract import/alias/use/require info
+
+  # Multi-module: alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
+  # Sourceror parses this as: {:alias, meta, [{{:., _, [base, :{}]}, _, children}]}
+  # We expand it into multiple import entries
+  defp extract_import_info({directive, meta, [{{:., _, [{:__aliases__, _, base_parts}, :{}]}, _, children}]})
+       when directive in [:import, :alias, :use, :require] do
+    base = base_parts |> Enum.map(&to_string/1) |> Enum.join(".")
+    line = Keyword.get(meta, :line, 0)
+
+    entries = Enum.map(children, fn
+      {:__aliases__, _, parts} when is_list(parts) ->
+        child = parts |> Enum.map(&to_string/1) |> Enum.join(".")
+        %{type: directive, module: "#{base}.#{child}", line: line}
+      _ ->
+        nil
+    end)
+    |> Enum.reject(&is_nil/1)
+
+    {:ok_multi, entries}
+  end
+
+  # @behaviour Giulia.Tools.Registry — a hard dependency (implements callbacks)
+  defp extract_import_info({:@, meta, [{:behaviour, _, [{:__aliases__, _, parts}]}]})
+       when is_list(parts) do
+    {:ok, %{
+      type: :use,  # Treat @behaviour as :use for dependency tracking (hard edge)
+      module: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
+
+  # @behaviour with atom module (e.g. @behaviour :gen_server)
+  defp extract_import_info({:@, meta, [{:behaviour, _, [module_atom]}]})
+       when is_atom(module_atom) do
+    {:ok, %{
+      type: :use,
+      module: Atom.to_string(module_atom),
+      line: Keyword.get(meta, :line, 0)
+    }}
+  end
 
   # Standard: import Foo.Bar
   defp extract_import_info({directive, meta, [{:__aliases__, _, parts} | _]})

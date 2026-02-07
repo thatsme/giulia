@@ -69,6 +69,9 @@ defmodule Giulia.Application do
       # Background AST indexer
       Giulia.Context.Indexer,
 
+      # Knowledge graph (depends on Store + Indexer)
+      Giulia.Knowledge.Store,
+
       # Dynamic supervisor for provider connections
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
 
