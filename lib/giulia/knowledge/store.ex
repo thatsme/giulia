@@ -92,6 +92,22 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @doc """
+  Check behaviour-implementer consistency for a specific behaviour module.
+  Returns {:ok, :consistent} or {:error, fractures}.
+  """
+  def check_behaviour_integrity(behaviour_module) do
+    GenServer.call(__MODULE__, {:check_behaviour_integrity, behaviour_module})
+  end
+
+  @doc """
+  Check all behaviours in the project for implementer consistency.
+  Returns {:ok, :consistent} or {:error, %{behaviour => [fracture]}}.
+  """
+  def check_all_behaviours do
+    GenServer.call(__MODULE__, :check_all_behaviours, 30_000)
+  end
+
+  @doc """
   Get graph statistics.
   """
   def stats do
@@ -163,6 +179,18 @@ defmodule Giulia.Knowledge.Store do
   @impl true
   def handle_call({:test_targets, module, project_path}, _from, %{graph: graph} = state) do
     result = compute_test_targets(graph, module, project_path)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:check_behaviour_integrity, behaviour}, _from, %{graph: graph} = state) do
+    result = compute_behaviour_integrity(graph, behaviour)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:check_all_behaviours, _from, %{graph: graph} = state) do
+    result = compute_all_behaviours(graph)
     {:reply, result, state}
   end
 
@@ -599,6 +627,95 @@ defmodule Giulia.Knowledge.Store do
       {:ok, Enum.sort(deps)}
     else
       {:error, {:not_found, module}}
+    end
+  end
+
+  # ============================================================================
+  # Behaviour Integrity Check
+  # ============================================================================
+
+  defp compute_behaviour_integrity(graph, behaviour) do
+    if not Graph.has_vertex?(graph, behaviour) do
+      {:error, :not_found}
+    else
+      # Get declared callbacks from ETS
+      callbacks = Giulia.Context.Store.list_callbacks(behaviour)
+
+      if callbacks == [] do
+        # Not a behaviour (no callbacks declared)
+        {:ok, :consistent}
+      else
+        callback_set =
+          Enum.map(callbacks, fn cb ->
+            {to_string(cb.function), cb.arity}
+          end)
+          |> MapSet.new()
+
+        # Get implementers: modules with :implements edge pointing TO this behaviour
+        implementers =
+          Graph.in_edges(graph, behaviour)
+          |> Enum.filter(fn edge -> edge.label == :implements end)
+          |> Enum.map(fn edge -> edge.v1 end)
+          |> Enum.uniq()
+
+        # Check each implementer
+        fractures =
+          Enum.flat_map(implementers, fn impl_mod ->
+            # Get public functions of the implementer
+            impl_functions =
+              Giulia.Context.Store.list_functions(impl_mod)
+              |> Enum.filter(fn f -> f.type == :def end)
+              |> Enum.map(fn f -> {to_string(f.name), f.arity} end)
+              |> MapSet.new()
+
+            # Find callbacks missing from implementer
+            missing =
+              callback_set
+              |> MapSet.difference(impl_functions)
+              |> MapSet.to_list()
+
+            if missing == [] do
+              []
+            else
+              [%{implementer: impl_mod, missing: missing}]
+            end
+          end)
+
+        if fractures == [] do
+          {:ok, :consistent}
+        else
+          {:error, fractures}
+        end
+      end
+    end
+  end
+
+  defp compute_all_behaviours(graph) do
+    # Find behaviour modules from ETS (modules that declare @callback).
+    # We can't rely on :behaviour vertex labels because libgraph's add_vertex
+    # is a no-op when the vertex already exists — so :module always wins.
+    behaviour_modules =
+      Giulia.Context.Store.list_callbacks()
+      |> Enum.map(& &1.module)
+      |> Enum.uniq()
+      |> Enum.filter(&Graph.has_vertex?(graph, &1))
+
+    # Check each behaviour
+    all_fractures =
+      Enum.reduce(behaviour_modules, %{}, fn behaviour, acc ->
+        case compute_behaviour_integrity(graph, behaviour) do
+          {:error, fractures} when is_list(fractures) ->
+            Map.put(acc, behaviour, fractures)
+
+          _ ->
+            acc
+        end
+      end)
+
+    if map_size(all_fractures) == 0 do
+      {:ok, :consistent}
+    else
+      {:error, all_fractures}
     end
   end
 

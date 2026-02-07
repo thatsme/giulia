@@ -17,6 +17,9 @@ defmodule Giulia.Client do
   Main entry point for the thin client.
   """
   def main(args \\ []) do
+    # Fix MSYS/Git Bash path mangling: /integrity → C:/Program Files/Git/integrity
+    args = Enum.map(args, &fix_msys_path/1)
+
     case ensure_daemon_running() do
       :ok ->
         process_command(args)
@@ -43,6 +46,19 @@ defmodule Giulia.Client do
     host_path = path || get_working_directory()
 
     post("/api/init", %{path: host_path})
+  end
+
+  # Fix MSYS/Git Bash path mangling on Windows.
+  # Git Bash converts /foo to C:/Program Files/Git/foo automatically.
+  # We detect and reverse this for slash commands.
+  defp fix_msys_path(arg) do
+    msys_prefix = "C:/Program Files/Git/"
+
+    if String.starts_with?(arg, msys_prefix) do
+      "/" <> String.replace_prefix(arg, msys_prefix, "")
+    else
+      arg
+    end
   end
 
   # Get the real working directory (where user launched from, not where mix runs)
@@ -122,6 +138,27 @@ defmodule Giulia.Client do
 
   defp process_command(["/help"]) do
     print_help()
+  end
+
+  defp process_command(["/search" | rest]) do
+    case rest do
+      [] ->
+        warning("Usage: /search <pattern>")
+
+      terms ->
+        pattern = Enum.join(terms, " ")
+        host_path = get_working_directory()
+
+        case get("/api/search?pattern=#{URI.encode(pattern)}&path=#{URI.encode(host_path)}") do
+          {:ok, %{"results" => results}} ->
+            IO.puts("\n\e[36mSearch: '#{pattern}'\e[0m\n")
+            IO.puts(results)
+            IO.puts("")
+
+          {:error, reason} ->
+            error("Search failed: #{inspect(reason)}")
+        end
+    end
   end
 
   defp process_command(["/modules"]) do
@@ -277,6 +314,27 @@ defmodule Giulia.Client do
     end
   end
 
+  defp process_command(["/integrity"]) do
+    case get("/api/knowledge/integrity") do
+      {:ok, %{"status" => "consistent"}} ->
+        success("All behaviours consistent. No architectural fractures.")
+
+      {:ok, %{"status" => "fractured", "fractures" => fractures}} ->
+        error("ARCHITECTURAL FRACTURE(S) detected:\n")
+        Enum.each(fractures, fn %{"behaviour" => behaviour, "fractures" => impl_fractures} ->
+          IO.puts("  \e[1;31mBEHAVIOUR #{behaviour}:\e[0m")
+          Enum.each(impl_fractures, fn %{"implementer" => impl, "missing" => missing} ->
+            missing_str = Enum.join(missing, ", ")
+            IO.puts("    - #{impl}: missing #{missing_str}")
+          end)
+        end)
+        IO.puts("")
+
+      {:error, reason} ->
+        error("Integrity check failed: #{inspect(reason)}")
+    end
+  end
+
   defp process_command(args) do
     # Treat as chat message
     message = Enum.join(args, " ")
@@ -310,16 +368,17 @@ defmodule Giulia.Client do
   end
 
   # Simple REPL with history recall via /history and !N
+  # Supports multiline input:
+  #   """  ... heredoc mode ...  """    (preserves blank lines)
+  #   line ending with \                (continuation, joins with space)
   defp repl_loop(host_path), do: repl_loop(host_path, [])
 
   defp repl_loop(host_path, history) do
-    case IO.gets("giulia> ") do
+    case read_full_input() do
       :eof ->
         info("\nGoodbye!")
 
       line ->
-        line = String.trim(line)
-
         cond do
           line == "" ->
             repl_loop(host_path, history)
@@ -368,6 +427,104 @@ defmodule Giulia.Client do
             history = [line | history] |> Enum.take(100)
             execute_input(line, host_path)
             repl_loop(host_path, history)
+        end
+    end
+  end
+
+  # ============================================================================
+  # Multiline Input — heredoc (""") and continuation (\)
+  # ============================================================================
+
+  @heredoc_delim ~s(""")
+
+  # Read a full input line, handling multiline modes:
+  #   """         → heredoc mode (read until closing """)
+  #   """text     → inline heredoc open (read until closing """)
+  #   """text"""  → single-line heredoc (both delimiters on same line)
+  #   line\       → continuation (joins with newline)
+  defp read_full_input do
+    case IO.gets("giulia> ") do
+      :eof ->
+        :eof
+
+      raw ->
+        line = raw |> to_string() |> strip_newline()
+
+        trimmed = String.trim(line)
+
+        cond do
+          # Exact """ on its own line — open heredoc, read until """
+          trimmed == @heredoc_delim ->
+            IO.puts("\e[90m  (multiline mode — close with \"\"\" on its own line)\e[0m")
+            read_heredoc([])
+
+          # Line starts with """ — inline open
+          String.starts_with?(trimmed, @heredoc_delim) ->
+            after_open = String.replace_prefix(trimmed, @heredoc_delim, "")
+            # Check if line also ENDS with """ (single-line: """text""")
+            if String.length(after_open) >= 3 and String.ends_with?(after_open, @heredoc_delim) do
+              # Single-line heredoc: extract between the two """
+              after_open |> String.replace_suffix(@heredoc_delim, "") |> String.trim()
+            else
+              # Inline open, read more lines until closing """
+              read_heredoc([after_open])
+            end
+
+          # Continuation: end a line with \ to keep typing
+          String.ends_with?(trimmed, "\\") ->
+            first = String.slice(trimmed, 0, String.length(trimmed) - 1) |> String.trim_trailing()
+            read_continuation([first])
+
+          true ->
+            trimmed
+        end
+    end
+  end
+
+  # Strip trailing \r\n or \n
+  defp strip_newline(s), do: s |> String.trim_trailing("\n") |> String.trim_trailing("\r")
+
+  # Read lines until closing """ delimiter
+  # Handles: """ on its own line, or text""" at end of line
+  defp read_heredoc(acc) do
+    case IO.gets("...  ") do
+      :eof ->
+        acc |> Enum.reverse() |> Enum.join("\n") |> String.trim()
+
+      raw ->
+        line = raw |> to_string() |> strip_newline()
+        trimmed = String.trim(line)
+
+        cond do
+          # Closing """ on its own line
+          trimmed == @heredoc_delim ->
+            acc |> Enum.reverse() |> Enum.join("\n") |> String.trim()
+
+          # Line ends with """ (inline close: text""")
+          String.ends_with?(trimmed, @heredoc_delim) ->
+            last_part = String.replace_suffix(trimmed, @heredoc_delim, "")
+            [last_part | acc] |> Enum.reverse() |> Enum.join("\n") |> String.trim()
+
+          true ->
+            read_heredoc([line | acc])
+        end
+    end
+  end
+
+  # Read continuation lines (trailing \) until a line without \
+  defp read_continuation(acc) do
+    case IO.gets("...  ") do
+      :eof ->
+        acc |> Enum.reverse() |> Enum.join("\n") |> String.trim()
+
+      raw ->
+        line = raw |> to_string() |> strip_newline() |> String.trim()
+
+        if String.ends_with?(line, "\\") do
+          part = String.slice(line, 0, String.length(line) - 1) |> String.trim_trailing()
+          read_continuation([part | acc])
+        else
+          [line | acc] |> Enum.reverse() |> Enum.join("\n") |> String.trim()
         end
     end
   end
@@ -434,6 +591,12 @@ defmodule Giulia.Client do
     end
   end
 
+  # Timestamp helper — returns HH:MM:SS
+  defp ts do
+    {_, {h, m, s}} = :calendar.local_time()
+    :io_lib.format("~2..0B:~2..0B:~2..0B", [h, m, s]) |> IO.iodata_to_binary()
+  end
+
   # Parse and render SSE event immediately to terminal
   defp render_sse_event(data) do
     data
@@ -449,8 +612,9 @@ defmodule Giulia.Client do
     end)
   end
 
-  defp render_event_line(%{"type" => "tool_call", "tool" => tool, "iteration" => iter}) do
-    IO.write("\e[33m│ [#{iter}]\e[0m → \e[36m#{tool}\e[0m")
+  defp render_event_line(%{"type" => "tool_call", "tool" => tool, "iteration" => iter} = event) do
+    target = extract_tool_target(tool, event["params"] || %{})
+    IO.write("\e[90m#{ts()}\e[0m \e[33m│ [#{iter}]\e[0m → \e[36m#{tool}\e[0m#{target}")
   end
 
   defp render_event_line(%{"type" => "tool_result", "success" => true, "tool" => _tool}) do
@@ -458,13 +622,12 @@ defmodule Giulia.Client do
   end
 
   defp render_event_line(%{"type" => "tool_result", "success" => false, "tool" => _tool, "preview" => preview}) do
-    short = String.slice(preview || "", 0, 40)
-    IO.puts(" \e[31m✗\e[0m #{short}")
+    IO.puts(" \e[31m✗\e[0m #{preview}")
   end
 
   # Approval gate - simple output
   defp render_event_line(%{"type" => "tool_requires_approval", "approval_id" => approval_id, "tool" => tool, "preview" => preview}) do
-    IO.puts("\n\e[1;33m│ APPROVAL: #{tool}\e[0m (#{approval_id})")
+    IO.puts("\n\e[90m#{ts()}\e[0m \e[1;33m│ APPROVAL: #{tool}\e[0m (#{approval_id})")
     preview_text = preview || "(no preview)"
     preview_text
     |> String.split("\n")
@@ -479,36 +642,36 @@ defmodule Giulia.Client do
   defp render_event_line(%{"type" => "approval_granted", "tool" => _tool}), do: :ok
   defp render_event_line(%{"type" => "approval_rejected", "tool" => _tool}), do: :ok
   defp render_event_line(%{"type" => "approval_timeout", "tool" => tool}) do
-    IO.puts("\e[33m│ Timeout: #{tool}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[33m│ Timeout: #{tool}\e[0m")
   end
 
   # Verification events
   defp render_event_line(%{"type" => "verification_started", "tool" => tool}) do
-    IO.puts("\e[36m│ VERIFY: #{tool} (mix compile)\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[36m│ VERIFY: #{tool} (mix compile)\e[0m")
   end
 
   defp render_event_line(%{"type" => "verification_passed", "message" => message}) do
-    IO.puts("\e[32m│ ✓ #{message}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[32m│ ✓ #{message}\e[0m")
   end
 
   defp render_event_line(%{"type" => "verification_failed", "errors" => errors}) do
-    IO.puts("\e[1;31m│ BUILD BROKEN - model must fix:\e[0m")
-    IO.puts("\e[31m│   #{String.slice(errors || "", 0, 200)}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;31m│ BUILD BROKEN - model must fix:\e[0m")
+    IO.puts("\e[31m│   #{errors}\e[0m")
   end
 
   defp render_event_line(%{"type" => "complete", "response" => response}) do
     Process.put(:ooda_state, %{response: response})
-    IO.puts("\e[32m│ ✓ Complete\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[32m│ ✓ Complete\e[0m")
   end
 
   defp render_event_line(%{"request_id" => _}) do
-    IO.puts("\e[90m│ Starting...\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[90m│ Starting...\e[0m")
   end
 
   # Baseline warning - project was already broken before we started
   defp render_event_line(%{"type" => "baseline_warning", "message" => message}) do
     IO.puts("")
-    IO.puts("\e[1;33m⚠ BASELINE WARNING\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;33m⚠ BASELINE WARNING\e[0m")
     IO.puts("\e[33m#{message}\e[0m")
     IO.puts("\e[33mGiulia will not blame herself for pre-existing errors.\e[0m")
     IO.puts("")
@@ -516,16 +679,16 @@ defmodule Giulia.Client do
 
   # HYBRID ESCALATION Events
   defp render_event_line(%{"type" => "escalation_triggered", "message" => message}) do
-    IO.puts("\e[1;35m│ ESCALATION: #{message}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;35m│ ESCALATION: #{message}\e[0m")
   end
 
   defp render_event_line(%{"type" => "escalation_started", "message" => message}) do
-    IO.puts("\e[35m│ #{message}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[35m│ #{message}\e[0m")
   end
 
   defp render_event_line(%{"type" => "escalation_complete", "message" => _message, "instructions" => instructions} = event) do
     provider = event["provider"] || "Cloud"
-    IO.puts("\e[1;32m│ SENIOR ARCHITECT (#{provider}):\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;32m│ SENIOR ARCHITECT (#{provider}):\e[0m")
     (instructions || "(no instructions)")
     |> String.split("\n")
     |> Enum.each(fn line -> IO.puts("\e[37m│   #{line}\e[0m") end)
@@ -533,27 +696,117 @@ defmodule Giulia.Client do
   end
 
   defp render_event_line(%{"type" => "escalation_failed", "message" => message}) do
-    IO.puts("\e[1;31m│ ESCALATION FAILED: #{message}\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;31m│ ESCALATION FAILED: #{message}\e[0m")
+  end
+
+  # Model detection event
+  defp render_event_line(%{"type" => "model_detected", "model" => model, "tier" => tier}) do
+    tier_color = case tier do
+      "small"  -> "\e[33m"   # yellow
+      "medium" -> "\e[36m"   # cyan
+      "large"  -> "\e[32m"   # green
+      _        -> "\e[37m"   # white
+    end
+    IO.puts("\e[90m#{ts()}\e[0m \e[90m│ Model: #{model} #{tier_color}[#{tier}]\e[0m")
   end
 
   # Transaction lifecycle events
+  defp render_event_line(%{"type" => "transaction_auto_enabled", "reason" => reason}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;33m│ TRANSACTION MODE auto-enabled (#{reason})\e[0m")
+  end
+
   defp render_event_line(%{"type" => "transaction_auto_enabled", "module" => module}) do
-    IO.puts("\e[1;33m│ TRANSACTION MODE auto-enabled (hub module: #{module})\e[0m")
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;33m│ TRANSACTION MODE auto-enabled (hub module: #{module})\e[0m")
   end
 
-  defp render_event_line(%{"type" => "commit_started", "file_count" => count}) do
-    IO.puts("\e[36m│ COMMIT: Flushing #{count} file(s) to disk...\e[0m")
+  defp render_event_line(%{"type" => "commit_started", "file_count" => count} = event) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[36m│ COMMIT: Flushing #{count} file(s) to disk...\e[0m")
+    render_file_list(event["files"], "  \e[90m")
   end
 
-  defp render_event_line(%{"type" => "commit_success", "file_count" => count}) do
-    IO.puts("\e[1;32m│ COMMIT SUCCESS: #{count} file(s) verified and written\e[0m")
+  defp render_event_line(%{"type" => "commit_success", "file_count" => count} = event) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;32m│ COMMIT SUCCESS: #{count} file(s) verified and written\e[0m")
+    render_file_list(event["files"], "  \e[32m")
   end
 
-  defp render_event_line(%{"type" => "commit_rollback", "message" => message}) do
-    IO.puts("\e[1;31m│ ROLLBACK: #{message}\e[0m")
+  defp render_event_line(%{"type" => "commit_rollback", "message" => message} = event) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;31m│ ROLLBACK: #{message}\e[0m")
+    render_file_list(event["files"], "  \e[31m")
+    if errors = event["errors"], do: IO.puts("  \e[31m#{errors}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "architectural_fracture", "fractures" => report}) do
+    IO.puts("\n\e[90m#{ts()}\e[0m \e[1;31m│ ARCHITECTURAL FRACTURE: Behaviour-implementer mismatch\e[0m")
+    report
+    |> String.split("\n")
+    |> Enum.each(fn line -> IO.puts("\e[31m│   #{line}\e[0m") end)
+    IO.puts("\e[31m│   All changes rolled back.\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "goal_tracker_block", "module" => mod, "dependents" => deps, "modified" => touched}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[1;33m│ GOAL TRACKER: Only #{touched}/#{deps} dependents of #{mod} modified — respond BLOCKED\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "bulk_replace"}) do
+    # Handled by tool_call/tool_result events
+    :ok
   end
 
   defp render_event_line(_), do: :ok
+
+  # Extract a human-readable target from tool params
+  defp extract_tool_target(tool, params) when is_map(params) do
+    target = case tool do
+      t when t in ["patch_function", "write_function"] ->
+        mod = params["module"] || ""
+        func = params["function_name"] || ""
+        arity = params["arity"]
+        if func != "", do: " \e[37m#{mod}.#{func}/#{arity}\e[0m", else: ""
+
+      t when t in ["edit_file", "write_file", "read_file"] ->
+        file = params["file"] || params["path"] || ""
+        if file != "", do: " \e[37m#{Path.basename(file)}\e[0m", else: ""
+
+      "get_function" ->
+        func = params["function_name"] || ""
+        file = params["file"] || params["module"] || ""
+        if func != "", do: " \e[37m#{func} in #{Path.basename(to_string(file))}\e[0m", else: ""
+
+      "get_impact_map" ->
+        mod = params["module"] || ""
+        if mod != "", do: " \e[37m#{mod}\e[0m", else: ""
+
+      "search_code" ->
+        pattern = params["pattern"] || ""
+        if pattern != "", do: " \e[37m\"#{pattern}\"\e[0m", else: ""
+
+      "bulk_replace" ->
+        pattern = params["pattern"] || ""
+        replacement = params["replacement"] || ""
+        files = params["files"] || params["file_list"]
+        count = if is_list(files), do: length(files), else: files
+        " \e[37m'#{pattern}' → '#{replacement}' (#{count} files)\e[0m"
+
+      "think" ->
+        thought = params["thought"] || ""
+        short = if String.length(thought) > 60, do: String.slice(thought, 0, 57) <> "...", else: thought
+        if short != "", do: " \e[90m#{short}\e[0m", else: ""
+
+      _ -> ""
+    end
+    target
+  end
+  defp extract_tool_target(_, _), do: ""
+
+  # Render a file list under a commit/rollback event
+  defp render_file_list(nil, _prefix), do: :ok
+  defp render_file_list([], _prefix), do: :ok
+  defp render_file_list(files, prefix) when is_list(files) do
+    Enum.each(files, fn path ->
+      basename = Path.basename(to_string(path))
+      IO.puts("#{prefix}  → #{basename}\e[0m")
+    end)
+  end
 
   # ============================================================================
   # Owl Formatting Helpers
@@ -787,6 +1040,17 @@ defmodule Giulia.Client do
       _ -> "unknown"
     end
 
+    # Get active model from LM Studio
+    model_name = detect_active_model()
+
+    # Check Giulia daemon status
+    daemon_status = case get("/api/index/status") do
+      {:ok, %{"status" => status, "file_count" => count}} ->
+        "UP (#{status}, #{count} files indexed)"
+      _ ->
+        "DOWN"
+    end
+
     IO.puts("""
 
     +---------------------------------------------------------+
@@ -794,10 +1058,36 @@ defmodule Giulia.Client do
     |            AI Development Agent (Docker Mode)           |
     +---------------------------------------------------------+
     | Client: #{String.pad_trailing(client_ver, 20)} Server: #{String.pad_trailing(server_ver, 15)}|
+    | Model:  #{String.pad_trailing(model_name, 47)}|
+    | Daemon: #{String.pad_trailing(daemon_status, 47)}|
     +---------------------------------------------------------+
 
     Connected to daemon. Type /help for commands.
     """)
+  end
+
+  # Query LM Studio /v1/models to get the active model name
+  # The client talks directly to LM Studio (not through the daemon)
+  defp detect_active_model do
+    lm_url = System.get_env("GIULIA_LM_STUDIO_URL") || "http://127.0.0.1:1234"
+    lm_url = String.trim_trailing(lm_url, "/")
+    models_url = if String.contains?(lm_url, "/v1/"), do: String.replace(lm_url, ~r"/v1/.*", "/v1/models"), else: lm_url <> "/v1/models"
+
+    case Req.get(models_url, receive_timeout: 3000, retry: false) do
+      {:ok, %{status: 200, body: body}} ->
+        body = if is_binary(body), do: Jason.decode!(body), else: body
+        case body do
+          %{"data" => [first | _]} ->
+            first["id"] || "unknown"
+          _ ->
+            "unknown"
+        end
+
+      _ ->
+        "not available"
+    end
+  rescue
+    _ -> "not available"
   end
 
   defp print_help do
@@ -812,6 +1102,12 @@ defmodule Giulia.Client do
       /help           Show this help
       /quit           Exit interactive mode
 
+    Multiline Input:
+      \"\"\"               Start heredoc block (preserves blank lines)
+      ...  your text    Type or paste freely
+      \"\"\"               Close and send
+      line ending \\    Continuation (joins with space)
+
     History Commands:
       /history        Show numbered command history
       !N              Replay command #N (e.g., !3)
@@ -823,6 +1119,8 @@ defmodule Giulia.Client do
       /summary        Show project summary (for LLM context)
       /scan           Trigger re-indexing of current directory
       /indexstatus    Show indexer status
+      /search <pat>   Search code for a pattern (no LLM)
+      /integrity      Check behaviour-implementer consistency
 
     Transaction Commands:
       /transaction    Toggle transaction mode (stage writes in memory)
