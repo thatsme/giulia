@@ -75,9 +75,6 @@ defmodule Giulia.Application do
       # Dynamic supervisor for provider connections
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
 
-      # Dynamic supervisor for agent tasks
-      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Agent.Supervisor},
-
       # Trace storage for debugging inference runs
       Giulia.Inference.Trace,
 
