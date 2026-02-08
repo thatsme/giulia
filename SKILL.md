@@ -52,7 +52,24 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | API surface | `GET /api/knowledge/api_surface?path=P` | Public vs private function ratio per module — high ratio = poor encapsulation |
 | Change risk | `GET /api/knowledge/change_risk?path=P` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
 
-### 3. Modifying Code
+### 3. Intelligence (Layer 1+2 Pre-Processing)
+
+Giulia's intelligence layer runs **before** the LLM. It combines semantic search (Bumblebee embeddings) with Knowledge Graph enrichment to produce structured context automatically.
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| Surgical Briefing | `GET /api/intelligence/briefing?path=P&prompt=Q` | Auto-generated context: relevant modules with hub scores, dependents, key functions — or `"skipped"` if below relevance threshold |
+| Semantic search | `GET /api/search/semantic?path=P&q=Q&top_k=N` | Top N modules + functions ranked by semantic similarity to concept Q |
+| Embedding status | `GET /api/search/semantic/status?path=P` | Module/function vector counts, availability |
+
+**Surgical Briefing** is the key endpoint. Given a natural language prompt, it:
+1. **Layer 1** (Bumblebee): Finds the top 3 most relevant modules and top 5 functions via cosine similarity
+2. **Layer 2** (Knowledge Graph): Enriches each module with centrality (hub score), dependents count, and file path
+3. Returns a formatted briefing with hub warnings for high-centrality modules (in_degree >= 3)
+
+The briefing is automatically injected into LLM prompts during inference, but can also be queried directly for planning and analysis.
+
+### 4. Modifying Code
 
 Send natural language commands through Giulia's OODA orchestrator via `POST /api/command/stream`. It uses AST analysis, the Knowledge Graph, and transactional staging to make changes atomically.
 
@@ -93,7 +110,7 @@ Send natural language commands through Giulia's OODA orchestrator via `POST /api
 3. If the user rejects: `POST /api/approval/:approval_id` with `{"approved": false}`
 4. Do NOT auto-approve — the approval gate exists to catch destructive changes to critical modules
 
-### 4. Verifying Changes
+### 5. Verifying Changes
 
 | Intent | Method |
 |--------|--------|

@@ -212,6 +212,107 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
+  # ============================================================================
+  # Semantic Search Endpoints
+  # ============================================================================
+
+  # Semantic search by concept
+  get "/api/search/semantic" do
+    concept = conn.query_params["concept"] || conn.query_params["q"]
+
+    if concept do
+      case resolve_project_path(conn) do
+        nil ->
+          send_json(conn, 400, %{error: "Missing required query param: path"})
+
+        project_path ->
+          top_k =
+            case Integer.parse(conn.query_params["top_k"] || "5") do
+              {n, _} -> n
+              :error -> 5
+            end
+
+          case Giulia.Intelligence.SemanticIndex.search(project_path, concept, top_k) do
+            {:ok, %{modules: modules, functions: functions}} ->
+              mod_json =
+                Enum.map(modules, fn m ->
+                  %{
+                    module: m.id,
+                    score: m.score,
+                    moduledoc: m.metadata[:moduledoc] || ""
+                  }
+                end)
+
+              func_json =
+                Enum.map(functions, fn f ->
+                  %{
+                    module: f.metadata.module,
+                    function: f.metadata.function,
+                    arity: f.metadata.arity,
+                    score: f.score,
+                    file: f.metadata.file,
+                    line: f.metadata.line
+                  }
+                end)
+
+              send_json(conn, 200, %{
+                concept: concept,
+                modules: mod_json,
+                functions: func_json,
+                count: length(func_json)
+              })
+
+            {:error, "Semantic search unavailable" <> _} ->
+              send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+
+            {:error, "No embeddings" <> _} ->
+              send_json(conn, 404, %{error: "No embeddings for this project. Run POST /api/index/scan first."})
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: reason})
+          end
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required query param: concept (or q)"})
+    end
+  end
+
+  # Test Surgical Briefing (Layer 1+2 pre-processing)
+  get "/api/intelligence/briefing" do
+    concept = conn.query_params["prompt"] || conn.query_params["q"]
+
+    if concept do
+      case resolve_project_path(conn) do
+        nil ->
+          send_json(conn, 400, %{error: "Missing required query param: path"})
+
+        project_path ->
+          case Giulia.Intelligence.SurgicalBriefing.build(concept, project_path) do
+            {:ok, briefing} ->
+              send_json(conn, 200, %{status: "ok", briefing: briefing})
+
+            :skip ->
+              send_json(conn, 200, %{status: "skipped", briefing: nil,
+                message: "Briefing skipped (unavailable, no embeddings, or below relevance threshold)"})
+          end
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required query param: prompt (or q)"})
+    end
+  end
+
+  # Semantic search status
+  get "/api/search/semantic/status" do
+    case resolve_project_path(conn) do
+      nil ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
+
+      project_path ->
+        status = Giulia.Intelligence.SemanticIndex.status(project_path)
+        send_json(conn, 200, status)
+    end
+  end
+
   # Debug: Show current path mappings
   get "/api/debug/paths" do
     mappings = Giulia.Core.PathMapper.list_mappings()

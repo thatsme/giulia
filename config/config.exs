@@ -32,3 +32,9 @@ config :giulia,
 
 config :logger,
   level: :info
+
+# =============================================================================
+# Nx / EXLA Configuration (Semantic Search)
+# =============================================================================
+
+config :nx, :default_backend, EXLA.Backend

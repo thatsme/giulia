@@ -594,25 +594,25 @@ defmodule Giulia.AST.Processor do
   end
 
   # @spec function_name(args) :: return_type
-  defp extract_spec_info({:@, meta, [{:spec, _, [{:"::", _, [{name, _, args}, _return]}]}]})
+  defp extract_spec_info({:@, meta, [{:spec, _, [{:"::", _, [{name, _, args}, _return]} = spec_ast]}]})
        when is_atom(name) do
     arity = if is_list(args), do: length(args), else: 0
     {:ok, %{
       function: name,
       arity: arity,
-      spec: "", # Could extract full spec string if needed
+      spec: Macro.to_string(spec_ast),
       line: Keyword.get(meta, :line, 0)
     }}
   end
 
   # @spec with when clause
-  defp extract_spec_info({:@, meta, [{:spec, _, [{:when, _, [{:"::", _, [{name, _, args}, _return]} | _]}]}]})
+  defp extract_spec_info({:@, meta, [{:spec, _, [{:when, _, [{:"::", _, [{name, _, args}, _return]} = spec_ast | when_clauses]}]}]})
        when is_atom(name) do
     arity = if is_list(args), do: length(args), else: 0
     {:ok, %{
       function: name,
       arity: arity,
-      spec: "",
+      spec: Macro.to_string({:when, [], [spec_ast | when_clauses]}),
       line: Keyword.get(meta, :line, 0)
     }}
   end

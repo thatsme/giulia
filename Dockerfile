@@ -3,16 +3,18 @@
 #
 # No OTP release — runs directly with `mix run --no-halt`.
 # Releases are for production. Giulia is a development tool.
+#
+# Uses Debian-slim (not Alpine) because EXLA requires glibc.
 
-FROM elixir:1.19-otp-27-alpine
+FROM elixir:1.19-otp-27-slim
 
-RUN apk add --no-cache \
-    build-base \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     git \
-    npm \
-    sqlite-dev \
-    sqlite-libs \
-    ca-certificates
+    curl \
+    ca-certificates \
+    libsqlite3-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -27,7 +29,8 @@ ENV MIX_ENV=dev \
     HEX_HOME=/root/.hex \
     GIULIA_IN_CONTAINER=true \
     GIULIA_HOME=/data \
-    GIULIA_PORT=4000
+    GIULIA_PORT=4000 \
+    XLA_TARGET=cpu
 
 # Copy project files
 COPY mix.exs mix.lock ./
@@ -40,14 +43,17 @@ COPY lib lib
 COPY priv priv
 RUN mix compile
 
+# Model downloads on first startup (needs CUDA runtime from nvidia-docker)
+# Cached in /root/.cache via giulia_models volume
+
 # Create data directories
 RUN mkdir -p /data /projects
 
 # HTTP API port
 EXPOSE 4000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget -q --spider http://localhost:4000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:4000/health || exit 1
 
 VOLUME ["/data", "/projects"]
 

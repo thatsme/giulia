@@ -3,7 +3,7 @@ defmodule Giulia.MixProject do
 
   @version "0.1.0"
   # Build number - increment on each release
-  @build 69
+  @build 71
 
   def project do
     [
@@ -88,6 +88,12 @@ defmodule Giulia.MixProject do
 
       # Knowledge graph (pure Elixir, no NIFs)
       {:libgraph, "~> 0.16"},
+
+      # Semantic search (Hierarchical Concept Search)
+      {:nx, "~> 0.10"},
+      {:exla, "~> 0.10"},
+      {:bumblebee, "~> 0.6"},
+      {:axon, "~> 0.6"},
 
       # Binary compilation (client only)
       {:burrito, "~> 1.0", runtime: false}

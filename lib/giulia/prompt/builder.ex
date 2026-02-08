@@ -481,9 +481,15 @@ defmodule Giulia.Prompt.Builder do
 
     history = opts[:history] || []
 
+    briefing_msg =
+      case opts[:surgical_briefing] do
+        nil -> []
+        text -> [%{role: "system", content: text}]
+      end
+
     [
       %{role: "system", content: system_prompt}
-    ] ++ history ++ [
+    ] ++ briefing_msg ++ history ++ [
       %{role: "user", content: user_prompt}
     ]
   end

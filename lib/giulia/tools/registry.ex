@@ -183,6 +183,9 @@ defmodule Giulia.Tools.Registry do
       Giulia.Tools.GetImpactMap,
       Giulia.Tools.TracePath,
 
+      # Semantic search (requires embedding model)
+      Giulia.Tools.SearchMeaning,
+
       # Pseudo-tools for orchestration
       Giulia.Tools.Respond,
       Giulia.Tools.Think,

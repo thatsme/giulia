@@ -190,6 +190,14 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @doc """
+  Add a semantic edge to the knowledge graph.
+  Used by SemanticIndex to record concept-level relationships.
+  """
+  def add_semantic_edge(project_path, from, to, reason) do
+    GenServer.call(__MODULE__, {:add_semantic_edge, project_path, from, to, reason})
+  end
+
+  @doc """
   Get implementers of a behaviour module.
   """
   def get_implementers(project_path, behaviour) do
@@ -363,6 +371,13 @@ defmodule Giulia.Knowledge.Store do
   def handle_call({:graph, project_path}, _from, state) do
     graph = get_graph(state, project_path)
     {:reply, graph, state}
+  end
+
+  @impl true
+  def handle_call({:add_semantic_edge, project_path, from, to, reason}, _from, state) do
+    graph = get_graph(state, project_path)
+    new_graph = Graph.add_edge(graph, from, to, label: {:semantic, reason})
+    {:reply, :ok, put_graph(state, project_path, new_graph)}
   end
 
   # ============================================================================
