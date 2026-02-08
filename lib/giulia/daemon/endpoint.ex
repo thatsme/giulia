@@ -141,6 +141,18 @@ defmodule Giulia.Daemon.Endpoint do
     send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
   end
 
+  # Full module details — file, moduledoc, functions, types, specs, callbacks, struct
+  get "/api/index/module_details" do
+    module = conn.query_params["module"]
+
+    if module do
+      details = Giulia.Context.Store.module_details(module)
+      send_json(conn, 200, %{module: module, details: details})
+    else
+      send_json(conn, 400, %{error: "Missing required query param: module"})
+    end
+  end
+
   # Project summary - The "distilled metadata" for small models
   get "/api/index/summary" do
     summary = Giulia.Context.Store.project_summary()
