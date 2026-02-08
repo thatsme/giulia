@@ -195,6 +195,17 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @impl true
+  def handle_call({:get_implementers, behaviour}, _from, %{graph: graph} = state) do
+    implementers =
+      Graph.in_edges(graph, behaviour)
+      |> Enum.filter(fn edge -> edge.label == :implements end)
+      |> Enum.map(fn edge -> edge.v1 end)
+      |> Enum.uniq()
+
+    {:reply, {:ok, implementers}, state}
+  end
+
+  @impl true
   def handle_call(:stats, _from, %{graph: graph} = state) do
     result = compute_stats(graph)
     {:reply, result, state}

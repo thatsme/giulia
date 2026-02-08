@@ -189,7 +189,8 @@ defmodule Giulia.Tools.Registry do
       Giulia.Tools.Think,
       Giulia.Tools.CommitChanges,
       Giulia.Tools.GetStagedFiles,
-      Giulia.Tools.BulkReplace
+      Giulia.Tools.BulkReplace,
+      Giulia.Tools.RenameMFA
     ]
 
     Enum.each(known_tools, &do_register/1)

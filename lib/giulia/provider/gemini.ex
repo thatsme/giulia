@@ -17,7 +17,12 @@ defmodule Giulia.Provider.Gemini do
   @base_url "https://generativelanguage.googleapis.com/v1beta/models"
 
   @impl true
-  def chat(messages, _tools, opts \\ []) do
+  def chat(messages, opts) when is_list(opts) do
+    chat(messages, [], opts)
+  end
+
+  @impl true
+  def chat(messages, _tools, opts) do
     api_key = System.get_env("GEMINI_API_KEY")
 
     if is_nil(api_key) or api_key == "" do
@@ -72,7 +77,7 @@ defmodule Giulia.Provider.Gemini do
   end
 
   @impl true
-  def stream(_messages, _tools) do
+  def stream(_messages, _opts) do
     # Gemini is only used for escalation, not streaming
     {:error, :streaming_not_supported}
   end
