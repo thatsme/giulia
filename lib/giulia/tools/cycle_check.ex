@@ -67,7 +67,28 @@ defmodule Giulia.Tools.CycleCheck do
     |> validate_inclusion(:label, ["compile-connected", "compile", "all"])
   end
 
-  def execute(params, opts \\ []) do
+  def execute(params, opts \\ [])
+
+  def execute(%__MODULE__{label: label, fail_above: fail_above}, opts) do
+    project_path = Keyword.get(opts, :project_path) || File.cwd!()
+
+    elixir_version =
+      case check_elixir_version(project_path) do
+        {:ok, version} -> version
+        {:error, _} -> "unknown"
+      end
+
+    labels_to_check = if label == "all", do: @labels, else: [label]
+
+    results =
+      Enum.map(labels_to_check, fn l ->
+        {l, run_xref(l, fail_above, project_path)}
+      end)
+
+    format_results(results, elixir_version)
+  end
+
+  def execute(params, opts) do
     case Giulia.StructuredOutput.parse_map(params, __MODULE__) do
       {:ok, struct} -> execute(struct, opts)
       {:error, _} = error -> error
@@ -240,17 +261,4 @@ defmodule Giulia.Tools.CycleCheck do
        summary}
   end
 
-  defp parse_params(params) do
-    changeset = changeset(params)
-
-    if changeset.valid? do
-      {:ok, Ecto.Changeset.apply_changes(changeset)}
-    else
-      {:error, :invalid_params}
-    end
-  end
-
-  defp stringify_keys(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
-  end
 end

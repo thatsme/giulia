@@ -2829,11 +2829,27 @@ defmodule Giulia.Inference.Orchestrator do
           {:error, _} -> []
         end
 
-      # Get implementers (modules that implement this as a behaviour)
+      # Get implementers ONLY if old_name is a declared @callback in the target module.
+      # Without this check, renaming Registry.execute/3 would also rename
+      # every tool's execute/2 — because they're "implementers" of Registry,
+      # but execute/2 is NOT a @callback (only name/0, description/0, parameters/0 are).
+      callbacks = Giulia.Context.Store.list_callbacks(module)
+
+      is_callback =
+        Enum.any?(callbacks, fn cb ->
+          cb_name = if is_atom(cb.function), do: Atom.to_string(cb.function), else: cb.function
+          cb_name == old_name and cb.arity in arity_range
+        end)
+
       implementers =
-        case get_implementers_from_graph(module) do
-          {:ok, impls} -> impls
-          _ -> []
+        if is_callback do
+          case get_implementers_from_graph(module) do
+            {:ok, impls} -> impls
+            _ -> []
+          end
+        else
+          Logger.info("RENAME_MFA: #{old_name} is NOT a @callback in #{module} — skipping implementers")
+          []
         end
 
       # Build the set of all files to scan
@@ -4291,6 +4307,10 @@ defmodule Giulia.Inference.Orchestrator do
 
   defp parse_model_response(%{content: nil}), do: {:error, :empty_response}
 
+  defp parse_model_response(%{tool_calls: [tc | _]}) do
+    {:tool_call, tc.name, tc.arguments}
+  end
+
   defp parse_model_response(%{content: content}) when is_binary(content) do
     # Log raw model output for debugging
     Logger.info("Raw model response: #{String.slice(content, 0, 300)}")
@@ -4321,6 +4341,8 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
+  defp parse_model_response(_), do: {:error, :unknown_response_format}
+
   defp parse_single_action(content) do
     case Parser.parse_response(content) do
       {:ok, %{"tool" => tool, "parameters" => params}} ->
@@ -4332,12 +4354,6 @@ defmodule Giulia.Inference.Orchestrator do
         parse_model_response_json(content)
     end
   end
-
-  defp parse_model_response(%{tool_calls: [tc | _]}) do
-    {:tool_call, tc.name, tc.arguments}
-  end
-
-  defp parse_model_response(_), do: {:error, :unknown_response_format}
 
   # JSON-only parsing path (original logic, extracted for reuse)
   defp parse_model_response_json(content) do
