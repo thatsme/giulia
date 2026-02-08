@@ -301,6 +301,35 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
+  # Preflight Contract Checklist (Layer 3: structured contract analysis)
+  post "/api/briefing/preflight" do
+    prompt = conn.body_params["prompt"]
+    path = conn.body_params["path"]
+
+    if prompt && path do
+      resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+      top_k =
+        case Integer.parse(to_string(conn.body_params["top_k"] || "5")) do
+          {n, _} -> n
+          :error -> 5
+        end
+
+      depth =
+        case Integer.parse(to_string(conn.body_params["depth"] || "2")) do
+          {n, _} -> n
+          :error -> 2
+        end
+
+      case Giulia.Intelligence.Preflight.run(prompt, resolved_path, top_k: top_k, depth: depth) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> send_json(conn, 422, %{error: inspect(reason)})
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required fields: prompt and path"})
+    end
+  end
+
   # Semantic search status
   get "/api/search/semantic/status" do
     case resolve_project_path(conn) do

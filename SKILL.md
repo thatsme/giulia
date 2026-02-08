@@ -52,22 +52,40 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | API surface | `GET /api/knowledge/api_surface?path=P` | Public vs private function ratio per module — high ratio = poor encapsulation |
 | Change risk | `GET /api/knowledge/change_risk?path=P` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
 
-### 3. Intelligence (Layer 1+2 Pre-Processing)
+### 3. Intelligence (Pre-Processing Layers)
 
 Giulia's intelligence layer runs **before** the LLM. It combines semantic search (Bumblebee embeddings) with Knowledge Graph enrichment to produce structured context automatically.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
+| **Preflight Contract Checklist** | `POST /api/briefing/preflight` | Structured JSON: 6 contract sections per module (behaviour, type, data, macro, topology, semantic integrity) — **the single best call for planning** |
 | Surgical Briefing | `GET /api/intelligence/briefing?path=P&prompt=Q` | Auto-generated context: relevant modules with hub scores, dependents, key functions — or `"skipped"` if below relevance threshold |
 | Semantic search | `GET /api/search/semantic?path=P&q=Q&top_k=N` | Top N modules + functions ranked by semantic similarity to concept Q |
 | Embedding status | `GET /api/search/semantic/status?path=P` | Module/function vector counts, availability |
 
-**Surgical Briefing** is the key endpoint. Given a natural language prompt, it:
+**Preflight Contract Checklist** (`POST /api/briefing/preflight`) is the primary planning endpoint. Body:
+```json
+{"prompt": "Refactor the approval flow", "path": "C:/Development/GitHub/Giulia", "top_k": 5, "depth": 2}
+```
+
+Given a natural language prompt, it:
+1. **Discovers** relevant modules via semantic search (Bumblebee embeddings)
+2. **Pre-computes** change risk scores (called once, cached in pipeline)
+3. **Builds 6 contract sections** per module:
+   - **Behaviour Contract** — callbacks defined/implemented, integrity status, missing callbacks
+   - **Type Contract** — specs with full signatures, types, spec coverage ratio
+   - **Data Contract** — struct fields, dependents count
+   - **Macro Contract** — `use` directives, known implications (GenServer requires init/1, etc.)
+   - **Topology** — centrality, dependents list, change risk score/rank, full impact map
+   - **Semantic Integrity** — cosine similarity to prompt, drift flag if module doesn't match intent
+4. **Summarizes** aggregate counts: hubs, high-risk modules, fractured behaviours, semantic drift
+
+One call replaces the 4 separate queries previously required for planning mode.
+
+**Surgical Briefing** (`GET /api/intelligence/briefing`) is the lighter alternative, used automatically during inference:
 1. **Layer 1** (Bumblebee): Finds the top 3 most relevant modules and top 5 functions via cosine similarity
 2. **Layer 2** (Knowledge Graph): Enriches each module with centrality (hub score), dependents count, and file path
 3. Returns a formatted briefing with hub warnings for high-centrality modules (in_degree >= 3)
-
-The briefing is automatically injected into LLM prompts during inference, but can also be queried directly for planning and analysis.
 
 ### 4. Modifying Code
 
@@ -127,13 +145,22 @@ Send natural language commands through Giulia's OODA orchestrator via `POST /api
 
 When entering plan mode for any Elixir code modification, you **MUST** query Giulia's analysis endpoints BEFORE writing the plan. Do NOT use grep, awk, sed, or find to discover module dependencies — Giulia's Knowledge Graph has this data pre-indexed from AST analysis.
 
-**Required analysis before any plan:**
+**First call MUST be Preflight:**
+```bash
+curl -X POST http://localhost:4000/api/briefing/preflight \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"your task description","path":"C:/Development/GitHub/ProjectName"}'
+```
+
+This single call returns all 6 contract sections per relevant module — behaviour obligations, type contracts, struct dependencies, macro implications, topology (centrality + impact + change risk), and semantic integrity. **One call replaces four.**
+
+**For modules NOT in the preflight result** (or for deeper investigation), use individual queries:
 1. `GET /api/knowledge/change_risk?path=P` — identify which modules are dangerous to touch
 2. `GET /api/knowledge/impact?path=P&module=X&depth=2` — blast radius for every module you plan to modify
 3. `GET /api/knowledge/centrality?path=P&module=X` — hub score (degree > 3 = high-risk)
 4. `GET /api/index/module_details?path=P&module=X` — full API surface of target modules
 
-**No plan is valid without blast radius data.** If you skip these queries, the plan is incomplete.
+**No plan is valid without blast radius data.** If you skip preflight AND these queries, the plan is incomplete.
 
 ### Before Modifying Any Elixir Module
 
