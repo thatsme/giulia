@@ -1,9 +1,13 @@
 defmodule Giulia.Tools.SearchCode do
   @moduledoc """
-  Search for patterns in code files.
+  Search for patterns in project source files.
 
-  The model's "ctrl+shift+f" - find occurrences across the codebase.
-  Returns file paths and line numbers, not full content (keeps context small).
+  State-first: reads the file list from ETS (populated by the Indexer),
+  never touches the filesystem to discover files. Disk I/O only happens
+  when reading file contents for matching.
+
+  By default, searches only first-party code already indexed by the scanner.
+  Pass `include_deps: true` to also search dependency source files.
   """
   use Ecto.Schema
   import Ecto.Changeset
@@ -17,6 +21,7 @@ defmodule Giulia.Tools.SearchCode do
     field :pattern, :string
     field :file_pattern, :string, default: "*.ex"
     field :case_sensitive, :boolean, default: false
+    field :include_deps, :boolean, default: false
     field :max_results, :integer, default: 20
   end
 
@@ -24,7 +29,7 @@ defmodule Giulia.Tools.SearchCode do
   def name, do: "search_code"
 
   @impl true
-  def description, do: "Search for a pattern in code files. Returns matching lines with file paths."
+  def description, do: "Search for a pattern in project source files. Returns matching lines with file paths."
 
   @impl true
   def parameters do
@@ -43,6 +48,10 @@ defmodule Giulia.Tools.SearchCode do
           type: "boolean",
           description: "Case-sensitive search (default: false)"
         },
+        include_deps: %{
+          type: "boolean",
+          description: "Include deps/ in search (default: false). Never includes _build/."
+        },
         max_results: %{
           type: "integer",
           description: "Maximum number of results (default: 20)"
@@ -54,29 +63,38 @@ defmodule Giulia.Tools.SearchCode do
 
   def changeset(params) do
     %__MODULE__{}
-    |> cast(params, [:pattern, :file_pattern, :case_sensitive, :max_results])
+    |> cast(params, [:pattern, :file_pattern, :case_sensitive, :include_deps, :max_results])
     |> validate_required([:pattern])
   end
 
   @impl true
   def execute(params, opts \\ [])
 
-  def execute(%__MODULE__{pattern: pattern, file_pattern: file_pattern, case_sensitive: case_sensitive, max_results: max_results}, opts) do
+  def execute(%__MODULE__{} = search, opts) do
     sandbox = get_sandbox(opts)
+    matcher = compile_matcher(search.pattern, search.case_sensitive)
 
-    # Get all matching files in sandbox
-    glob = Path.join([sandbox.root, "**", file_pattern])
-    files = Path.wildcard(glob)
-    |> Enum.reject(&File.dir?/1)
-    |> Enum.filter(&PathSandbox.safe?(&1, sandbox))
+    # State-first: file list comes from ETS, not disk
+    files = Giulia.Context.Store.get_project_files(sandbox.root)
+    |> filter_by_extension(search.file_pattern)
 
-    # Search each file
-    results = files
-    |> Enum.flat_map(&search_file(&1, pattern, case_sensitive, sandbox.root))
-    |> Enum.take(max_results)
+    # Parallel search across all cores with early termination
+    results =
+      files
+      |> Task.async_stream(
+        &search_file(&1, matcher, sandbox.root),
+        max_concurrency: System.schedulers_online(),
+        ordered: false,
+        timeout: 30_000
+      )
+      |> Stream.flat_map(fn
+        {:ok, matches} -> matches
+        {:exit, _reason} -> []
+      end)
+      |> Enum.take(search.max_results)
 
     if results == [] do
-      {:ok, "No matches found for '#{pattern}'"}
+      {:ok, "No matches found for '#{search.pattern}'"}
     else
       formatted = Enum.map_join(results, "\n", fn {file, line_num, line} ->
         "#{file}:#{line_num}: #{String.trim(line)}"
@@ -96,7 +114,9 @@ defmodule Giulia.Tools.SearchCode do
     execute(stringify_keys(params), opts)
   end
 
-  defp search_file(file_path, pattern, case_sensitive, root) do
+  # --- File search ---
+
+  defp search_file(file_path, matcher, root) do
     case File.read(file_path) do
       {:ok, content} ->
         relative_path = Path.relative_to(file_path, root)
@@ -104,9 +124,7 @@ defmodule Giulia.Tools.SearchCode do
         content
         |> String.split("\n")
         |> Enum.with_index(1)
-        |> Enum.filter(fn {line, _} ->
-          matches?(line, pattern, case_sensitive)
-        end)
+        |> Enum.filter(fn {line, _} -> match_line(line, matcher) end)
         |> Enum.map(fn {line, num} -> {relative_path, num, line} end)
 
       {:error, _} ->
@@ -114,13 +132,53 @@ defmodule Giulia.Tools.SearchCode do
     end
   end
 
-  defp matches?(line, pattern, case_sensitive) do
-    if case_sensitive do
-      String.contains?(line, pattern)
+  # --- File list filtering ---
+
+  defp filter_by_extension(files, "*"), do: files
+  defp filter_by_extension(files, "*.*"), do: files
+
+  defp filter_by_extension(files, pattern) do
+    exts = exts_from_pattern(pattern)
+
+    if exts == [] do
+      files
     else
-      String.contains?(String.downcase(line), String.downcase(pattern))
+      Enum.filter(files, fn f -> Path.extname(f) in exts end)
     end
   end
+
+  defp exts_from_pattern("*" <> ext), do: [ext]
+  defp exts_from_pattern("*.{" <> rest) do
+    rest |> String.trim_trailing("}") |> String.split(",") |> Enum.map(&("." <> &1))
+  end
+  defp exts_from_pattern(_), do: []
+
+  # --- Pattern compilation ---
+
+  defp compile_matcher(pattern, case_sensitive) do
+    if regex_pattern?(pattern) do
+      opts = if case_sensitive, do: [], else: [:caseless]
+      case Regex.compile(pattern, Enum.join(opts)) do
+        {:ok, regex} -> {:regex, regex}
+        {:error, _} -> literal_matcher(pattern, case_sensitive)
+      end
+    else
+      literal_matcher(pattern, case_sensitive)
+    end
+  end
+
+  defp literal_matcher(pattern, true), do: {:literal_cs, pattern}
+  defp literal_matcher(pattern, false), do: {:literal, String.downcase(pattern)}
+
+  defp regex_pattern?(pattern) do
+    String.contains?(pattern, ["\\", "^", "$", "*", "+", "?", "{", "[", "(", "|", "."])
+  end
+
+  defp match_line(line, {:regex, regex}), do: Regex.match?(regex, line)
+  defp match_line(line, {:literal_cs, pattern}), do: :binary.match(line, pattern) != :nomatch
+  defp match_line(line, {:literal, downcased}), do: :binary.match(String.downcase(line), downcased) != :nomatch
+
+  # --- Param handling ---
 
   defp parse_params(params) do
     changeset = changeset(params)

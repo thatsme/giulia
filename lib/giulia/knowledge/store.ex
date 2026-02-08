@@ -915,14 +915,33 @@ defmodule Giulia.Knowledge.Store do
     # Step 3: Walk all ASTs to find every function call
     called_functions = collect_all_calls(all_asts)
 
-    # Step 4: Find dead functions
+    # Step 4: Build set of modules that have @dead_code_ignore true
+    ignored_modules =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        source = case File.read(path) do
+          {:ok, content} -> content
+          _ -> ""
+        end
+
+        if String.contains?(source, "@dead_code_ignore") do
+          (data[:modules] || []) |> Enum.map(fn mod -> mod.name end)
+        else
+          []
+        end
+      end)
+      |> MapSet.new()
+
+    # Step 5: Find dead functions
     dead =
       all_functions
       |> Enum.reject(fn func ->
         name_arity = {to_string(func.name), func.arity}
 
-        # Skip implicit OTP/framework callbacks
-        MapSet.member?(@implicit_functions, name_arity) or
+        # Skip modules annotated with @dead_code_ignore
+        MapSet.member?(ignored_modules, func.module) or
+          # Skip implicit OTP/framework callbacks
+          MapSet.member?(@implicit_functions, name_arity) or
           # Skip behaviour callback implementations
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           # Skip if called remotely: Module.func/arity
@@ -972,6 +991,15 @@ defmodule Giulia.Knowledge.Store do
       modules = data[:modules] || []
       module_name = List.first(modules)[:name] || "Unknown"
 
+      # Build alias map: "Schema" → "Realm.Compute.Schema"
+      alias_map =
+        (data[:imports] || [])
+        |> Enum.filter(fn imp -> imp.type == :alias end)
+        |> Map.new(fn imp ->
+          short = imp.module |> String.split(".") |> List.last()
+          {short, imp.module}
+        end)
+
       # Read source from disk — ETS stores metadata, not raw source
       source = case File.read(path) do
         {:ok, content} -> content
@@ -982,10 +1010,11 @@ defmodule Giulia.Knowledge.Store do
         {:ok, ast} ->
           {_ast, calls} =
             Macro.prewalk(ast, acc, fn
-              # Remote call: Module.func(args)
+              # Remote call: Module.func(args) — resolve aliases
               {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, set
               when is_atom(func_name) and is_list(args) ->
-                mod = Enum.map_join(parts, ".", &to_string/1)
+                raw_mod = Enum.map_join(parts, ".", &to_string/1)
+                mod = Map.get(alias_map, raw_mod, raw_mod)
                 {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
 
               # Remote call with full Elixir module: Elixir.Module.func(args)

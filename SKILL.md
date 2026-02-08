@@ -106,6 +106,18 @@ Send natural language commands through Giulia's OODA orchestrator via `POST /api
 
 ## Workflow Guidance
 
+### Planning Mode (MANDATORY)
+
+When entering plan mode for any Elixir code modification, you **MUST** query Giulia's analysis endpoints BEFORE writing the plan. Do NOT use grep, awk, sed, or find to discover module dependencies — Giulia's Knowledge Graph has this data pre-indexed from AST analysis.
+
+**Required analysis before any plan:**
+1. `GET /api/knowledge/change_risk?path=P` — identify which modules are dangerous to touch
+2. `GET /api/knowledge/impact?path=P&module=X&depth=2` — blast radius for every module you plan to modify
+3. `GET /api/knowledge/centrality?path=P&module=X` — hub score (degree > 3 = high-risk)
+4. `GET /api/index/module_details?path=P&module=X` — full API surface of target modules
+
+**No plan is valid without blast radius data.** If you skip these queries, the plan is incomplete.
+
 ### Before Modifying Any Elixir Module
 
 1. **Understand** — `GET /api/index/module_details?path=P&module=X` to get the full picture (functions, types, specs, callbacks)
