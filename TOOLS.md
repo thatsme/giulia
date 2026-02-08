@@ -323,14 +323,26 @@ When fractured:
 
 ### `GET /api/search?pattern=PATTERN&path=P`
 
-Code search across project files. Also accepts `q` instead of `pattern`.
+State-first code search. Reads the file list from ETS (populated by the Indexer), never touches the filesystem to discover files. Disk I/O only happens when reading file contents for matching. Searches are scoped to first-party source code only — no `deps/`, `_build/`, or other artifacts.
+
+**Requires a prior scan** (`POST /api/index/scan`) to populate the file registry.
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `pattern` or `q` | yes | Text or regex pattern to search for |
+| `path` | yes | Project path |
+
+**Performance**: Parallel `Task.async_stream` across all cores with compiled `:binary.match` for literal patterns, `Regex` for regex patterns. Typical response: **40-200ms** (vs 19-23s before build 69).
+
+**How it works**:
+1. File list comes from `Store.get_project_files/1` (ETS lookup, 0 I/O)
+2. Pattern is compiled once (`Regex.compile/2` or `:binary.match`)
+3. Files are searched in parallel with early termination at `max_results`
 
 ```json
 {
   "status": "ok",
-  "results": [
-    {"file": "/projects/.../router.ex", "line": 15, "match_text": "  def call(conn, opts) do"}
-  ]
+  "results": "lib/my_app/accounts.ex:12:   defstruct name: nil, email: nil\nlib/my_app/repo.ex:5:   defstruct [...]"
 }
 ```
 
