@@ -45,6 +45,7 @@ defmodule Giulia.Tools.GetModuleInfo do
     |> validate_required([:module_name])
   end
 
+  @impl true
   def execute(params, _opts \\ [])
 
   def execute(%__MODULE__{module_name: module_name}, _opts) do

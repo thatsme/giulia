@@ -67,6 +67,7 @@ defmodule Giulia.Tools.GetFunction do
     |> validate_required([:file, :function_name])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{file: file, function_name: func_name, arity: arity, include_deps: include_deps}, opts) do

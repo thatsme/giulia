@@ -31,6 +31,7 @@ defmodule Giulia.Tools.Respond do
   end
 
   # This should never be called - Orchestrator intercepts
+  @impl true
   def execute(%{"message" => message}, _opts), do: {:ok, message}
   def execute(_, _opts), do: {:error, :invalid_parameters}
 end

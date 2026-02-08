@@ -68,6 +68,7 @@ defmodule Giulia.Tools.WriteFile do
   Normally intercepted by the Orchestrator's staging buffer.
   This implementation handles direct calls (e.g., from tests or iex).
   """
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{path: path, content: content, explanation: explanation}, opts) do

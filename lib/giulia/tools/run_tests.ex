@@ -68,6 +68,7 @@ defmodule Giulia.Tools.RunTests do
     |> cast(params, [:file, :test_name])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{file: file, test_name: test_name}, opts) do

@@ -13,11 +13,10 @@ defmodule Giulia.Tools.Registry do
   @table __MODULE__
 
   # Tool behavior that all tools must implement
-  # Note: execute/1 is expected but not a required callback since tools
-  # may have multiple overloaded clauses with different types
   @callback name() :: String.t()
   @callback description() :: String.t()
   @callback parameters() :: map()
+  @callback execute(params :: map(), opts :: keyword()) :: {:ok, term()} | {:error, term()}
 
   # Client API
 

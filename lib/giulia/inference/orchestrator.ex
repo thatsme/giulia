@@ -3086,6 +3086,16 @@ defmodule Giulia.Inference.Orchestrator do
                   {node, acc}
                 end
 
+              # Dynamic dispatch: var.old_name(args) inside the target module
+              # e.g., module.execute(arguments, opts) in Registry
+              {{:., _dot_meta2, [{_var, _var_meta, ctx}, ^old_atom]}, call_meta, args}
+              when is_target and is_atom(ctx) ->
+                if length(args || []) in arity_range do
+                  {node, [{call_meta[:line], :dynamic_call} | acc]}
+                else
+                  {node, acc}
+                end
+
               _ ->
                 {node, acc}
             end
@@ -3271,15 +3281,29 @@ defmodule Giulia.Inference.Orchestrator do
       Logger.info("COMMIT: Compile phase")
       tool_opts = build_tool_opts(state)
 
+      if state.request_id do
+        Events.broadcast(state.request_id, %{type: :commit_compiling})
+      end
+
       case Registry.execute("run_mix", %{"command" => "compile"}, tool_opts) do
         {:ok, output} ->
           case parse_compile_result(output) do
             :success ->
               Logger.info("COMMIT: Compile passed, running integrity check")
+
+              if state.request_id do
+                Events.broadcast(state.request_id, %{type: :commit_compile_passed})
+              end
+
               commit_integrity_check(staged_files, params, state)
 
             {:warnings, _warnings} ->
               Logger.info("COMMIT: Compile passed with warnings, running integrity check")
+
+              if state.request_id do
+                Events.broadcast(state.request_id, %{type: :commit_compile_passed, warnings: true})
+              end
+
               commit_integrity_check(staged_files, params, state)
 
             {:error, errors} ->
@@ -3352,9 +3376,18 @@ defmodule Giulia.Inference.Orchestrator do
     Giulia.Knowledge.Store.rebuild(Giulia.Context.Store.all_asts())
 
     # Check all behaviour-implementer contracts
+    if state.request_id do
+      Events.broadcast(state.request_id, %{type: :commit_integrity_checking})
+    end
+
     case Giulia.Knowledge.Store.check_all_behaviours() do
       {:ok, :consistent} ->
         Logger.info("COMMIT: Integrity check passed, running auto-regression")
+
+        if state.request_id do
+          Events.broadcast(state.request_id, %{type: :commit_integrity_passed})
+        end
+
         commit_auto_regress(staged_files, params, state)
 
       {:error, fractures} ->
@@ -3427,6 +3460,13 @@ defmodule Giulia.Inference.Orchestrator do
 
     if all_test_targets != [] do
       Logger.info("COMMIT: Running #{length(all_test_targets)} regression test file(s)")
+
+      if state.request_id do
+        Events.broadcast(state.request_id, %{
+          type: :commit_testing,
+          test_count: length(all_test_targets)
+        })
+      end
 
       test_results =
         Enum.map(all_test_targets, fn test_path ->
