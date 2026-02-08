@@ -28,7 +28,7 @@ defmodule Giulia.Context.Builder do
 
     #{environment_section(project_path)}
 
-    #{project_state_section()}
+    #{project_state_section(project_path)}
 
     #{constraints_section()}
     """
@@ -82,7 +82,9 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build a "stuck" intervention message when the model is looping.
   """
-  def build_intervention_message(attempt_count, last_errors) do
+  def build_intervention_message(attempt_count, last_errors, opts \\ []) do
+    project_path = opts[:project_path] || get_project_path()
+
     """
     INTERVENTION: You have failed #{attempt_count} consecutive attempts.
 
@@ -91,7 +93,7 @@ defmodule Giulia.Context.Builder do
 
     You are stuck. Here is the reality of the code again:
 
-    #{project_state_section()}
+    #{project_state_section(project_path)}
 
     START OVER with a different approach. Do not repeat the same action.
     """
@@ -157,13 +159,13 @@ defmodule Giulia.Context.Builder do
     """
   end
 
-  defp project_state_section do
-    case Store.stats() do
+  defp project_state_section(project_path) do
+    case Store.stats(project_path) do
       %{ast_files: 0} ->
         "=== PROJECT STATE ===\nNo files indexed yet."
 
       %{ast_files: count} ->
-        files_summary = build_files_summary()
+        files_summary = build_files_summary(project_path)
 
         """
         === PROJECT STATE ===
@@ -174,8 +176,8 @@ defmodule Giulia.Context.Builder do
     end
   end
 
-  defp build_files_summary do
-    Store.all_asts()
+  defp build_files_summary(project_path) do
+    Store.all_asts(project_path)
     |> Enum.take(10)  # Limit to first 10 files
     |> Enum.map_join("\n", fn {path, info} ->
       modules = Enum.map_join(info.modules, ", ", & &1.name)

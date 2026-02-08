@@ -132,7 +132,7 @@ defmodule Giulia.Prompt.Builder do
   @spec build_system_prompt(keyword()) :: String.t()
   def build_system_prompt(opts \\ []) do
     tools = Registry.list_tools()
-    project_summary = opts[:project_summary] || Store.project_summary()
+    project_summary = opts[:project_summary] || Store.project_summary(opts[:project_path])
     constitution = opts[:constitution]
 
     """
@@ -148,7 +148,7 @@ defmodule Giulia.Prompt.Builder do
     ## Current Project Context
     #{project_summary}
 
-    #{build_topology_summary()}
+    #{build_topology_summary(opts[:project_path])}
 
     #{format_constitution(constitution)}
 
@@ -572,15 +572,17 @@ defmodule Giulia.Prompt.Builder do
     mentioned_files = extract_file_mentions(task)
 
     # Get relevant AST summaries
+    project_path = opts[:project_path]
+
     relevant_asts =
       (mentioned_modules ++ mentioned_files)
-      |> Enum.map(&find_relevant_ast/1)
+      |> Enum.map(&find_relevant_ast(&1, project_path))
       |> Enum.reject(&is_nil/1)
       |> Enum.take(3)  # Max 3 files for small models
 
     if relevant_asts == [] do
       # No specific context, use project summary
-      opts[:project_summary] || Store.project_summary()
+      opts[:project_summary] || Store.project_summary(project_path)
     else
       format_relevant_context(relevant_asts)
     end
@@ -590,9 +592,9 @@ defmodule Giulia.Prompt.Builder do
   # Private - Formatting
   # ============================================================================
 
-  defp build_topology_summary do
+  defp build_topology_summary(project_path) do
     try do
-      case Giulia.Knowledge.Store.stats() do
+      case Giulia.Knowledge.Store.stats(project_path) do
         %{vertices: 0} ->
           ""
 
@@ -696,18 +698,18 @@ defmodule Giulia.Prompt.Builder do
     |> List.flatten()
   end
 
-  defp find_relevant_ast(module_or_file) do
+  defp find_relevant_ast(module_or_file, project_path) do
     cond do
       String.contains?(module_or_file, ".") and String.contains?(module_or_file, "/") ->
         # It's a file path
-        case Store.get_ast(module_or_file) do
+        case Store.get_ast(project_path, module_or_file) do
           {:ok, ast} -> {module_or_file, ast}
           _ -> nil
         end
 
       String.contains?(module_or_file, ".") ->
         # It's a module name
-        case Store.find_module(module_or_file) do
+        case Store.find_module(project_path, module_or_file) do
           {:ok, %{file: file, ast_data: ast}} -> {file, ast}
           _ -> nil
         end

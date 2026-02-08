@@ -134,11 +134,29 @@ defmodule Giulia.Context.Indexer do
   end
 
   @impl true
-  def handle_cast({:scan_file, file_path}, state) do
+  def handle_cast({:scan_file, file_path, project_path}, state) do
     Task.start(fn ->
       case process_file(file_path) do
         {:ok, ast_data} ->
-          Giulia.Context.Store.put_ast(file_path, ast_data)
+          Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
+          Logger.debug("Indexed: #{file_path}")
+
+        {:error, reason} ->
+          Logger.warning("Failed to index #{file_path}: #{inspect(reason)}")
+      end
+    end)
+
+    {:noreply, state}
+  end
+
+  # Legacy compat: scan_file without project_path uses state.project_path
+  @impl true
+  def handle_cast({:scan_file, file_path}, state) do
+    project_path = state.project_path || File.cwd!()
+    Task.start(fn ->
+      case process_file(file_path) do
+        {:ok, ast_data} ->
+          Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
           Logger.debug("Indexed: #{file_path}")
 
         {:error, reason} ->
@@ -151,7 +169,8 @@ defmodule Giulia.Context.Indexer do
 
   @impl true
   def handle_cast(:scan_complete, state) do
-    stats = Giulia.Context.Store.stats()
+    project_path = state.project_path
+    stats = Giulia.Context.Store.stats(project_path)
 
     new_state = %{
       state
@@ -163,10 +182,10 @@ defmodule Giulia.Context.Indexer do
     Logger.info("Scan complete. Indexed #{stats.ast_files} files.")
 
     # Debug: Inspect what's actually in ETS
-    Giulia.Context.Store.debug_inspect()
+    Giulia.Context.Store.debug_inspect(project_path)
 
     # Rebuild knowledge graph from fresh AST data
-    Giulia.Knowledge.Store.rebuild()
+    Giulia.Knowledge.Store.rebuild(project_path)
 
     {:noreply, new_state}
   end
@@ -182,7 +201,7 @@ defmodule Giulia.Context.Indexer do
     lib_path = Path.join(project_path, "lib")
 
     if File.dir?(lib_path) do
-      Giulia.Context.Store.clear_asts()
+      Giulia.Context.Store.clear_asts(project_path)
 
       files = find_elixir_files(lib_path)
       Logger.info("Found #{length(files)} Elixir files to scan")
@@ -204,7 +223,7 @@ defmodule Giulia.Context.Indexer do
       )
       |> Enum.each(fn
         {:ok, {file, {:ok, ast_data}}} ->
-          Giulia.Context.Store.put_ast(file, ast_data)
+          Giulia.Context.Store.put_ast(project_path, file, ast_data)
 
         {:ok, {file, {:error, reason}}} ->
           Logger.warning("Failed to index #{file}: #{inspect(reason)}")

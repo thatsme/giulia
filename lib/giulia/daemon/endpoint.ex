@@ -4,6 +4,9 @@ defmodule Giulia.Daemon.Endpoint do
 
   Replaces Erlang distribution with simple HTTP/JSON - works reliably
   across Docker boundaries without EPMD drama.
+
+  All index/knowledge endpoints require a ?path= query parameter
+  to scope results to a specific project.
   """
 
   use Plug.Router
@@ -129,34 +132,50 @@ defmodule Giulia.Daemon.Endpoint do
   # Index query - Pure Elixir, no LLM needed
   # "What modules do I have?" -> Direct from ETS
   get "/api/index/modules" do
-    modules = Giulia.Context.Store.list_modules()
-    send_json(conn, 200, %{modules: modules, count: length(modules)})
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        modules = Giulia.Context.Store.list_modules(project_path)
+        send_json(conn, 200, %{modules: modules, count: length(modules)})
+    end
   end
 
   # "What functions are in module X?"
   # Supports ?module=Giulia.StructuredOutput query param
   get "/api/index/functions" do
-    module_filter = conn.query_params["module"]
-    functions = Giulia.Context.Store.list_functions(module_filter)
-    send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module_filter = conn.query_params["module"]
+        functions = Giulia.Context.Store.list_functions(project_path, module_filter)
+        send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
+    end
   end
 
   # Full module details — file, moduledoc, functions, types, specs, callbacks, struct
   get "/api/index/module_details" do
-    module = conn.query_params["module"]
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module = conn.query_params["module"]
 
-    if module do
-      details = Giulia.Context.Store.module_details(module)
-      send_json(conn, 200, %{module: module, details: details})
-    else
-      send_json(conn, 400, %{error: "Missing required query param: module"})
+        if module do
+          details = Giulia.Context.Store.module_details(project_path, module)
+          send_json(conn, 200, %{module: module, details: details})
+        else
+          send_json(conn, 400, %{error: "Missing required query param: module"})
+        end
     end
   end
 
   # Project summary - The "distilled metadata" for small models
   get "/api/index/summary" do
-    summary = Giulia.Context.Store.project_summary()
-    send_json(conn, 200, %{summary: summary})
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        summary = Giulia.Context.Store.project_summary(project_path)
+        send_json(conn, 200, %{summary: summary})
+    end
   end
 
   # Indexer status
@@ -280,202 +299,254 @@ defmodule Giulia.Daemon.Endpoint do
 
   # Graph statistics: vertices, edges, components, hubs
   get "/api/knowledge/stats" do
-    stats = Giulia.Knowledge.Store.stats()
-    # Convert hub tuples {name, degree} to maps for JSON encoding
-    hubs = Enum.map(stats.hubs || [], fn {name, degree} -> %{module: name, degree: degree} end)
-    send_json(conn, 200, %{stats | hubs: hubs})
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        stats = Giulia.Knowledge.Store.stats(project_path)
+        # Convert hub tuples {name, degree} to maps for JSON encoding
+        hubs = Enum.map(stats.hubs || [], fn {name, degree} -> %{module: name, degree: degree} end)
+        send_json(conn, 200, %{stats | hubs: hubs})
+    end
   end
 
   # Who depends on module X (incoming edges = dependents)
   get "/api/knowledge/dependents" do
-    module = conn.query_params["module"]
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module = conn.query_params["module"]
 
-    if module do
-      case Giulia.Knowledge.Store.dependents(module) do
-        {:ok, deps} ->
-          send_json(conn, 200, %{module: module, dependents: deps, count: length(deps)})
+        if module do
+          case Giulia.Knowledge.Store.dependents(project_path, module) do
+            {:ok, deps} ->
+              send_json(conn, 200, %{module: module, dependents: deps, count: length(deps)})
 
-        {:error, {:not_found, _}} ->
-          send_json(conn, 404, %{error: "Module not found in graph", module: module})
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query param: module"})
+            {:error, {:not_found, _}} ->
+              send_json(conn, 404, %{error: "Module not found in graph", module: module})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query param: module"})
+        end
     end
   end
 
   # What module X depends on (outgoing edges = dependencies)
   get "/api/knowledge/dependencies" do
-    module = conn.query_params["module"]
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module = conn.query_params["module"]
 
-    if module do
-      case Giulia.Knowledge.Store.dependencies(module) do
-        {:ok, deps} ->
-          send_json(conn, 200, %{module: module, dependencies: deps, count: length(deps)})
+        if module do
+          case Giulia.Knowledge.Store.dependencies(project_path, module) do
+            {:ok, deps} ->
+              send_json(conn, 200, %{module: module, dependencies: deps, count: length(deps)})
 
-        {:error, {:not_found, _}} ->
-          send_json(conn, 404, %{error: "Module not found in graph", module: module})
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query param: module"})
+            {:error, {:not_found, _}} ->
+              send_json(conn, 404, %{error: "Module not found in graph", module: module})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query param: module"})
+        end
     end
   end
 
   # Centrality score (hub detection): in-degree, out-degree, dependents list
   get "/api/knowledge/centrality" do
-    module = conn.query_params["module"]
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module = conn.query_params["module"]
 
-    if module do
-      case Giulia.Knowledge.Store.centrality(module) do
-        {:ok, result} ->
-          send_json(conn, 200, Map.put(result, :module, module))
+        if module do
+          case Giulia.Knowledge.Store.centrality(project_path, module) do
+            {:ok, result} ->
+              send_json(conn, 200, Map.put(result, :module, module))
 
-        {:error, :not_found} ->
-          send_json(conn, 404, %{error: "Module not found in graph", module: module})
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query param: module"})
+            {:error, :not_found} ->
+              send_json(conn, 404, %{error: "Module not found in graph", module: module})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query param: module"})
+        end
     end
   end
 
   # Impact map: upstream + downstream dependencies at given depth
   get "/api/knowledge/impact" do
-    module = conn.query_params["module"]
-    depth = case Integer.parse(conn.query_params["depth"] || "2") do
-      {n, _} -> n
-      :error -> 2
-    end
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module = conn.query_params["module"]
+        depth = case Integer.parse(conn.query_params["depth"] || "2") do
+          {n, _} -> n
+          :error -> 2
+        end
 
-    if module do
-      case Giulia.Knowledge.Store.impact_map(module, depth) do
-        {:ok, result} ->
-          # Convert tuples {vertex, depth} to maps for JSON encoding
-          upstream = Enum.map(result.upstream, fn {v, d} -> %{module: v, depth: d} end)
-          downstream = Enum.map(result.downstream, fn {v, d} -> %{module: v, depth: d} end)
-          # Convert function_edges tuples {name, targets} to maps
-          func_edges = Enum.map(result.function_edges, fn {name, targets} ->
-            %{function: name, calls: targets}
-          end)
-          send_json(conn, 200, %{result | upstream: upstream, downstream: downstream, function_edges: func_edges})
+        if module do
+          case Giulia.Knowledge.Store.impact_map(project_path, module, depth) do
+            {:ok, result} ->
+              # Convert tuples {vertex, depth} to maps for JSON encoding
+              upstream = Enum.map(result.upstream, fn {v, d} -> %{module: v, depth: d} end)
+              downstream = Enum.map(result.downstream, fn {v, d} -> %{module: v, depth: d} end)
+              # Convert function_edges tuples {name, targets} to maps
+              func_edges = Enum.map(result.function_edges, fn {name, targets} ->
+                %{function: name, calls: targets}
+              end)
+              send_json(conn, 200, %{result | upstream: upstream, downstream: downstream, function_edges: func_edges})
 
-        {:error, {:not_found, _, suggestions, graph_info}} ->
-          send_json(conn, 404, %{
-            error: "Module not found in graph",
-            module: module,
-            suggestions: suggestions,
-            graph_info: graph_info
-          })
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query param: module"})
+            {:error, {:not_found, _, suggestions, graph_info}} ->
+              send_json(conn, 404, %{
+                error: "Module not found in graph",
+                module: module,
+                suggestions: suggestions,
+                graph_info: graph_info
+              })
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query param: module"})
+        end
     end
   end
 
   # Behaviour-implementer integrity check
   get "/api/knowledge/integrity" do
-    case Giulia.Knowledge.Store.check_all_behaviours() do
-      {:ok, :consistent} ->
-        send_json(conn, 200, %{status: "consistent", fractures: []})
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.check_all_behaviours(project_path) do
+          {:ok, :consistent} ->
+            send_json(conn, 200, %{status: "consistent", fractures: []})
 
-      {:error, fractures} when is_map(fractures) ->
-        formatted =
-          Enum.map(fractures, fn {behaviour, impl_fractures} ->
-            %{
-              behaviour: behaviour,
-              fractures: Enum.map(impl_fractures, fn %{implementer: impl, missing: missing} ->
+          {:error, fractures} when is_map(fractures) ->
+            formatted =
+              Enum.map(fractures, fn {behaviour, impl_fractures} ->
                 %{
-                  implementer: impl,
-                  missing: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end)
+                  behaviour: behaviour,
+                  fractures: Enum.map(impl_fractures, fn %{implementer: impl, missing: missing} ->
+                    %{
+                      implementer: impl,
+                      missing: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end)
+                    }
+                  end)
                 }
               end)
-            }
-          end)
 
-        send_json(conn, 200, %{status: "fractured", fractures: formatted})
+            send_json(conn, 200, %{status: "fractured", fractures: formatted})
+        end
     end
   end
 
   # Dead code detection — functions defined but never called
   get "/api/knowledge/dead_code" do
-    case Giulia.Knowledge.Store.find_dead_code() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_dead_code(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Circular dependency detection — strongly connected components
   get "/api/knowledge/cycles" do
-    case Giulia.Knowledge.Store.find_cycles() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_cycles(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # God module detection — high complexity + centrality + function count
   get "/api/knowledge/god_modules" do
-    case Giulia.Knowledge.Store.find_god_modules() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_god_modules(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Orphan spec detection — @spec without matching function definition
   get "/api/knowledge/orphan_specs" do
-    case Giulia.Knowledge.Store.find_orphan_specs() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_orphan_specs(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Fan-in/fan-out analysis — dependency direction imbalance
   get "/api/knowledge/fan_in_out" do
-    case Giulia.Knowledge.Store.find_fan_in_out() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_fan_in_out(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Coupling score — function-level dependency strength between module pairs
   get "/api/knowledge/coupling" do
-    case Giulia.Knowledge.Store.find_coupling() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_coupling(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # API surface analysis — public vs private function ratio per module
   get "/api/knowledge/api_surface" do
-    case Giulia.Knowledge.Store.find_api_surface() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.find_api_surface(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Change risk score — composite refactoring priority
   get "/api/knowledge/change_risk" do
-    case Giulia.Knowledge.Store.change_risk_score() do
-      {:ok, result} ->
-        send_json(conn, 200, result)
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.change_risk_score(project_path) do
+          {:ok, result} -> send_json(conn, 200, result)
+        end
     end
   end
 
   # Shortest path between two modules
   get "/api/knowledge/path" do
-    from = conn.query_params["from"]
-    to = conn.query_params["to"]
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        from = conn.query_params["from"]
+        to = conn.query_params["to"]
 
-    if from && to do
-      case Giulia.Knowledge.Store.trace_path(from, to) do
-        {:ok, :no_path} ->
-          send_json(conn, 200, %{from: from, to: to, path: nil, message: "No path found"})
+        if from && to do
+          case Giulia.Knowledge.Store.trace_path(project_path, from, to) do
+            {:ok, :no_path} ->
+              send_json(conn, 200, %{from: from, to: to, path: nil, message: "No path found"})
 
-        {:ok, path} ->
-          send_json(conn, 200, %{from: from, to: to, path: path, hops: length(path) - 1})
+            {:ok, path} ->
+              send_json(conn, 200, %{from: from, to: to, path: path, hops: length(path) - 1})
 
-        {:error, {:not_found, vertex}} ->
-          send_json(conn, 404, %{error: "Vertex not found in graph", vertex: vertex})
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query params: from, to"})
+            {:error, {:not_found, vertex}} ->
+              send_json(conn, 404, %{error: "Vertex not found in graph", vertex: vertex})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query params: from, to"})
+        end
     end
   end
 
@@ -579,12 +650,12 @@ defmodule Giulia.Daemon.Endpoint do
 
   defp execute_inference(message, project_path, context_pid) do
     # Classify and route
-    context_meta = %{file_count: Giulia.Context.Store.stats().ast_files}
+    context_meta = %{file_count: Giulia.Context.Store.stats(project_path).ast_files}
     classification = Giulia.Provider.Router.route(message, context_meta)
 
     # Check if this is a meta command (pure Elixir, no LLM)
     if classification.provider == :elixir_native do
-      handle_native_query(message)
+      handle_native_query(message, project_path)
     else
       # Use the inference pool for back-pressure
       opts = [
@@ -610,19 +681,19 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
-  defp handle_native_query(message) do
+  defp handle_native_query(message, project_path) do
     message_lower = String.downcase(message)
 
     response = cond do
       String.contains?(message_lower, "module") ->
-        modules = Giulia.Context.Store.list_modules()
+        modules = Giulia.Context.Store.list_modules(project_path)
         module_list = Enum.map_join(modules, "\n", &"- #{&1.name}")
         "Indexed modules:\n#{module_list}"
 
       String.contains?(message_lower, "function") ->
         # Extract module name if provided (e.g., "functions Giulia.StructuredOutput")
         module_filter = extract_module_name(message)
-        functions = Giulia.Context.Store.list_functions(module_filter)
+        functions = Giulia.Context.Store.list_functions(project_path, module_filter)
 
         header = if module_filter, do: "Functions in #{module_filter}:", else: "Functions (showing first 20):"
         func_list = Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
@@ -632,11 +703,11 @@ defmodule Giulia.Daemon.Endpoint do
         "#{header}\n#{func_list}"
 
       String.contains?(message_lower, "status") ->
-        stats = Giulia.Context.Store.stats()
+        stats = Giulia.Context.Store.stats(project_path)
         "Index: #{stats.ast_files} files, #{stats.total_entries} entries"
 
       String.contains?(message_lower, "summary") ->
-        Giulia.Context.Store.project_summary()
+        Giulia.Context.Store.project_summary(project_path)
 
       true ->
         "I can answer questions about modules, functions, status, or summary without using the LLM."
@@ -651,6 +722,14 @@ defmodule Giulia.Daemon.Endpoint do
     case Regex.run(~r/\b([A-Z][a-zA-Z0-9]*(?:\.[A-Z][a-zA-Z0-9]*)+)\b/, message) do
       [_, module_name] -> module_name
       _ -> nil
+    end
+  end
+
+  # Resolve project path from ?path= query param
+  defp resolve_project_path(conn) do
+    case conn.query_params["path"] do
+      nil -> nil
+      path -> Giulia.Core.PathMapper.resolve_path(path)
     end
   end
 
@@ -694,11 +773,11 @@ defmodule Giulia.Daemon.Endpoint do
   defp execute_inference_streaming(message, project_path, context_pid, request_id) do
     alias Giulia.Inference.Events
 
-    context_meta = %{file_count: Giulia.Context.Store.stats().ast_files}
+    context_meta = %{file_count: Giulia.Context.Store.stats(project_path).ast_files}
     classification = Giulia.Provider.Router.route(message, context_meta)
 
     if classification.provider == :elixir_native do
-      result = handle_native_query(message)
+      result = handle_native_query(message, project_path)
       Events.broadcast(request_id, %{type: :complete, response: result.response})
     else
       opts = [

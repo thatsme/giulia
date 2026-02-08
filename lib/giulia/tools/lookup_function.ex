@@ -69,8 +69,9 @@ defmodule Giulia.Tools.LookupFunction do
   @impl true
   def execute(params, _opts \\ [])
 
-  def execute(%__MODULE__{} = params, _opts) do
-    do_lookup(params.function_name, params.module, params.arity, params.include_deps || false)
+  def execute(%__MODULE__{} = params, opts) do
+    project_path = opts[:project_path]
+    do_lookup(params.function_name, params.module, params.arity, params.include_deps || false, project_path)
   end
 
   def execute(%{"function_name" => _} = params, opts) do
@@ -88,9 +89,9 @@ defmodule Giulia.Tools.LookupFunction do
   # Core Logic
   # ============================================================================
 
-  defp do_lookup(function_name, module_filter, arity, include_deps) do
+  defp do_lookup(function_name, module_filter, arity, include_deps, project_path) do
     # Step 1: Query the index
-    matches = Store.find_function(function_name, arity)
+    matches = Store.find_function(project_path, function_name, arity)
 
     # Step 2: Filter by module if specified
     matches = if module_filter do
@@ -102,7 +103,7 @@ defmodule Giulia.Tools.LookupFunction do
     case matches do
       [] ->
         # No matches - suggest similar functions
-        suggest_similar(function_name)
+        suggest_similar(function_name, project_path)
 
       [match | _rest] ->
         # Found it! Now slice the source
@@ -148,9 +149,9 @@ defmodule Giulia.Tools.LookupFunction do
     """
   end
 
-  defp suggest_similar(function_name) do
+  defp suggest_similar(function_name, project_path) do
     # Get all function names from the index
-    all_functions = Store.list_functions()
+    all_functions = Store.list_functions(project_path)
     |> Enum.map(&to_string(&1.name))
     |> Enum.uniq()
 

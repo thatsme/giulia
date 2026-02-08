@@ -300,7 +300,7 @@ defmodule Giulia.Core.ProjectContext do
     result =
       case PathSandbox.validate(state.sandbox, path) do
         {:ok, safe_path} ->
-          Store.get_ast(safe_path)
+          Store.get_ast(state.project_path, safe_path)
 
         {:error, _} = error ->
           error

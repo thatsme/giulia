@@ -51,8 +51,9 @@ defmodule Giulia.Tools.GetImpactMap do
   @impl true
   def execute(params, opts \\ [])
 
-  def execute(%__MODULE__{module: module, depth: depth}, _opts) do
-    case Store.impact_map(module, depth || 2) do
+  def execute(%__MODULE__{module: module, depth: depth}, opts) do
+    project_path = opts[:project_path]
+    case Store.impact_map(project_path, module, depth || 2) do
       {:ok, impact} ->
         format_impact_map(impact)
 

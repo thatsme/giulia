@@ -8,6 +8,9 @@ defmodule Giulia.Knowledge.Store do
 
   Uses libgraph (pure Elixir, no NIFs) for graph operations.
 
+  All graph data is namespaced by project_path to support multi-project isolation.
+  State: %{graphs: %{project_path => graph}}
+
   Vertex types (via labels):
   - :module    — e.g. "Giulia.Tools.EditFile"
   - :function  — e.g. "Giulia.Tools.EditFile.execute/2"
@@ -31,46 +34,46 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @doc """
-  Rebuild the entire knowledge graph from Context.Store AST data.
+  Rebuild the entire knowledge graph from Context.Store AST data for a project.
   Called automatically after indexing completes.
   """
-  def rebuild do
-    GenServer.cast(__MODULE__, :rebuild)
+  def rebuild(project_path) when is_binary(project_path) do
+    GenServer.cast(__MODULE__, {:rebuild, project_path})
   end
 
   @doc """
-  Rebuild with a specific set of AST data (for testing).
+  Rebuild with a specific set of AST data (for testing or commit verification).
   """
-  def rebuild(ast_data) when is_map(ast_data) do
-    GenServer.call(__MODULE__, {:rebuild, ast_data}, 30_000)
+  def rebuild(project_path, ast_data) when is_binary(project_path) and is_map(ast_data) do
+    GenServer.call(__MODULE__, {:rebuild, project_path, ast_data}, 30_000)
   end
 
   @doc """
   Get impact map for a module — who depends on it and what it depends on.
   """
-  def impact_map(vertex_id, depth \\ 2) do
-    GenServer.call(__MODULE__, {:impact_map, vertex_id, depth})
+  def impact_map(project_path, vertex_id, depth \\ 2) do
+    GenServer.call(__MODULE__, {:impact_map, project_path, vertex_id, depth})
   end
 
   @doc """
   Trace the shortest path between two vertices.
   """
-  def trace_path(from, to) do
-    GenServer.call(__MODULE__, {:trace_path, from, to})
+  def trace_path(project_path, from, to) do
+    GenServer.call(__MODULE__, {:trace_path, project_path, from, to})
   end
 
   @doc """
   Get modules that depend on the given module (downstream).
   """
-  def dependents(module) do
-    GenServer.call(__MODULE__, {:dependents, module})
+  def dependents(project_path, module) do
+    GenServer.call(__MODULE__, {:dependents, project_path, module})
   end
 
   @doc """
   Get modules that the given module depends on (upstream).
   """
-  def dependencies(module) do
-    GenServer.call(__MODULE__, {:dependencies, module})
+  def dependencies(project_path, module) do
+    GenServer.call(__MODULE__, {:dependencies, project_path, module})
   end
 
   @doc """
@@ -78,8 +81,8 @@ defmodule Giulia.Knowledge.Store do
   Returns {:ok, %{in_degree: N, out_degree: N, dependents: [names]}} or {:error, :not_found}.
   Used by the Orchestrator's Hub Alarm to assess risk before approving edits.
   """
-  def centrality(module) do
-    GenServer.call(__MODULE__, {:centrality, module})
+  def centrality(project_path, module) do
+    GenServer.call(__MODULE__, {:centrality, project_path, module})
   end
 
   @doc """
@@ -87,80 +90,80 @@ defmodule Giulia.Knowledge.Store do
   Used by the Orchestrator's auto-regression to run only the tests that matter.
   Returns {:ok, %{direct: path, dependents: [{module, path}], all_paths: [paths]}}
   """
-  def get_test_targets(module, project_path) do
-    GenServer.call(__MODULE__, {:test_targets, module, project_path})
+  def get_test_targets(project_path, module) do
+    GenServer.call(__MODULE__, {:test_targets, project_path, module})
   end
 
   @doc """
   Check behaviour-implementer consistency for a specific behaviour module.
   Returns {:ok, :consistent} or {:error, fractures}.
   """
-  def check_behaviour_integrity(behaviour_module) do
-    GenServer.call(__MODULE__, {:check_behaviour_integrity, behaviour_module})
+  def check_behaviour_integrity(project_path, behaviour_module) do
+    GenServer.call(__MODULE__, {:check_behaviour_integrity, project_path, behaviour_module})
   end
 
   @doc """
   Check all behaviours in the project for implementer consistency.
   Returns {:ok, :consistent} or {:error, %{behaviour => [fracture]}}.
   """
-  def check_all_behaviours do
-    GenServer.call(__MODULE__, :check_all_behaviours, 30_000)
+  def check_all_behaviours(project_path) do
+    GenServer.call(__MODULE__, {:check_all_behaviours, project_path}, 30_000)
   end
 
   @doc """
   Find dead code — functions that are defined but never called anywhere.
   Returns {:ok, %{dead: [%{module, name, arity, type, file, line}], count: N, total: N}}.
   """
-  def find_dead_code do
-    GenServer.call(__MODULE__, :find_dead_code, 30_000)
+  def find_dead_code(project_path) do
+    GenServer.call(__MODULE__, {:find_dead_code, project_path}, 30_000)
   end
 
   @doc """
   Find circular dependencies using strongly connected components.
   Returns {:ok, %{cycles: [[module_name]], count: N}}.
   """
-  def find_cycles do
-    GenServer.call(__MODULE__, :find_cycles, 30_000)
+  def find_cycles(project_path) do
+    GenServer.call(__MODULE__, {:find_cycles, project_path}, 30_000)
   end
 
   @doc """
   Find god modules — high function count + high complexity + high centrality.
   Returns {:ok, %{modules: [%{module, functions, complexity, centrality, score, file}], count: N}}.
   """
-  def find_god_modules do
-    GenServer.call(__MODULE__, :find_god_modules, 30_000)
+  def find_god_modules(project_path) do
+    GenServer.call(__MODULE__, {:find_god_modules, project_path}, 30_000)
   end
 
   @doc """
   Find orphan specs — @spec declarations that don't match any defined function.
   Returns {:ok, %{orphans: [%{module, spec_function, spec_arity, line, file}], count: N}}.
   """
-  def find_orphan_specs do
-    GenServer.call(__MODULE__, :find_orphan_specs, 30_000)
+  def find_orphan_specs(project_path) do
+    GenServer.call(__MODULE__, {:find_orphan_specs, project_path}, 30_000)
   end
 
   @doc """
   Fan-in/fan-out analysis — modules with too many incoming or outgoing dependencies.
   Returns {:ok, %{modules: [%{module, fan_in, fan_out, total, file}], count: N}}.
   """
-  def find_fan_in_out do
-    GenServer.call(__MODULE__, :find_fan_in_out, 30_000)
+  def find_fan_in_out(project_path) do
+    GenServer.call(__MODULE__, {:find_fan_in_out, project_path}, 30_000)
   end
 
   @doc """
   Coupling score — how many functions in A call functions in B, quantified per pair.
   Returns {:ok, %{pairs: [%{caller, callee, call_count, functions}], count: N}}.
   """
-  def find_coupling do
-    GenServer.call(__MODULE__, :find_coupling, 30_000)
+  def find_coupling(project_path) do
+    GenServer.call(__MODULE__, {:find_coupling, project_path}, 30_000)
   end
 
   @doc """
   API surface analysis — ratio of public to private functions per module.
   Returns {:ok, %{modules: [%{module, public, private, total, ratio, file}], count: N}}.
   """
-  def find_api_surface do
-    GenServer.call(__MODULE__, :find_api_surface, 30_000)
+  def find_api_surface(project_path) do
+    GenServer.call(__MODULE__, {:find_api_surface, project_path}, 30_000)
   end
 
   @doc """
@@ -168,99 +171,124 @@ defmodule Giulia.Knowledge.Store do
   coupling, and API surface. Single prioritized refactoring list.
   Returns {:ok, %{modules: [%{module, score, breakdown, file}], count: N}}.
   """
-  def change_risk_score do
-    GenServer.call(__MODULE__, :change_risk_score, 30_000)
+  def change_risk_score(project_path) do
+    GenServer.call(__MODULE__, {:change_risk_score, project_path}, 30_000)
   end
 
   @doc """
-  Get graph statistics.
+  Get graph statistics for a project.
   """
-  def stats do
-    GenServer.call(__MODULE__, :stats)
+  def stats(project_path) do
+    GenServer.call(__MODULE__, {:stats, project_path})
   end
 
   @doc """
-  Get the raw graph (for debugging).
+  Get the raw graph for a project (for debugging).
   """
-  def graph do
-    GenServer.call(__MODULE__, :graph)
+  def graph(project_path) do
+    GenServer.call(__MODULE__, {:graph, project_path})
+  end
+
+  @doc """
+  Get implementers of a behaviour module.
+  """
+  def get_implementers(project_path, behaviour) do
+    GenServer.call(__MODULE__, {:get_implementers, project_path, behaviour})
   end
 
   # Server Callbacks
 
   @impl true
   def init(_) do
-    {:ok, %{graph: Graph.new(type: :directed)}}
+    {:ok, %{graphs: %{}}}
+  end
+
+  # Helper to get graph for a project, defaulting to empty
+  defp get_graph(state, project_path) do
+    Map.get(state.graphs, project_path, Graph.new(type: :directed))
+  end
+
+  defp put_graph(state, project_path, graph) do
+    %{state | graphs: Map.put(state.graphs, project_path, graph)}
   end
 
   @impl true
-  def handle_cast(:rebuild, state) do
-    ast_data = Giulia.Context.Store.all_asts()
+  def handle_cast({:rebuild, project_path}, state) do
+    ast_data = Giulia.Context.Store.all_asts(project_path)
     graph = build_graph(ast_data)
 
     vertex_count = Graph.num_vertices(graph)
     edge_count = Graph.num_edges(graph)
-    Logger.info("Knowledge graph rebuilt: #{vertex_count} vertices, #{edge_count} edges")
+    Logger.info("Knowledge graph rebuilt for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
 
-    {:noreply, %{state | graph: graph}}
+    {:noreply, put_graph(state, project_path, graph)}
   end
 
   @impl true
-  def handle_call({:rebuild, ast_data}, _from, state) do
+  def handle_call({:rebuild, project_path, ast_data}, _from, state) do
     graph = build_graph(ast_data)
-    {:reply, :ok, %{state | graph: graph}}
+    {:reply, :ok, put_graph(state, project_path, graph)}
   end
 
   @impl true
-  def handle_call({:impact_map, vertex_id, depth}, _from, %{graph: graph} = state) do
+  def handle_call({:impact_map, project_path, vertex_id, depth}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_impact_map(graph, vertex_id, depth)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:trace_path, from, to}, _from, %{graph: graph} = state) do
+  def handle_call({:trace_path, project_path, from, to}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_trace_path(graph, from, to)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:dependents, module}, _from, %{graph: graph} = state) do
+  def handle_call({:dependents, project_path, module}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_dependents(graph, module)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:dependencies, module}, _from, %{graph: graph} = state) do
+  def handle_call({:dependencies, project_path, module}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_dependencies(graph, module)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:centrality, module}, _from, %{graph: graph} = state) do
+  def handle_call({:centrality, project_path, module}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_centrality(graph, module)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:test_targets, module, project_path}, _from, %{graph: graph} = state) do
+  def handle_call({:test_targets, project_path, module}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_test_targets(graph, module, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:check_behaviour_integrity, behaviour}, _from, %{graph: graph} = state) do
-    result = compute_behaviour_integrity(graph, behaviour)
+  def handle_call({:check_behaviour_integrity, project_path, behaviour}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_behaviour_integrity(graph, behaviour, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:check_all_behaviours, _from, %{graph: graph} = state) do
-    result = compute_all_behaviours(graph)
+  def handle_call({:check_all_behaviours, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_all_behaviours(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call({:get_implementers, behaviour}, _from, %{graph: graph} = state) do
+  def handle_call({:get_implementers, project_path, behaviour}, _from, state) do
+    graph = get_graph(state, project_path)
     implementers =
       Graph.in_edges(graph, behaviour)
       |> Enum.filter(fn edge -> edge.label == :implements end)
@@ -271,61 +299,69 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @impl true
-  def handle_call(:find_dead_code, _from, %{graph: graph} = state) do
-    result = compute_dead_code(graph)
+  def handle_call({:find_dead_code, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_dead_code(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_cycles, _from, %{graph: graph} = state) do
+  def handle_call({:find_cycles, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_cycles(graph)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_god_modules, _from, %{graph: graph} = state) do
-    result = compute_god_modules(graph)
+  def handle_call({:find_god_modules, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_god_modules(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_orphan_specs, _from, state) do
-    result = compute_orphan_specs()
+  def handle_call({:find_orphan_specs, project_path}, _from, state) do
+    result = compute_orphan_specs(project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_fan_in_out, _from, %{graph: graph} = state) do
-    result = compute_fan_in_out(graph)
+  def handle_call({:find_fan_in_out, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_fan_in_out(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_coupling, _from, %{graph: graph} = state) do
-    result = compute_coupling(graph)
+  def handle_call({:find_coupling, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_coupling(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:find_api_surface, _from, state) do
-    result = compute_api_surface()
+  def handle_call({:find_api_surface, project_path}, _from, state) do
+    result = compute_api_surface(project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:change_risk_score, _from, %{graph: graph} = state) do
-    result = compute_change_risk(graph)
+  def handle_call({:change_risk_score, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_change_risk(graph, project_path)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:stats, _from, %{graph: graph} = state) do
+  def handle_call({:stats, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
     result = compute_stats(graph)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_call(:graph, _from, %{graph: graph} = state) do
+  def handle_call({:graph, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
     {:reply, graph, state}
   end
 
@@ -709,7 +745,7 @@ defmodule Giulia.Knowledge.Store do
   # Returns the path if the file exists, nil otherwise.
   defp module_to_test_path(module_name, project_path) do
     # Look up the source file in the AST store
-    case Giulia.Context.Store.find_module(module_name) do
+    case Giulia.Context.Store.find_module(project_path, module_name) do
       {:ok, %{file: source_file}} ->
         test_file = Giulia.Tools.RunTests.suggest_test_file(source_file)
         full_path = Path.join(project_path, test_file)
@@ -758,12 +794,12 @@ defmodule Giulia.Knowledge.Store do
   # Behaviour Integrity Check
   # ============================================================================
 
-  defp compute_behaviour_integrity(graph, behaviour) do
+  defp compute_behaviour_integrity(graph, behaviour, project_path) do
     if not Graph.has_vertex?(graph, behaviour) do
       {:error, :not_found}
     else
       # Get declared callbacks from ETS
-      callbacks = Giulia.Context.Store.list_callbacks(behaviour)
+      callbacks = Giulia.Context.Store.list_callbacks(project_path, behaviour)
 
       if callbacks == [] do
         # Not a behaviour (no callbacks declared)
@@ -787,7 +823,7 @@ defmodule Giulia.Knowledge.Store do
           Enum.flat_map(implementers, fn impl_mod ->
             # Get public functions of the implementer
             impl_functions =
-              Giulia.Context.Store.list_functions(impl_mod)
+              Giulia.Context.Store.list_functions(project_path, impl_mod)
               |> Enum.filter(fn f -> f.type == :def end)
               |> Enum.map(fn f -> {to_string(f.name), f.arity} end)
               |> MapSet.new()
@@ -814,12 +850,12 @@ defmodule Giulia.Knowledge.Store do
     end
   end
 
-  defp compute_all_behaviours(graph) do
+  defp compute_all_behaviours(graph, project_path) do
     # Find behaviour modules from ETS (modules that declare @callback).
     # We can't rely on :behaviour vertex labels because libgraph's add_vertex
     # is a no-op when the vertex already exists — so :module always wins.
     behaviour_modules =
-      Giulia.Context.Store.list_callbacks()
+      Giulia.Context.Store.list_callbacks(project_path)
       |> Enum.map(& &1.module)
       |> Enum.uniq()
       |> Enum.filter(&Graph.has_vertex?(graph, &1))
@@ -827,7 +863,7 @@ defmodule Giulia.Knowledge.Store do
     # Check each behaviour
     all_fractures =
       Enum.reduce(behaviour_modules, %{}, fn behaviour, acc ->
-        case compute_behaviour_integrity(graph, behaviour) do
+        case compute_behaviour_integrity(graph, behaviour, project_path) do
           {:error, fractures} when is_list(fractures) ->
             Map.put(acc, behaviour, fractures)
 
@@ -866,15 +902,15 @@ defmodule Giulia.Knowledge.Store do
     {"name", 0}, {"description", 0}, {"parameters", 0}
   ])
 
-  defp compute_dead_code(graph) do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_dead_code(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     # Step 1: Get all defined functions
-    all_functions = Giulia.Context.Store.list_functions(nil)
+    all_functions = Giulia.Context.Store.list_functions(project_path, nil)
 
     # Step 2: Build set of behaviour callback signatures per implementer module
     # If module X implements behaviour Y, all of Y's callbacks are implicit in X
-    impl_callbacks = collect_behaviour_callbacks(graph)
+    impl_callbacks = collect_behaviour_callbacks(graph, project_path)
 
     # Step 3: Walk all ASTs to find every function call
     called_functions = collect_all_calls(all_asts)
@@ -913,7 +949,7 @@ defmodule Giulia.Knowledge.Store do
 
   # For each module that implements a behaviour, collect the behaviour's callbacks
   # as {implementer_module, callback_name, callback_arity} — these are called implicitly
-  defp collect_behaviour_callbacks(graph) do
+  defp collect_behaviour_callbacks(graph, project_path) do
     # Find all :implements edges: implementer --implements--> behaviour
     Graph.edges(graph)
     |> Enum.filter(fn edge -> edge.label == :implements end)
@@ -922,7 +958,7 @@ defmodule Giulia.Knowledge.Store do
       behaviour = edge.v2
 
       # Get the behaviour's declared callbacks
-      callbacks = Giulia.Context.Store.list_callbacks(behaviour)
+      callbacks = Giulia.Context.Store.list_callbacks(project_path, behaviour)
 
       Enum.reduce(callbacks, acc, fn cb, set ->
         MapSet.put(set, {implementer, to_string(cb.function), cb.arity})
@@ -999,8 +1035,8 @@ defmodule Giulia.Knowledge.Store do
   # Fan-in / Fan-out Analysis
   # ============================================================================
 
-  defp compute_fan_in_out(graph) do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_fan_in_out(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     # Build module -> file lookup
     module_files =
@@ -1038,8 +1074,8 @@ defmodule Giulia.Knowledge.Store do
   # Coupling Score (Function-level)
   # ============================================================================
 
-  defp compute_coupling(_graph) do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_coupling(_graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     # Walk all source files and collect {caller_module, callee_module, function_name} tuples
     call_pairs =
@@ -1106,8 +1142,8 @@ defmodule Giulia.Knowledge.Store do
   # API Surface Analysis
   # ============================================================================
 
-  defp compute_api_surface do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_api_surface(project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     modules =
       all_asts
@@ -1144,8 +1180,8 @@ defmodule Giulia.Knowledge.Store do
   # Change Risk Score (The Killer One)
   # ============================================================================
 
-  defp compute_change_risk(graph) do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_change_risk(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     # Pre-compute coupling map: module -> max coupling to any single other module
     coupling_map = build_coupling_map(all_asts)
@@ -1340,8 +1376,8 @@ defmodule Giulia.Knowledge.Store do
   # God Module Detection
   # ============================================================================
 
-  defp compute_god_modules(graph) do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_god_modules(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     modules =
       all_asts
@@ -1399,8 +1435,8 @@ defmodule Giulia.Knowledge.Store do
   # Orphan Spec Detection
   # ============================================================================
 
-  defp compute_orphan_specs do
-    all_asts = Giulia.Context.Store.all_asts()
+  defp compute_orphan_specs(project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
 
     orphans =
       all_asts

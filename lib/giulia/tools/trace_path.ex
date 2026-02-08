@@ -51,8 +51,9 @@ defmodule Giulia.Tools.TracePath do
   @impl true
   def execute(params, opts \\ [])
 
-  def execute(%__MODULE__{from: from, to: to}, _opts) do
-    case Store.trace_path(from, to) do
+  def execute(%__MODULE__{from: from, to: to}, opts) do
+    project_path = opts[:project_path]
+    case Store.trace_path(project_path, from, to) do
       {:ok, :no_path} ->
         {:ok, "No dependency path found between #{from} and #{to}.\nThey are in separate components of the dependency graph."}
 

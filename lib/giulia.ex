@@ -21,10 +21,10 @@ defmodule Giulia do
   @doc """
   Get the current project state.
   """
-  def status do
+  def status(project_path \\ nil) do
     %{
       indexer: Indexer.status(),
-      store: Store.stats(),
+      store: Store.stats(project_path),
       provider: Giulia.Provider.current()
     }
   end
