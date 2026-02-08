@@ -205,7 +205,7 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   @impl true
-  def handle_call({:dispatch, prompt, opts}, from, state) do
+  def handle_call({:execute, prompt, opts}, from, state) do
     request_id = Keyword.get(opts, :request_id, make_ref() |> inspect())
     state = %{state | task: prompt, reply_to: from, status: :starting, request_id: request_id}
     {:noreply, state, {:continue, {:start, prompt, opts}}}
