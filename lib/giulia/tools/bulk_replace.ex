@@ -36,7 +36,7 @@ defmodule Giulia.Tools.BulkReplace do
       properties: %{
         pattern: %{
           type: "string",
-          description: "The exact string to find (e.g., 'Registry.execute')"
+          description: "The exact string to find (e.g., 'Registry.dispatch')"
         },
         replacement: %{
           type: "string",

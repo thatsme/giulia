@@ -13,7 +13,8 @@ defmodule Giulia.Tools.GetStagedFiles do
   def name, do: "get_staged_files"
 
   @impl true
-  def description, do: "List all files currently staged in the transaction buffer (not yet written to disk)"
+  def description,
+    do: "List all files currently staged in the transaction buffer (not yet written to disk)"
 
   @impl true
   def parameters do

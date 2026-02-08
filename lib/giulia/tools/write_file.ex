@@ -7,11 +7,14 @@ defmodule Giulia.Tools.WriteFile do
 
   SECURITY: All paths are validated against the ProjectContext's sandbox.
   Giulia can ONLY write files within the project where GIULIA.md lives.
+
+  NOTE: The Orchestrator intercepts write_file calls via the staging buffer
+  (Transactional Exoskeleton). The execute/2 here is a fallback for direct use.
   """
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Giulia.Core.{PathSandbox, ProjectContext}
+  alias Giulia.Core.PathSandbox
 
   @behaviour Giulia.Tools.Registry
 
@@ -60,162 +63,46 @@ defmodule Giulia.Tools.WriteFile do
   end
 
   @doc """
-  Execute the write_file tool with a validated struct.
+  Execute the write_file tool.
 
-  If a sandbox is provided (from ProjectContext), validates path security.
-  Otherwise, uses a default sandbox from the current working directory.
+  Normally intercepted by the Orchestrator's staging buffer.
+  This implementation handles direct calls (e.g., from tests or iex).
   """
-  def execute(input, opts \\ []) do
-    case Giulia.StructuredOutput.parse_map(input, __MODULE__) do
+  def execute(params, opts \\ [])
+
+  def execute(%__MODULE__{path: path, content: content, explanation: explanation}, opts) do
+    project_path = Keyword.get(opts, :project_path) || File.cwd!()
+    sandbox = PathSandbox.new(project_path)
+
+    case PathSandbox.validate(sandbox, path) do
+      {:ok, safe_path} ->
+        safe_path |> Path.dirname() |> File.mkdir_p()
+
+        case File.write(safe_path, content) do
+          :ok ->
+            if String.ends_with?(safe_path, [".ex", ".exs"]) do
+              Giulia.Context.Indexer.scan_file(safe_path)
+            end
+
+            lines = content |> String.split("\n") |> length()
+            bytes = byte_size(content)
+            msg = "File written: #{safe_path} (#{lines} lines, #{bytes} bytes)"
+            msg = if explanation, do: msg <> "\nReason: #{explanation}", else: msg
+            {:ok, msg}
+
+          {:error, reason} ->
+            {:error, "Failed to write file: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error, "Path rejected by sandbox: #{inspect(reason)}"}
+    end
+  end
+
+  def execute(params, opts) do
+    case Giulia.StructuredOutput.parse_map(params, __MODULE__) do
       {:ok, struct} -> execute(struct, opts)
       {:error, _} = error -> error
     end
-  end
-
-  # Private
-
-  # Maximum allowed content reduction (30%) - prevents accidental mass deletion
-  @max_reduction_threshold 0.30
-
-  defp do_write(safe_path, content, explanation, opts \\ []) do
-    # NUCLEAR SAFEGUARD: Check for destructive writes
-    # Can be bypassed for escalation repairs (we trust Groq/Gemini)
-    bypass = Keyword.get(opts, :bypass_safeguard, false)
-
-    if bypass do
-      do_write_internal(safe_path, content, explanation)
-    else
-      case check_destructive_write(safe_path, content) do
-        :ok ->
-          do_write_internal(safe_path, content, explanation)
-
-        {:error, _} = error ->
-          error
-      end
-    end
-  end
-
-  # Check if this write would delete too much content (>30% reduction)
-  defp check_destructive_write(path, new_content) do
-    case File.read(path) do
-      {:ok, existing_content} ->
-        old_size = byte_size(existing_content)
-        new_size = byte_size(new_content)
-
-        # Only check reduction on files > 100 bytes (ignore tiny files)
-        if old_size > 100 do
-          reduction = (old_size - new_size) / old_size
-
-          if reduction > @max_reduction_threshold do
-            old_lines = existing_content |> String.split("\n") |> length()
-            new_lines = new_content |> String.split("\n") |> length()
-
-            {:error,
-             """
-             DESTRUCTIVE WRITE BLOCKED: You attempted to reduce file size by #{Float.round(reduction * 100, 1)}%.
-
-             File: #{Path.basename(path)}
-             Original: #{old_lines} lines (#{old_size} bytes)
-             Proposed: #{new_lines} lines (#{new_size} bytes)
-
-             This looks like you may be writing to the WRONG FILE or have incomplete content.
-
-             If this was intentional (deleting code), use edit_file with the specific section to remove.
-             Otherwise, check your file path and try again.
-             """}
-          else
-            :ok
-          end
-        else
-          :ok
-        end
-
-      {:error, :enoent} ->
-        # New file - no existing content to compare
-        :ok
-
-      {:error, _} ->
-        # Can't read file - proceed with caution
-        :ok
-    end
-  end
-
-  defp do_write_internal(safe_path, content, explanation) do
-    # Ensure parent directory exists
-    safe_path
-    |> Path.dirname()
-    |> File.mkdir_p()
-
-    case File.write(safe_path, content) do
-      :ok ->
-        # Trigger re-indexing if it's an Elixir file
-        if String.ends_with?(safe_path, [".ex", ".exs"]) do
-          Giulia.Context.Indexer.scan_file(safe_path)
-        end
-
-        msg = build_success_message(safe_path, content, explanation)
-        {:ok, msg}
-
-      {:error, :eacces} ->
-        {:error, "Permission denied: #{safe_path}"}
-
-      {:error, :enospc} ->
-        {:error, "No space left on device"}
-
-      {:error, reason} ->
-        {:error, "Failed to write file: #{inspect(reason)}"}
-    end
-  end
-
-  defp build_success_message(path, content, explanation) do
-    lines = content |> String.split("\n") |> length()
-    bytes = byte_size(content)
-
-    base = "File written: #{path} (#{lines} lines, #{bytes} bytes)"
-
-    if explanation do
-      base <> "\nReason: #{explanation}"
-    else
-      base
-    end
-  end
-
-  defp get_sandbox(opts) do
-    case Keyword.get(opts, :sandbox) do
-      nil ->
-        # Default to current working directory as sandbox root
-        # This is a fallback - proper usage should always provide a sandbox
-        project_root = get_project_root()
-        PathSandbox.new(project_root)
-
-      sandbox ->
-        sandbox
-    end
-  end
-
-  defp get_project_root do
-    # Try to find GIULIA.md walking up from cwd
-    cwd = File.cwd!()
-    find_project_root(cwd) || cwd
-  end
-
-  defp find_project_root(path) do
-    giulia_md = Path.join(path, "GIULIA.md")
-
-    if File.exists?(giulia_md) do
-      path
-    else
-      parent = Path.dirname(path)
-
-      if parent == path do
-        nil
-      else
-        find_project_root(parent)
-      end
-    end
-  end
-
-  defp stringify_keys(map) do
-    Map.new(map, fn {k, v} -> {to_string(k), v} end)
   end
 end
