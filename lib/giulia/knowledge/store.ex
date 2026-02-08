@@ -108,6 +108,38 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @doc """
+  Find dead code — functions that are defined but never called anywhere.
+  Returns {:ok, %{dead: [%{module, name, arity, type, file, line}], count: N, total: N}}.
+  """
+  def find_dead_code do
+    GenServer.call(__MODULE__, :find_dead_code, 30_000)
+  end
+
+  @doc """
+  Find circular dependencies using strongly connected components.
+  Returns {:ok, %{cycles: [[module_name]], count: N}}.
+  """
+  def find_cycles do
+    GenServer.call(__MODULE__, :find_cycles, 30_000)
+  end
+
+  @doc """
+  Find god modules — high function count + high complexity + high centrality.
+  Returns {:ok, %{modules: [%{module, functions, complexity, centrality, score, file}], count: N}}.
+  """
+  def find_god_modules do
+    GenServer.call(__MODULE__, :find_god_modules, 30_000)
+  end
+
+  @doc """
+  Find orphan specs — @spec declarations that don't match any defined function.
+  Returns {:ok, %{orphans: [%{module, spec_function, spec_arity, line, file}], count: N}}.
+  """
+  def find_orphan_specs do
+    GenServer.call(__MODULE__, :find_orphan_specs, 30_000)
+  end
+
+  @doc """
   Get graph statistics.
   """
   def stats do
@@ -203,6 +235,30 @@ defmodule Giulia.Knowledge.Store do
       |> Enum.uniq()
 
     {:reply, {:ok, implementers}, state}
+  end
+
+  @impl true
+  def handle_call(:find_dead_code, _from, %{graph: graph} = state) do
+    result = compute_dead_code(graph)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_cycles, _from, %{graph: graph} = state) do
+    result = compute_cycles(graph)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_god_modules, _from, %{graph: graph} = state) do
+    result = compute_god_modules(graph)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_orphan_specs, _from, state) do
+    result = compute_orphan_specs()
+    {:reply, result, state}
   end
 
   @impl true
@@ -728,6 +784,293 @@ defmodule Giulia.Knowledge.Store do
     else
       {:error, all_fractures}
     end
+  end
+
+  # ============================================================================
+  # Dead Code Detection
+  # ============================================================================
+
+  # OTP/framework callbacks that are invoked implicitly, never via direct calls
+  @implicit_functions MapSet.new([
+    # GenServer
+    {"init", 1}, {"handle_call", 3}, {"handle_cast", 2}, {"handle_info", 2},
+    {"handle_continue", 2}, {"terminate", 2}, {"code_change", 3},
+    # Application
+    {"start", 2}, {"stop", 1},
+    # Supervisor
+    {"child_spec", 1},
+    # Plug
+    {"call", 2},
+    # Escript
+    {"main", 1},
+    # Ecto
+    {"changeset", 1}, {"changeset", 2},
+    # Tool behaviour (Giulia-specific)
+    {"name", 0}, {"description", 0}, {"parameters", 0}
+  ])
+
+  defp compute_dead_code(graph) do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    # Step 1: Get all defined functions
+    all_functions = Giulia.Context.Store.list_functions(nil)
+
+    # Step 2: Build set of behaviour callback signatures per implementer module
+    # If module X implements behaviour Y, all of Y's callbacks are implicit in X
+    impl_callbacks = collect_behaviour_callbacks(graph)
+
+    # Step 3: Walk all ASTs to find every function call
+    called_functions = collect_all_calls(all_asts)
+
+    # Step 4: Find dead functions
+    dead =
+      all_functions
+      |> Enum.reject(fn func ->
+        name_arity = {to_string(func.name), func.arity}
+
+        # Skip implicit OTP/framework callbacks
+        MapSet.member?(@implicit_functions, name_arity) or
+          # Skip behaviour callback implementations
+          MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
+          # Skip if called remotely: Module.func/arity
+          MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
+          # Skip if called locally within the same module: func/arity
+          MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
+          # Skip if called with any arity (for functions with defaults)
+          called_with_any_arity?(called_functions, func)
+      end)
+      |> Enum.map(fn func ->
+        %{
+          module: func.module,
+          name: to_string(func.name),
+          arity: func.arity,
+          type: func.type,
+          file: func.file,
+          line: func.line
+        }
+      end)
+      |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
+
+    {:ok, %{dead: dead, count: length(dead), total: length(all_functions)}}
+  end
+
+  # For each module that implements a behaviour, collect the behaviour's callbacks
+  # as {implementer_module, callback_name, callback_arity} — these are called implicitly
+  defp collect_behaviour_callbacks(graph) do
+    # Find all :implements edges: implementer --implements--> behaviour
+    Graph.edges(graph)
+    |> Enum.filter(fn edge -> edge.label == :implements end)
+    |> Enum.reduce(MapSet.new(), fn edge, acc ->
+      implementer = edge.v1
+      behaviour = edge.v2
+
+      # Get the behaviour's declared callbacks
+      callbacks = Giulia.Context.Store.list_callbacks(behaviour)
+
+      Enum.reduce(callbacks, acc, fn cb, set ->
+        MapSet.put(set, {implementer, to_string(cb.function), cb.arity})
+      end)
+    end)
+  end
+
+  # Walk all source files to collect function calls: remote (Module.func) and local (func)
+  defp collect_all_calls(all_asts) do
+    Enum.reduce(all_asts, MapSet.new(), fn {path, data}, acc ->
+      modules = data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      # Read source from disk — ETS stores metadata, not raw source
+      source = case File.read(path) do
+        {:ok, content} -> content
+        _ -> ""
+      end
+
+      case Sourceror.parse_string(source) do
+        {:ok, ast} ->
+          {_ast, calls} =
+            Macro.prewalk(ast, acc, fn
+              # Remote call: Module.func(args)
+              {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, set
+              when is_atom(func_name) and is_list(args) ->
+                mod = Enum.map_join(parts, ".", &to_string/1)
+                {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
+
+              # Remote call with full Elixir module: Elixir.Module.func(args)
+              {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
+              when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
+                mod = Atom.to_string(mod_atom) |> String.replace_leading("Elixir.", "")
+                {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
+
+              # Local call: func(args) — track with module context
+              {func_name, _meta, args} = node, set
+              when is_atom(func_name) and is_list(args) and
+                   func_name not in [:def, :defp, :defmodule, :defmacro, :defmacrop,
+                                     :if, :unless, :case, :cond, :with, :for, :fn,
+                                     :quote, :unquote, :import, :alias, :use, :require,
+                                     :raise, :reraise, :throw, :try, :receive, :send,
+                                     :spawn, :spawn_link, :super, :__block__, :__aliases__,
+                                     :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
+                                     :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
+                                     :sigil_r, :sigil_s, :sigil_c, :sigil_w] ->
+                {node, MapSet.put(set, {module_name, :local, to_string(func_name), length(args)})}
+
+              node, set ->
+                {node, set}
+            end)
+
+          calls
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  # Check if a function is called with any arity (handles default arguments)
+  defp called_with_any_arity?(called_functions, func) do
+    mod = func.module
+    name = to_string(func.name)
+
+    Enum.any?(called_functions, fn
+      {^mod, ^name, _any_arity} -> true
+      {^mod, :local, ^name, _any_arity} -> true
+      _ -> false
+    end)
+  end
+
+  # ============================================================================
+  # Circular Dependency Detection
+  # ============================================================================
+
+  defp compute_cycles(graph) do
+    # Filter to module-only subgraph (exclude function/struct vertices)
+    module_vertices =
+      Graph.vertices(graph)
+      |> Enum.filter(fn v ->
+        labels = Graph.vertex_labels(graph, v)
+        :module in labels
+      end)
+
+    # Build a module-only subgraph
+    module_graph =
+      Enum.reduce(module_vertices, Graph.new(type: :directed), fn v, g ->
+        g = Graph.add_vertex(g, v)
+
+        # Only add edges between modules (skip function edges)
+        Graph.out_neighbors(graph, v)
+        |> Enum.filter(fn neighbor -> neighbor in module_vertices end)
+        |> Enum.reduce(g, fn neighbor, g2 ->
+          Graph.add_edge(g2, v, neighbor)
+        end)
+      end)
+
+    # Find strongly connected components with > 1 member = cycles
+    cycles =
+      Graph.strong_components(module_graph)
+      |> Enum.filter(fn component -> length(component) > 1 end)
+      |> Enum.map(&Enum.sort/1)
+      |> Enum.sort_by(fn c -> -length(c) end)
+
+    {:ok, %{cycles: cycles, count: length(cycles)}}
+  end
+
+  # ============================================================================
+  # God Module Detection
+  # ============================================================================
+
+  defp compute_god_modules(graph) do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    modules =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        modules = data[:modules] || []
+        functions = data[:functions] || []
+
+        case modules do
+          [mod | _] ->
+            module_name = mod.name
+            func_count = length(functions)
+
+            # Get complexity from AST
+            complexity =
+              case File.read(path) do
+                {:ok, source} ->
+                  case Sourceror.parse_string(source) do
+                    {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
+                    _ -> 0
+                  end
+                _ -> 0
+              end
+
+            # Get centrality from graph
+            centrality =
+              case compute_centrality(graph, module_name) do
+                {:ok, %{in_degree: in_deg}} -> in_deg
+                _ -> 0
+              end
+
+            # God module score: weighted combination
+            # Functions weight: 1x, Complexity weight: 2x, Centrality weight: 3x
+            score = func_count + (complexity * 2) + (centrality * 3)
+
+            [%{
+              module: module_name,
+              functions: func_count,
+              complexity: complexity,
+              centrality: centrality,
+              score: score,
+              file: path
+            }]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.sort_by(fn m -> -m.score end)
+      |> Enum.take(20)
+
+    {:ok, %{modules: modules, count: length(modules)}}
+  end
+
+  # ============================================================================
+  # Orphan Spec Detection
+  # ============================================================================
+
+  defp compute_orphan_specs do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    orphans =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        specs = data[:specs] || []
+        functions = data[:functions] || []
+        modules = data[:modules] || []
+        module_name = List.first(modules)[:name] || "Unknown"
+
+        # Build set of defined {function_name, arity} pairs
+        defined_funcs =
+          functions
+          |> Enum.map(fn f -> {f.name, f.arity} end)
+          |> MapSet.new()
+
+        # Find specs that don't match any defined function
+        Enum.reject(specs, fn spec ->
+          MapSet.member?(defined_funcs, {spec.function, spec.arity})
+        end)
+        |> Enum.map(fn spec ->
+          %{
+            module: module_name,
+            spec_function: to_string(spec.function),
+            spec_arity: spec.arity,
+            line: spec.line,
+            file: path
+          }
+        end)
+      end)
+      |> Enum.sort_by(&{&1.module, &1.spec_function, &1.spec_arity})
+
+    {:ok, %{orphans: orphans, count: length(orphans)}}
   end
 
   defp compute_stats(graph) do

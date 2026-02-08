@@ -43,6 +43,10 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Dependency path | `GET /api/knowledge/path?from=A&to=B` | Shortest path between two modules |
 | Graph overview | `GET /api/knowledge/stats` | Vertices, edges, components, top hubs |
 | Behaviour integrity | `GET /api/knowledge/integrity` | Checks all behaviour-implementer contracts match |
+| Dead code | `GET /api/knowledge/dead_code` | Functions defined but never called anywhere — excludes OTP callbacks, behaviour implementations, framework entry points |
+| Circular dependencies | `GET /api/knowledge/cycles` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
+| God modules | `GET /api/knowledge/god_modules` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
+| Orphan specs | `GET /api/knowledge/orphan_specs` | @spec declarations where no matching function definition exists (name/arity mismatch) |
 
 ### 3. Modifying Code
 

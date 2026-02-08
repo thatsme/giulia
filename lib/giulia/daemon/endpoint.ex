@@ -394,6 +394,38 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
+  # Dead code detection — functions defined but never called
+  get "/api/knowledge/dead_code" do
+    case Giulia.Knowledge.Store.find_dead_code() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # Circular dependency detection — strongly connected components
+  get "/api/knowledge/cycles" do
+    case Giulia.Knowledge.Store.find_cycles() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # God module detection — high complexity + centrality + function count
+  get "/api/knowledge/god_modules" do
+    case Giulia.Knowledge.Store.find_god_modules() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # Orphan spec detection — @spec without matching function definition
+  get "/api/knowledge/orphan_specs" do
+    case Giulia.Knowledge.Store.find_orphan_specs() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
   # Shortest path between two modules
   get "/api/knowledge/path" do
     from = conn.query_params["from"]
