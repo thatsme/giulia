@@ -56,7 +56,7 @@ defmodule Giulia.Application do
   defp start_daemon_mode do
     port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
 
-    children = [
+    base_children = [
       # Registry for named process lookup
       {Registry, keys: :unique, name: Giulia.Registry},
 
@@ -91,11 +91,16 @@ defmodule Giulia.Application do
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
 
       # Context manager - routes requests to correct ProjectContext
-      Giulia.Core.ContextManager,
-
-      # HTTP API endpoint
-      {Bandit, plug: Giulia.Daemon.Endpoint, port: port}
+      Giulia.Core.ContextManager
     ]
+
+    # Skip HTTP endpoint in test env (port already in use by the running daemon)
+    children =
+      if Mix.env() == :test do
+        base_children
+      else
+        base_children ++ [{Bandit, plug: Giulia.Daemon.Endpoint, port: port}]
+      end
 
     opts = [strategy: :one_for_one, name: Giulia.Supervisor]
     Supervisor.start_link(children, opts)

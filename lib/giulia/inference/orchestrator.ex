@@ -126,7 +126,9 @@ defmodule Giulia.Inference.Orchestrator do
     # %{module: "X", dependents: ["A", "B", ...], count: N} | nil
     last_impact_map: nil,
     # Files actually modified during this session (set of paths)
-    modified_files: MapSet.new()
+    modified_files: MapSet.new(),
+    # Consecutive goal-tracker blocks (cleared when model takes action)
+    goal_tracker_block_count: 0
   ]
 
   # ============================================================================
@@ -1474,9 +1476,10 @@ defmodule Giulia.Inference.Orchestrator do
           not is_nil(state.last_impact_map) and goal_tracker_blocks?(state) ->
             im = state.last_impact_map
             touched = MapSet.size(state.modified_files)
+            block_count = state.goal_tracker_block_count + 1
 
             Logger.warning(
-              "GOAL TRACKER: Model tried to respond after touching #{touched}/#{im.count} dependents of #{im.module}"
+              "GOAL TRACKER: Model tried to respond after touching #{touched}/#{im.count} dependents of #{im.module} (block #{block_count})"
             )
 
             # Broadcast for client visibility
@@ -1489,33 +1492,60 @@ defmodule Giulia.Inference.Orchestrator do
               })
             end
 
-            untouched =
-              im.dependents
-              |> Enum.reject(fn dep ->
-                Enum.any?(
-                  MapSet.to_list(state.modified_files),
-                  &String.contains?(&1, module_to_path(dep))
-                )
+            if block_count >= 4 do
+              # Model is stuck in a loop — release to prevent infinite cycling
+              Logger.warning(
+                "GOAL TRACKER: #{block_count} consecutive blocks — releasing to break deadlock"
+              )
+
+              Logger.info("=== TASK COMPLETE (goal-tracker release) ===")
+              send_reply(state, {:ok, message})
+              state = %{state | goal_tracker_block_count: 0}
+              {:noreply, reset_state(state)}
+            else
+              untouched =
+                im.dependents
+                |> Enum.reject(fn dep ->
+                  Enum.any?(
+                    MapSet.to_list(state.modified_files),
+                    &String.contains?(&1, module_to_path(dep))
+                  )
+                end)
+                |> Enum.take(10)
+
+              # Check if rename_mfa was used earlier in this session
+              has_used_rename = Enum.any?(state.action_history, fn
+                {:tool, "rename_mfa", _} -> true
+                _ -> false
               end)
-              |> Enum.take(10)
 
-            lock_msg = """
-            BLOCKED: You identified #{im.count} dependents of #{im.module} via get_impact_map, but you only modified #{touched} file(s).
+              rename_hint =
+                if has_used_rename do
+                  "You already used rename_mfa earlier — use it again with the CORRECT arity to rename function definitions in all implementer modules."
+                else
+                  "Use rename_mfa to rename function definitions across all implementers (this handles def/defp, @callback, and call sites atomically)."
+                end
 
-            Untouched dependents (showing up to 10):
-            #{Enum.map_join(untouched, "\n", &"  - #{&1}")}
+              lock_msg = """
+              BLOCKED: You identified #{im.count} dependents of #{im.module} via get_impact_map, but you only modified #{touched} file(s).
 
-            You MUST either:
-            1. Use bulk_replace to batch-rename across all dependents
-            2. Manually edit each remaining file
-            3. Explain why these files don't need changes (call think first)
+              Untouched dependents (showing up to 10):
+              #{Enum.map_join(untouched, "\n", &"  - #{&1}")}
 
-            Do NOT claim the task is complete when #{im.count - touched} dependents are still unchanged.
-            """
+              You MUST take action:
+              1. #{rename_hint}
+              2. Or use bulk_replace if you need simple string replacement across files.
+              3. Or edit each remaining file individually.
 
-            messages = state.messages ++ [%{role: "user", content: lock_msg}]
-            state = %{state | messages: messages}
-            {:noreply, state, {:continue, :step}}
+              IMPORTANT: bulk_replace only matches exact strings. To rename function DEFINITIONS (def/defp), you MUST use rename_mfa.
+
+              Do NOT call respond or think — take ACTION on the untouched files.
+              """
+
+              messages = state.messages ++ [%{role: "user", content: lock_msg}]
+              state = %{state | messages: messages, goal_tracker_block_count: block_count}
+              {:noreply, state, {:continue, :step}}
+            end
 
           true ->
             # Task complete!
@@ -1994,7 +2024,8 @@ defmodule Giulia.Inference.Orchestrator do
       | messages: messages,
         last_action: current_action,
         action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
-        consecutive_failures: 0
+        consecutive_failures: 0,
+        goal_tracker_block_count: 0
     }
 
     # TEST-LOCK: Track test results for respond gate
@@ -2158,7 +2189,8 @@ defmodule Giulia.Inference.Orchestrator do
       | messages: messages,
         last_action: current_action,
         action_history: [{tool_name, params, result} | Enum.take(state.action_history, 4)],
-        consecutive_failures: 0
+        consecutive_failures: 0,
+        goal_tracker_block_count: 0
     }
 
     # No verification during staging — that happens at commit time
@@ -2852,8 +2884,24 @@ defmodule Giulia.Inference.Orchestrator do
           []
         end
 
-      # Build the set of all files to scan
-      affected_modules = ([module] ++ callers ++ implementers) |> Enum.uniq()
+      # Build the set of all files to scan.
+      # For @callback renames, we also need callers of each implementer
+      # (e.g., endpoint.ex calls RunTests.execute directly, not through Registry)
+      implementer_callers =
+        if is_callback do
+          Enum.flat_map(implementers, fn impl ->
+            case Giulia.Knowledge.Store.dependents(impl) do
+              {:ok, deps} -> deps
+              _ -> []
+            end
+          end)
+        else
+          []
+        end
+
+      affected_modules =
+        ([module] ++ callers ++ implementers ++ implementer_callers)
+        |> Enum.uniq()
 
       affected_files =
         all_modules
@@ -2863,7 +2911,7 @@ defmodule Giulia.Inference.Orchestrator do
 
       Logger.info(
         "RENAME_MFA: #{length(affected_files)} files to scan " <>
-          "(#{length(callers)} callers, #{length(implementers)} implementers)"
+          "(#{length(callers)} callers, #{length(implementers)} implementers, #{length(implementer_callers)} impl_callers)"
       )
 
       # === PHASE 2: AST-guided line-level rename in each file ===
@@ -2899,7 +2947,8 @@ defmodule Giulia.Inference.Orchestrator do
                 rename_in_source(source, module, old_atom, old_name, new_name, arity_range,
                   is_target: is_target,
                   is_implementer: is_implementer,
-                  is_caller: is_caller
+                  is_caller: is_caller,
+                  implementer_modules: implementers
                 )
 
               if changes > 0 do
@@ -3018,24 +3067,31 @@ defmodule Giulia.Inference.Orchestrator do
   defp detect_arity_range(source, old_atom, declared_arity) do
     case Sourceror.parse_string(source) do
       {:ok, ast} ->
-        {_ast, default_count} =
-          Macro.prewalk(ast, 0, fn
-            {def_type, _meta, [{^old_atom, _fn_meta, args} | _]} = node, acc
+        # Scan ALL definitions to find max arity and max default count
+        {_ast, {max_total_arity, max_defaults}} =
+          Macro.prewalk(ast, {0, 0}, fn
+            {def_type, _meta, [{^old_atom, _fn_meta, args} | _]} = node, {max_a, max_d}
             when def_type in [:def, :defp] and is_list(args) ->
+              total = length(args)
+
               defaults =
                 Enum.count(args, fn
                   {:\\, _, _} -> true
                   _ -> false
                 end)
 
-              {node, max(acc, defaults)}
+              {node, {max(max_a, total), max(max_d, defaults)}}
 
             node, acc ->
               {node, acc}
           end)
 
-        min_arity = declared_arity - default_count
-        Enum.to_list(min_arity..declared_arity)
+        # Range covers: lowest possible arity (declared - defaults) to highest found arity
+        # This ensures arity=2 still catches a function with 3 args + 1 default
+        max_arity = max(declared_arity, max_total_arity)
+        min_arity = min(declared_arity, max_arity - max_defaults)
+        min_arity = max(min_arity, 0)
+        Enum.to_list(min_arity..max_arity)
 
       _ ->
         [declared_arity]
@@ -3048,7 +3104,8 @@ defmodule Giulia.Inference.Orchestrator do
   defp rename_in_source(source, target_module, old_atom, old_name, new_name, arity_range, opts) do
     is_target = Keyword.get(opts, :is_target, false)
     is_implementer = Keyword.get(opts, :is_implementer, false)
-    is_caller = Keyword.get(opts, :is_caller, false)
+    _is_caller = Keyword.get(opts, :is_caller, false)
+    implementer_modules = Keyword.get(opts, :implementer_modules, [])
 
     case Sourceror.parse_string(source) do
       {:ok, ast} ->
@@ -3076,22 +3133,35 @@ defmodule Giulia.Inference.Orchestrator do
                   {node, acc}
                 end
 
-              # Remote calls: Module.old_name(args) in callers
-              {{:., _dot_meta, [alias_node, ^old_atom]}, call_meta, args}
-              when is_caller ->
+              # Dynamic dispatch: var.old_name(args) inside the target module
+              # e.g., module.execute(arguments, opts) in Registry
+              # MUST come before remote call pattern (both match {{:., _, [_, ^old_atom]}, _, _})
+              {{:., _dot_meta2, [{_var, _var_meta, ctx}, ^old_atom]}, call_meta, args}
+              when is_target and is_atom(ctx) ->
+                if length(args || []) in arity_range do
+                  {node, [{call_meta[:line], :dynamic_call} | acc]}
+                else
+                  {node, acc}
+                end
+
+              # Remote calls: Module.old_name(args)
+              # Matches calls to the target module (Registry.execute) AND
+              # calls to any implementer module (RunTests.execute, SearchCode.execute)
+              {{:., _dot_meta, [alias_node, ^old_atom]}, call_meta, args} ->
                 if length(args || []) in arity_range and
-                     ast_matches_module?(alias_node, target_module) do
+                     (ast_matches_module?(alias_node, target_module) or
+                      ast_matches_any_module?(alias_node, implementer_modules)) do
                   {node, [{call_meta[:line], :remote_call} | acc]}
                 else
                   {node, acc}
                 end
 
-              # Dynamic dispatch: var.old_name(args) inside the target module
-              # e.g., module.execute(arguments, opts) in Registry
-              {{:., _dot_meta2, [{_var, _var_meta, ctx}, ^old_atom]}, call_meta, args}
-              when is_target and is_atom(ctx) ->
-                if length(args || []) in arity_range do
-                  {node, [{call_meta[:line], :dynamic_call} | acc]}
+              # Local function calls: execute(struct, opts) inside target/implementer
+              # AST: {:execute, meta, [arg1, arg2]} where args is a list (not a variable)
+              {^old_atom, call_meta, args}
+              when (is_target or is_implementer) and is_list(args) ->
+                if length(args) in arity_range do
+                  {node, [{call_meta[:line], :local_call} | acc]}
                 else
                   {node, acc}
                 end
@@ -3142,11 +3212,11 @@ defmodule Giulia.Inference.Orchestrator do
   # Replace function name on a specific line, using context-aware patterns.
   # Tries most specific patterns first to avoid false matches.
   defp rename_on_line(line, old_name, new_name) do
-    line
-    |> String.replace("defp #{old_name}(", "defp #{new_name}(")
-    |> String.replace("def #{old_name}(", "def #{new_name}(")
-    |> String.replace(".#{old_name}(", ".#{new_name}(")
-    |> String.replace("@callback #{old_name}(", "@callback #{new_name}(")
+    # Use word-boundary regex to replace the function name precisely.
+    # Matches: def execute(, defp execute(, .execute(, @callback execute(,
+    # and bare local calls: execute(struct, opts)
+    # The \b ensures we don't match partial names (e.g., "pre_execute").
+    Regex.replace(~r/\b#{Regex.escape(old_name)}\(/, line, "#{new_name}(")
   end
 
   # Check if an AST alias node matches a fully-qualified module name.
@@ -3162,6 +3232,11 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   defp ast_matches_module?(_, _), do: false
+
+  defp ast_matches_any_module?(_alias_node, []), do: false
+  defp ast_matches_any_module?(alias_node, modules) do
+    Enum.any?(modules, &ast_matches_module?(alias_node, &1))
+  end
 
   defp last_segment(module_name) do
     module_name |> String.split(".") |> List.last()
