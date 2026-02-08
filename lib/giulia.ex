@@ -17,25 +17,6 @@ defmodule Giulia do
   """
 
   alias Giulia.Context.{Store, Indexer}
-  alias Giulia.Agent.Orchestrator
-
-  @doc """
-  Initialize Giulia with a project path.
-  This is the legacy direct API - for daemon mode, use Giulia.Daemon.init_project/2.
-  """
-  def init(project_path) do
-    Indexer.scan(project_path)
-    Store.put(:project_path, project_path)
-    :ok
-  end
-
-  @doc """
-  Run a task through the agent orchestrator.
-  This is the legacy direct API - for daemon mode, use Giulia.Daemon.chat/2.
-  """
-  def run(task, opts \\ []) do
-    Orchestrator.run(task, opts)
-  end
 
   @doc """
   Get the current project state.
