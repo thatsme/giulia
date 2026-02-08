@@ -23,13 +23,13 @@ Use these to inspect modules, functions, types, and dependencies before making c
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Everything about a module | `GET /api/index/module_details?module=X` | File path, moduledoc, public/private functions, types, specs, callbacks, struct fields — the single most useful call before modifying anything |
-| List all modules | `GET /api/index/modules` | All indexed module names with file paths |
-| Functions in a module | `GET /api/index/functions?module=X` | Name, arity, line number, type (def/defp) |
-| Project shape | `GET /api/index/summary` | Module count, function count, types, specs, callbacks |
+| Everything about a module | `GET /api/index/module_details?path=P&module=X` | File path, moduledoc, public/private functions, types, specs, callbacks, struct fields — the single most useful call before modifying anything |
+| List all modules | `GET /api/index/modules?path=P` | All indexed module names with file paths |
+| Functions in a module | `GET /api/index/functions?path=P&module=X` | Name, arity, line number, type (def/defp) |
+| Project shape | `GET /api/index/summary?path=P` | Module count, function count, types, specs, callbacks |
 | Search code patterns | `GET /api/search?pattern=X&path=Y` | Regex search scoped to project (sandboxed) |
-| What X depends on | `GET /api/knowledge/dependencies?module=X` | Upstream dependencies |
-| Index status | `GET /api/index/status` | Scanning state, file count, last scan time |
+| What X depends on | `GET /api/knowledge/dependencies?path=P&module=X` | Upstream dependencies |
+| Index status | `GET /api/index/status?path=P` | Scanning state, file count, last scan time |
 
 ### 2. Analyzing Impact
 
@@ -37,20 +37,20 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Full impact map | `GET /api/knowledge/impact?module=X&depth=N` | Upstream + downstream modules at depth N |
-| Who depends on X | `GET /api/knowledge/dependents?module=X` | All downstream consumers (blast radius) |
-| Hub score | `GET /api/knowledge/centrality?module=X` | In-degree, out-degree — high = dangerous to modify |
-| Dependency path | `GET /api/knowledge/path?from=A&to=B` | Shortest path between two modules |
-| Graph overview | `GET /api/knowledge/stats` | Vertices, edges, components, top hubs |
-| Behaviour integrity | `GET /api/knowledge/integrity` | Checks all behaviour-implementer contracts match |
-| Dead code | `GET /api/knowledge/dead_code` | Functions defined but never called anywhere — excludes OTP callbacks, behaviour implementations, framework entry points |
-| Circular dependencies | `GET /api/knowledge/cycles` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
-| God modules | `GET /api/knowledge/god_modules` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
-| Orphan specs | `GET /api/knowledge/orphan_specs` | @spec declarations where no matching function definition exists (name/arity mismatch) |
-| Fan-in / fan-out | `GET /api/knowledge/fan_in_out` | Modules ranked by incoming + outgoing dependency count — high fan-out = knows too much, high fan-in = too many dependents |
-| Coupling score | `GET /api/knowledge/coupling` | Top 50 module pairs ranked by how many function calls flow between them — tight coupling quantified |
-| API surface | `GET /api/knowledge/api_surface` | Public vs private function ratio per module — high ratio = poor encapsulation |
-| Change risk | `GET /api/knowledge/change_risk` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
+| Full impact map | `GET /api/knowledge/impact?path=P&module=X&depth=N` | Upstream + downstream modules at depth N |
+| Who depends on X | `GET /api/knowledge/dependents?path=P&module=X` | All downstream consumers (blast radius) |
+| Hub score | `GET /api/knowledge/centrality?path=P&module=X` | In-degree, out-degree — high = dangerous to modify |
+| Dependency path | `GET /api/knowledge/path?path=P&from=A&to=B` | Shortest path between two modules |
+| Graph overview | `GET /api/knowledge/stats?path=P` | Vertices, edges, components, top hubs |
+| Behaviour integrity | `GET /api/knowledge/integrity?path=P` | Checks all behaviour-implementer contracts match |
+| Dead code | `GET /api/knowledge/dead_code?path=P` | Functions defined but never called anywhere — excludes OTP callbacks, behaviour implementations, framework entry points |
+| Circular dependencies | `GET /api/knowledge/cycles?path=P` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
+| God modules | `GET /api/knowledge/god_modules?path=P` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
+| Orphan specs | `GET /api/knowledge/orphan_specs?path=P` | @spec declarations where no matching function definition exists (name/arity mismatch) |
+| Fan-in / fan-out | `GET /api/knowledge/fan_in_out?path=P` | Modules ranked by incoming + outgoing dependency count — high fan-out = knows too much, high fan-in = too many dependents |
+| Coupling score | `GET /api/knowledge/coupling?path=P` | Top 50 module pairs ranked by how many function calls flow between them — tight coupling quantified |
+| API surface | `GET /api/knowledge/api_surface?path=P` | Public vs private function ratio per module — high ratio = poor encapsulation |
+| Change risk | `GET /api/knowledge/change_risk?path=P` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
 
 ### 3. Modifying Code
 
@@ -108,9 +108,9 @@ Send natural language commands through Giulia's OODA orchestrator via `POST /api
 
 ### Before Modifying Any Elixir Module
 
-1. **Understand** — `GET /api/index/module_details?module=X` to get the full picture (functions, types, specs, callbacks)
-2. **Assess impact** — `GET /api/knowledge/impact?module=X&depth=2` to see who depends on it and what it depends on
-3. **Check hub score** — `GET /api/knowledge/centrality?module=X` — if degree > 3, changes are high-risk
+1. **Understand** — `GET /api/index/module_details?path=P&module=X` to get the full picture (functions, types, specs, callbacks)
+2. **Assess impact** — `GET /api/knowledge/impact?path=P&module=X&depth=2` to see who depends on it and what it depends on
+3. **Check hub score** — `GET /api/knowledge/centrality?path=P&module=X` — if degree > 3, changes are high-risk
 4. **Make changes** — edit files directly or use `POST /api/command/stream` for complex refactoring
 5. **Re-index** — `POST /api/index/scan` so the index reflects your changes
 6. **Verify integrity** — `GET /api/knowledge/integrity` to catch behaviour-implementer fractures early
@@ -132,4 +132,10 @@ If you edit Elixir files directly (using file write/edit tools instead of Giulia
 
 ### Path Convention
 
-When calling Giulia endpoints that take a `path` parameter, use the host path (e.g., `C:/Development/GitHub/Giulia`). The daemon translates to container paths automatically via PathMapper.
+**All index and knowledge endpoints require a `?path=P` query parameter** identifying which project to query. This is because Giulia supports multi-project isolation — each scanned project has its own ETS namespace and Knowledge Graph. Without `?path=`, these endpoints return a 400 error.
+
+Use the host path (e.g., `path=C:/Development/GitHub/Giulia`). The daemon translates to container paths automatically via PathMapper.
+
+Example: `GET /api/knowledge/stats?path=C:/Development/GitHub/Giulia`
+
+The `POST /api/index/scan` and `POST /api/command/stream` endpoints take `path` in the JSON body instead (unchanged).

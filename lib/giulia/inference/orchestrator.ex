@@ -320,13 +320,13 @@ defmodule Giulia.Inference.Orchestrator do
     end
 
     # Route to provider
-    context_meta = %{file_count: Store.stats().ast_files}
+    context_meta = %{file_count: Store.stats(state.project_path).ast_files}
     classification = Router.route(prompt, context_meta)
     Logger.debug("Routed to: #{classification.provider}")
 
     # Handle native commands (no LLM)
     if classification.provider == :elixir_native do
-      result = handle_native_command(prompt)
+      result = handle_native_command(prompt, state)
       send_reply(state, result)
       {:noreply, reset_state(state)}
     else
@@ -914,10 +914,10 @@ defmodule Giulia.Inference.Orchestrator do
     case state.last_action do
       {tool_name, params}
       when tool_name in ["patch_function", "write_function", "edit_file", "write_file"] ->
-        module_name = resolve_module_from_params(tool_name, params)
+        module_name = resolve_module_from_params(tool_name, params, state.project_path)
 
         if module_name do
-          case Giulia.Knowledge.Store.centrality(module_name) do
+          case Giulia.Knowledge.Store.centrality(state.project_path, module_name) do
             {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
               top_3 = Enum.take(dependents, 3)
 
@@ -951,7 +951,7 @@ defmodule Giulia.Inference.Orchestrator do
         {tool, params, _}
         when tool in ["read_file", "edit_file", "write_file", "write_function", "patch_function"] ->
           params["file"] || params["path"] || params[:file] || params[:path] ||
-            lookup_module_file(params["module"] || params[:module])
+            lookup_module_file(params["module"] || params[:module], state.project_path)
 
         {_, _, _} ->
           nil
@@ -960,10 +960,10 @@ defmodule Giulia.Inference.Orchestrator do
     task_file || action_file
   end
 
-  defp lookup_module_file(nil), do: nil
+  defp lookup_module_file(nil, _project_path), do: nil
 
-  defp lookup_module_file(module_name) do
-    case Store.find_module(module_name) do
+  defp lookup_module_file(module_name, project_path) do
+    case Store.find_module(project_path, module_name) do
       {:ok, %{file: file_path}} -> file_path
       :not_found -> nil
     end
@@ -1156,7 +1156,7 @@ defmodule Giulia.Inference.Orchestrator do
         {t, params} when t in ["edit_file", "write_file"] ->
           path = params["file"] || params["path"] || params[:file] || params[:path]
 
-          case Store.find_module_by_file(path || "") do
+          case Store.find_module_by_file(state.project_path, path || "") do
             {:ok, %{name: name}} -> name
             _ -> nil
           end
@@ -1170,7 +1170,7 @@ defmodule Giulia.Inference.Orchestrator do
     # Query the graph for test targets
     test_targets =
       if module_name do
-        case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+        case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
           {:ok, %{all_paths: paths}} when paths != [] -> paths
           _ -> []
         end
@@ -1860,7 +1860,7 @@ defmodule Giulia.Inference.Orchestrator do
     approval_id = "approval-#{:erlang.phash2(state.request_id)}-#{state.iteration}"
 
     # HUB ALARM: Check centrality of the target module
-    hub_warning = assess_hub_risk(tool_name, params)
+    hub_warning = assess_hub_risk(tool_name, params, state.project_path)
 
     # Enrich preview with hub warning if applicable
     preview =
@@ -2260,7 +2260,7 @@ defmodule Giulia.Inference.Orchestrator do
     module = params["module"] || params[:module]
 
     # Find the file for this module
-    case Store.find_module(module) do
+    case Store.find_module(state.project_path, module) do
       {:ok, %{file: file_path}} ->
         resolved_path = resolve_tool_path(file_path, state)
 
@@ -2823,7 +2823,7 @@ defmodule Giulia.Inference.Orchestrator do
     Logger.info("RENAME_MFA: Phase 1 — Discovery for #{module}.#{old_name}/#{arity}")
 
     # Get all modules with their file paths from ETS
-    all_modules = Giulia.Context.Store.list_modules()
+    all_modules = Giulia.Context.Store.list_modules(state.project_path)
 
     # Find the source file for the target module
     target_entry = Enum.find(all_modules, fn m -> m.name == module end)
@@ -2856,7 +2856,7 @@ defmodule Giulia.Inference.Orchestrator do
 
       # Get dependents (callers) from Knowledge Graph
       callers =
-        case Giulia.Knowledge.Store.dependents(module) do
+        case Giulia.Knowledge.Store.dependents(state.project_path, module) do
           {:ok, deps} -> deps
           {:error, _} -> []
         end
@@ -2865,7 +2865,7 @@ defmodule Giulia.Inference.Orchestrator do
       # Without this check, renaming Registry.execute/3 would also rename
       # every tool's execute/2 — because they're "implementers" of Registry,
       # but execute/2 is NOT a @callback (only name/0, description/0, parameters/0 are).
-      callbacks = Giulia.Context.Store.list_callbacks(module)
+      callbacks = Giulia.Context.Store.list_callbacks(state.project_path, module)
 
       is_callback =
         Enum.any?(callbacks, fn cb ->
@@ -2875,7 +2875,7 @@ defmodule Giulia.Inference.Orchestrator do
 
       implementers =
         if is_callback do
-          case get_implementers_from_graph(module) do
+          case get_implementers_from_graph(state.project_path, module) do
             {:ok, impls} -> impls
             _ -> []
           end
@@ -2890,7 +2890,7 @@ defmodule Giulia.Inference.Orchestrator do
       implementer_callers =
         if is_callback do
           Enum.flat_map(implementers, fn impl ->
-            case Giulia.Knowledge.Store.dependents(impl) do
+            case Giulia.Knowledge.Store.dependents(state.project_path, impl) do
               {:ok, deps} -> deps
               _ -> []
             end
@@ -3243,9 +3243,9 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   # Get implementers from the Knowledge Graph (modules with :implements edges)
-  defp get_implementers_from_graph(behaviour_module) do
+  defp get_implementers_from_graph(project_path, behaviour_module) do
     try do
-      GenServer.call(Giulia.Knowledge.Store, {:get_implementers, behaviour_module})
+      GenServer.call(Giulia.Knowledge.Store, {:get_implementers, project_path, behaviour_module})
     catch
       :exit, _ -> {:ok, []}
     end
@@ -3448,14 +3448,14 @@ defmodule Giulia.Inference.Orchestrator do
     Process.sleep(500)
 
     # Rebuild knowledge graph with fresh data
-    Giulia.Knowledge.Store.rebuild(Giulia.Context.Store.all_asts())
+    Giulia.Knowledge.Store.rebuild(state.project_path, Giulia.Context.Store.all_asts(state.project_path))
 
     # Check all behaviour-implementer contracts
     if state.request_id do
       Events.broadcast(state.request_id, %{type: :commit_integrity_checking})
     end
 
-    case Giulia.Knowledge.Store.check_all_behaviours() do
+    case Giulia.Knowledge.Store.check_all_behaviours(state.project_path) do
       {:ok, :consistent} ->
         Logger.info("COMMIT: Integrity check passed, running auto-regression")
 
@@ -3520,9 +3520,9 @@ defmodule Giulia.Inference.Orchestrator do
     # Collect test targets for all modified modules
     all_test_targets =
       Enum.flat_map(staged_files, fn path ->
-        case Store.find_module_by_file(path) do
+        case Store.find_module_by_file(project_path, path) do
           {:ok, %{name: module_name}} ->
-            case Giulia.Knowledge.Store.get_test_targets(module_name, project_path) do
+            case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
               {:ok, %{all_paths: paths}} when paths != [] -> paths
               _ -> []
             end
@@ -3684,10 +3684,10 @@ defmodule Giulia.Inference.Orchestrator do
       # Already in transaction mode
       state
     else
-      module_name = resolve_module_from_params(tool_name, params)
+      module_name = resolve_module_from_params(tool_name, params, state.project_path)
 
       if module_name do
-        case Giulia.Knowledge.Store.centrality(module_name) do
+        case Giulia.Knowledge.Store.centrality(state.project_path, module_name) do
           {:ok, %{in_degree: in_degree}} when in_degree >= 3 ->
             Logger.info(
               "TRANSACTION AUTO-ENABLED: #{module_name} is a hub (#{in_degree} dependents)"
@@ -3883,7 +3883,7 @@ defmodule Giulia.Inference.Orchestrator do
     new_code = params["code"] || params[:code] || ""
 
     # Look up the module to find its file
-    case Store.find_module(module) do
+    case Store.find_module(state.project_path, module) do
       {:ok, %{file: file_path}} ->
         resolved = resolve_tool_path(file_path, state)
 
@@ -4029,12 +4029,12 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Assess the risk of modifying a module by checking its centrality in the
   # Knowledge Graph. Returns a warning string for hubs (>3 dependents), nil otherwise.
-  defp assess_hub_risk(tool_name, params)
+  defp assess_hub_risk(tool_name, params, project_path)
        when tool_name in ["edit_file", "patch_function", "write_function", "write_file"] do
-    module_name = resolve_module_from_params(tool_name, params)
+    module_name = resolve_module_from_params(tool_name, params, project_path)
 
     if module_name do
-      case Giulia.Knowledge.Store.centrality(module_name) do
+      case Giulia.Knowledge.Store.centrality(project_path, module_name) do
         {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
           top_dependents = Enum.take(dependents, 3) |> Enum.join(", ")
 
@@ -4057,31 +4057,31 @@ defmodule Giulia.Inference.Orchestrator do
     _, _ -> nil
   end
 
-  defp assess_hub_risk(_tool_name, _params), do: nil
+  defp assess_hub_risk(_tool_name, _params, _project_path), do: nil
 
   # Resolve the module name from tool params (different tools use different param keys)
-  defp resolve_module_from_params("edit_file", params) do
+  defp resolve_module_from_params("edit_file", params, project_path) do
     file = params["file"] || params[:file]
-    module_from_file_path(file)
+    module_from_file_path(file, project_path)
   end
 
-  defp resolve_module_from_params("write_file", params) do
+  defp resolve_module_from_params("write_file", params, project_path) do
     path = params["path"] || params[:path]
-    module_from_file_path(path)
+    module_from_file_path(path, project_path)
   end
 
-  defp resolve_module_from_params(tool_name, params)
+  defp resolve_module_from_params(tool_name, params, _project_path)
        when tool_name in ["patch_function", "write_function"] do
     params["module"] || params[:module]
   end
 
-  defp resolve_module_from_params(_, _), do: nil
+  defp resolve_module_from_params(_, _, _project_path), do: nil
 
   # Best-effort: convert a file path to a module name via the context store
-  defp module_from_file_path(nil), do: nil
+  defp module_from_file_path(nil, _project_path), do: nil
 
-  defp module_from_file_path(path) do
-    case Store.find_module_by_file(path) do
+  defp module_from_file_path(path, project_path) do
+    case Store.find_module_by_file(project_path, path) do
       {:ok, %{name: name}} -> name
       _ -> nil
     end
@@ -4150,7 +4150,7 @@ defmodule Giulia.Inference.Orchestrator do
     minimal = provider_module == Giulia.Provider.LMStudio
 
     # Get project context
-    project_summary = Store.project_summary()
+    project_summary = Store.project_summary(state.project_path)
     cwd = get_working_directory(state)
 
     opts = [
@@ -4203,7 +4203,7 @@ defmodule Giulia.Inference.Orchestrator do
       |> Enum.join("\n")
 
     # Current state
-    modules_count = length(Store.list_modules())
+    modules_count = length(Store.list_modules(state.project_path))
 
     """
     [CONTEXT REMINDER]
@@ -4385,17 +4385,18 @@ defmodule Giulia.Inference.Orchestrator do
   # Native Commands (No LLM)
   # ============================================================================
 
-  defp handle_native_command(prompt) do
+  defp handle_native_command(prompt, state) do
     prompt_lower = String.downcase(prompt)
+    project_path = state.project_path
 
     cond do
       String.contains?(prompt_lower, "module") ->
-        modules = Store.list_modules()
+        modules = Store.list_modules(project_path)
         list = Enum.map_join(modules, "\n", &"- #{&1.name} (#{&1.file})")
         {:ok, "Indexed modules:\n#{list}"}
 
       String.contains?(prompt_lower, "function") ->
-        functions = Store.list_functions()
+        functions = Store.list_functions(project_path)
 
         list =
           functions
@@ -4405,11 +4406,11 @@ defmodule Giulia.Inference.Orchestrator do
         {:ok, "Functions (first 20):\n#{list}"}
 
       String.contains?(prompt_lower, "status") ->
-        stats = Store.stats()
+        stats = Store.stats(project_path)
         {:ok, "Index: #{stats.ast_files} files, #{stats.total_entries} entries"}
 
       String.contains?(prompt_lower, "summary") ->
-        {:ok, Store.project_summary()}
+        {:ok, Store.project_summary(project_path)}
 
       true ->
         {:ok, "Native command not recognized. Ask about modules, functions, status, or summary."}
@@ -4605,7 +4606,8 @@ defmodule Giulia.Inference.Orchestrator do
   defp maybe_inject_readback(tool_name, params, {:error, reason} = original_error, tool_opts)
        when tool_name in ["edit_file", "write_function", "patch_function"] do
     # Extract file path from params
-    file_path = get_file_path_from_params(tool_name, params)
+    project_path = Keyword.get(tool_opts, :project_path)
+    file_path = get_file_path_from_params(tool_name, params, project_path)
 
     if file_path do
       case Registry.execute("read_file", %{"path" => file_path}, tool_opts) do
@@ -4658,19 +4660,19 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   # Extract the file path from tool params
-  defp get_file_path_from_params("edit_file", params) do
+  defp get_file_path_from_params("edit_file", params, _project_path) do
     params["file"] || params[:file]
   end
 
-  defp get_file_path_from_params("write_function", params) do
-    lookup_module_file(params["module"] || params[:module])
+  defp get_file_path_from_params("write_function", params, project_path) do
+    lookup_module_file(params["module"] || params[:module], project_path)
   end
 
-  defp get_file_path_from_params("patch_function", params) do
-    lookup_module_file(params["module"] || params[:module])
+  defp get_file_path_from_params("patch_function", params, project_path) do
+    lookup_module_file(params["module"] || params[:module], project_path)
   end
 
-  defp get_file_path_from_params(_tool, _params), do: nil
+  defp get_file_path_from_params(_tool, _params, _project_path), do: nil
 
   # ============================================================================
   # Goal Tracker — Premature Completion Detection

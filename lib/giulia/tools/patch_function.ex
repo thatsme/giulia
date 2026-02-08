@@ -117,7 +117,8 @@ defmodule Giulia.Tools.PatchFunction do
 
     try do
       # Step 1: Find the module file via index
-      case Store.find_module(module_name) do
+      project_path = opts[:project_path]
+      case Store.find_module(project_path, module_name) do
         {:ok, %{file: file_path}} ->
           sandbox = get_sandbox(opts)
 

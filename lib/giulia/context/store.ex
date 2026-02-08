@@ -4,6 +4,9 @@ defmodule Giulia.Context.Store do
 
   Holds the codebase map, AST metadata, and agent context.
   Survives terminal closure as long as the BEAM node runs.
+
+  All AST data is namespaced by project_path to support multi-project isolation.
+  ETS keys: {:ast, project_path, file_path}
   """
   use GenServer
 
@@ -16,29 +19,29 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Store a file's AST metadata.
+  Store a file's AST metadata, scoped to a project.
   """
-  def put_ast(path, ast_data) do
-    :ets.insert(@table, {{:ast, path}, ast_data})
+  def put_ast(project_path, path, ast_data) do
+    :ets.insert(@table, {{:ast, project_path, path}, ast_data})
     :ok
   end
 
   @doc """
-  Get a file's AST metadata.
+  Get a file's AST metadata, scoped to a project.
   """
-  def get_ast(path) do
-    case :ets.lookup(@table, {:ast, path}) do
-      [{{:ast, ^path}, data}] -> {:ok, data}
+  def get_ast(project_path, path) do
+    case :ets.lookup(@table, {:ast, project_path, path}) do
+      [{{:ast, ^project_path, ^path}, data}] -> {:ok, data}
       [] -> :error
     end
   end
 
   @doc """
-  Get all indexed files with their AST metadata.
+  Get all indexed files with their AST metadata for a project.
   """
-  def all_asts do
-    :ets.match_object(@table, {{:ast, :_}, :_})
-    |> Enum.map(fn {{:ast, path}, data} -> {path, data} end)
+  def all_asts(project_path) do
+    :ets.match_object(@table, {{:ast, project_path, :_}, :_})
+    |> Enum.map(fn {{:ast, _proj, path}, data} -> {path, data} end)
     |> Map.new()
   end
 
@@ -69,19 +72,19 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Clear all AST data (for re-indexing).
+  Clear all AST data for a specific project (for re-indexing).
   """
-  def clear_asts do
-    :ets.match_delete(@table, {{:ast, :_}, :_})
+  def clear_asts(project_path) do
+    :ets.match_delete(@table, {{:ast, project_path, :_}, :_})
     :ok
   end
 
   @doc """
-  Get stats about the store.
+  Get stats about the store for a specific project.
   """
-  def stats do
+  def stats(project_path) do
     ast_count =
-      :ets.match(@table, {{:ast, :_}, :_})
+      :ets.match_object(@table, {{:ast, project_path, :_}, :_})
       |> length()
 
     %{
@@ -91,13 +94,12 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Debug function to inspect what's actually in ETS.
-  Call this to see the raw data structure.
+  Debug function to inspect what's actually in ETS for a project.
   """
-  def debug_inspect do
+  def debug_inspect(project_path) do
     require Logger
 
-    all = all_asts()
+    all = all_asts(project_path)
     Logger.info("=== ETS DEBUG ===")
     Logger.info("Total AST entries: #{map_size(all)}")
 
@@ -135,11 +137,9 @@ defmodule Giulia.Context.Store do
   @doc """
   List all modules in the indexed project.
   Returns a list of module names with their file paths.
-
-  This is how Giulia answers "What modules do I have?" without reading files.
   """
-  def list_modules do
-    all_asts()
+  def list_modules(project_path) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       Enum.map(modules, fn mod ->
@@ -158,12 +158,12 @@ defmodule Giulia.Context.Store do
 
   ## Examples
 
-      list_functions()                           # All functions
-      list_functions("Giulia.StructuredOutput")  # Single module
-      list_functions(nil)                        # Same as no arg
+      list_functions(project_path)                           # All functions
+      list_functions(project_path, "Giulia.StructuredOutput")  # Single module
+      list_functions(project_path, nil)                        # Same as no filter
   """
-  def list_functions(module_filter \\ nil) do
-    all_asts()
+  def list_functions(project_path, module_filter \\ nil) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       functions = ast_data[:functions] || []
       modules = ast_data[:modules] || []
@@ -189,11 +189,11 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Find a specific module by name.
+  Find a specific module by name within a project.
   Returns {:ok, %{file: path, ast_data: data}} or :not_found.
   """
-  def find_module(module_name) do
-    all_asts()
+  def find_module(project_path, module_name) do
+    all_asts(project_path)
     |> Enum.find_value(:not_found, fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       if Enum.any?(modules, &(&1.name == module_name)) do
@@ -205,14 +205,14 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Find the primary module defined in a file path.
+  Find the primary module defined in a file path within a project.
   Returns {:ok, %{name: module_name}} or :not_found.
   """
-  def find_module_by_file(file_path) do
+  def find_module_by_file(project_path, file_path) do
     # Normalize path separators for matching
     normalized = String.replace(file_path, "\\", "/")
 
-    all_asts()
+    all_asts(project_path)
     |> Enum.find_value(:not_found, fn {path, ast_data} ->
       path_normalized = String.replace(path, "\\", "/")
       if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
@@ -228,11 +228,11 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
-  Find a specific function by name (optionally with arity).
+  Find a specific function by name (optionally with arity) within a project.
   Returns a list of matches across all modules.
   """
-  def find_function(function_name, arity \\ nil) do
-    list_functions()
+  def find_function(project_path, function_name, arity \\ nil) do
+    list_functions(project_path)
     |> Enum.filter(fn func ->
       name_match = to_string(func.name) == to_string(function_name)
       arity_match = arity == nil or func.arity == arity
@@ -243,8 +243,8 @@ defmodule Giulia.Context.Store do
   @doc """
   List all types defined in the project.
   """
-  def list_types(module_filter \\ nil) do
-    all_asts()
+  def list_types(project_path, module_filter \\ nil) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       types = ast_data[:types] || []
       modules = ast_data[:modules] || []
@@ -263,8 +263,8 @@ defmodule Giulia.Context.Store do
   @doc """
   List all specs defined in the project.
   """
-  def list_specs(module_filter \\ nil) do
-    all_asts()
+  def list_specs(project_path, module_filter \\ nil) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       specs = ast_data[:specs] || []
       modules = ast_data[:modules] || []
@@ -283,8 +283,8 @@ defmodule Giulia.Context.Store do
   @doc """
   Get spec for a specific function.
   """
-  def get_spec(module_name, function_name, arity) do
-    list_specs(module_name)
+  def get_spec(project_path, module_name, function_name, arity) do
+    list_specs(project_path, module_name)
     |> Enum.find(fn spec ->
       to_string(spec.function) == to_string(function_name) and spec.arity == arity
     end)
@@ -293,8 +293,8 @@ defmodule Giulia.Context.Store do
   @doc """
   List all callbacks (behaviour definitions) in the project.
   """
-  def list_callbacks(module_filter \\ nil) do
-    all_asts()
+  def list_callbacks(project_path, module_filter \\ nil) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       callbacks = ast_data[:callbacks] || []
       modules = ast_data[:modules] || []
@@ -313,8 +313,8 @@ defmodule Giulia.Context.Store do
   @doc """
   List all structs defined in the project.
   """
-  def list_structs do
-    all_asts()
+  def list_structs(project_path) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       structs = ast_data[:structs] || []
       Enum.map(structs, fn struct ->
@@ -326,16 +326,16 @@ defmodule Giulia.Context.Store do
   @doc """
   Get struct fields for a specific module.
   """
-  def get_struct(module_name) do
-    list_structs()
+  def get_struct(project_path, module_name) do
+    list_structs(project_path)
     |> Enum.find(&(&1.module == module_name))
   end
 
   @doc """
   List all @doc entries in the project.
   """
-  def list_docs(module_filter \\ nil) do
-    all_asts()
+  def list_docs(project_path, module_filter \\ nil) do
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       docs = ast_data[:docs] || []
       modules = ast_data[:modules] || []
@@ -354,8 +354,8 @@ defmodule Giulia.Context.Store do
   @doc """
   Get @doc for a specific function.
   """
-  def get_function_doc(module_name, function_name, arity) do
-    list_docs(module_name)
+  def get_function_doc(project_path, module_name, function_name, arity) do
+    list_docs(project_path, module_name)
     |> Enum.find(fn doc ->
       to_string(doc.function) == to_string(function_name) and doc.arity == arity
     end)
@@ -364,8 +364,8 @@ defmodule Giulia.Context.Store do
   @doc """
   Get @moduledoc for a specific module.
   """
-  def get_moduledoc(module_name) do
-    case find_module(module_name) do
+  def get_moduledoc(project_path, module_name) do
+    case find_module(project_path, module_name) do
       {:ok, %{ast_data: ast_data}} ->
         modules = ast_data[:modules] || []
         case Enum.find(modules, &(&1.name == module_name)) do
@@ -380,16 +380,15 @@ defmodule Giulia.Context.Store do
 
   @doc """
   Generate a compact project summary for LLM context injection.
-  This is the "distilled metadata" strategy for small models.
   """
-  def project_summary do
-    modules = list_modules()
-    functions = list_functions()
-    types = list_types()
-    specs = list_specs()
-    structs = list_structs()
-    callbacks = list_callbacks()
-    stats = stats()
+  def project_summary(project_path) do
+    modules = list_modules(project_path)
+    functions = list_functions(project_path)
+    types = list_types(project_path)
+    specs = list_specs(project_path)
+    structs = list_structs(project_path)
+    callbacks = list_callbacks(project_path)
+    stats = stats(project_path)
 
     public_functions =
       functions
@@ -423,17 +422,17 @@ defmodule Giulia.Context.Store do
   @doc """
   Generate a detailed summary with types and structs for a specific module.
   """
-  def module_details(module_name) do
-    case find_module(module_name) do
+  def module_details(project_path, module_name) do
+    case find_module(project_path, module_name) do
       {:ok, %{file: file, ast_data: ast_data}} ->
         modules = ast_data[:modules] || []
         mod = Enum.find(modules, &(&1.name == module_name))
 
-        functions = list_functions(module_name)
-        types = list_types(module_name)
-        specs = list_specs(module_name)
-        callbacks = list_callbacks(module_name)
-        struct_info = get_struct(module_name)
+        functions = list_functions(project_path, module_name)
+        types = list_types(project_path, module_name)
+        specs = list_specs(project_path, module_name)
+        callbacks = list_callbacks(project_path, module_name)
+        struct_info = get_struct(project_path, module_name)
 
         public_funcs = Enum.filter(functions, &(&1.type == :def))
         private_funcs = Enum.filter(functions, &(&1.type == :defp))
