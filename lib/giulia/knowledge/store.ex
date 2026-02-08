@@ -1244,21 +1244,23 @@ defmodule Giulia.Knowledge.Store do
         max_coupling = Map.get(coupling_map, mod, 0)
 
         # ===== COMPOSITE SCORE =====
-        # Centrality: high fan-in = many things break if you change this (weight: 3)
-        # Complexity: hard to reason about (weight: 3)
-        # Fan-out: module knows too much (weight: 2)
-        # Max coupling: tightly bound to another module (weight: 2)
-        # API surface: over-exposed public interface (weight: 1)
-        # Function count: raw size (weight: 1)
+        # Base risk: internal complexity + coupling exposure
+        #   complexity (weight 2), fan_out (weight 2), max_coupling (weight 2),
+        #   api_penalty (weight 1), total_funcs (weight 1)
+        # Multiplier: centrality (fan_in) — how many things break if you touch this
+        #   fan_in 0 → ×1, fan_in 5 → ×3.5, fan_in 13 → ×7.5, fan_in 25 → ×13.5
         api_penalty = trunc(Float.round(api_ratio * total_funcs, 0))
 
-        score =
-          (centrality * 3) +
-          (complexity * 3) +
+        base =
+          (complexity * 2) +
           (fan_out * 2) +
           (max_coupling * 2) +
           api_penalty +
           total_funcs
+
+        multiplier = 1 + (centrality / 2)
+
+        score = trunc(base * multiplier)
 
         %{
           module: mod,
