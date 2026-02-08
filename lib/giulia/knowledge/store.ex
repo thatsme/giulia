@@ -140,6 +140,39 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @doc """
+  Fan-in/fan-out analysis — modules with too many incoming or outgoing dependencies.
+  Returns {:ok, %{modules: [%{module, fan_in, fan_out, total, file}], count: N}}.
+  """
+  def find_fan_in_out do
+    GenServer.call(__MODULE__, :find_fan_in_out, 30_000)
+  end
+
+  @doc """
+  Coupling score — how many functions in A call functions in B, quantified per pair.
+  Returns {:ok, %{pairs: [%{caller, callee, call_count, functions}], count: N}}.
+  """
+  def find_coupling do
+    GenServer.call(__MODULE__, :find_coupling, 30_000)
+  end
+
+  @doc """
+  API surface analysis — ratio of public to private functions per module.
+  Returns {:ok, %{modules: [%{module, public, private, total, ratio, file}], count: N}}.
+  """
+  def find_api_surface do
+    GenServer.call(__MODULE__, :find_api_surface, 30_000)
+  end
+
+  @doc """
+  Change risk score — composite of centrality, complexity, fan-in, fan-out,
+  coupling, and API surface. Single prioritized refactoring list.
+  Returns {:ok, %{modules: [%{module, score, breakdown, file}], count: N}}.
+  """
+  def change_risk_score do
+    GenServer.call(__MODULE__, :change_risk_score, 30_000)
+  end
+
+  @doc """
   Get graph statistics.
   """
   def stats do
@@ -258,6 +291,30 @@ defmodule Giulia.Knowledge.Store do
   @impl true
   def handle_call(:find_orphan_specs, _from, state) do
     result = compute_orphan_specs()
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_fan_in_out, _from, %{graph: graph} = state) do
+    result = compute_fan_in_out(graph)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_coupling, _from, %{graph: graph} = state) do
+    result = compute_coupling(graph)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:find_api_surface, _from, state) do
+    result = compute_api_surface()
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:change_risk_score, _from, %{graph: graph} = state) do
+    result = compute_change_risk(graph)
     {:reply, result, state}
   end
 
@@ -936,6 +993,311 @@ defmodule Giulia.Knowledge.Store do
       {^mod, :local, ^name, _any_arity} -> true
       _ -> false
     end)
+  end
+
+  # ============================================================================
+  # Fan-in / Fan-out Analysis
+  # ============================================================================
+
+  defp compute_fan_in_out(graph) do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    # Build module -> file lookup
+    module_files =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+      end)
+      |> Map.new()
+
+    # Get all module vertices
+    module_vertices =
+      Graph.vertices(graph)
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+
+    modules =
+      module_vertices
+      |> Enum.map(fn v ->
+        fan_in = length(Graph.in_neighbors(graph, v))
+        fan_out = length(Graph.out_neighbors(graph, v))
+
+        %{
+          module: v,
+          fan_in: fan_in,
+          fan_out: fan_out,
+          total: fan_in + fan_out,
+          file: Map.get(module_files, v, "unknown")
+        }
+      end)
+      |> Enum.sort_by(fn m -> -(m.total) end)
+
+    {:ok, %{modules: modules, count: length(modules)}}
+  end
+
+  # ============================================================================
+  # Coupling Score (Function-level)
+  # ============================================================================
+
+  defp compute_coupling(_graph) do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    # Walk all source files and collect {caller_module, callee_module, function_name} tuples
+    call_pairs =
+      Enum.reduce(all_asts, [], fn {path, data}, acc ->
+        modules = data[:modules] || []
+        caller_module = List.first(modules)[:name]
+
+        if caller_module do
+          source = case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              {_ast, calls} =
+                Macro.prewalk(ast, acc, fn
+                  # Remote call: Module.func(args)
+                  {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
+                  when is_atom(func_name) and is_list(args) ->
+                    callee = Enum.map_join(parts, ".", &to_string/1)
+                    if callee != caller_module do
+                      {node, [{caller_module, callee, to_string(func_name)} | list]}
+                    else
+                      {node, list}
+                    end
+
+                  node, list ->
+                    {node, list}
+                end)
+
+              calls
+
+            _ ->
+              acc
+          end
+        else
+          acc
+        end
+      end)
+
+    # Group by {caller, callee} pair, count calls and distinct functions
+    pairs =
+      call_pairs
+      |> Enum.group_by(fn {caller, callee, _func} -> {caller, callee} end)
+      |> Enum.map(fn {{caller, callee}, calls} ->
+        functions = calls |> Enum.map(fn {_, _, f} -> f end) |> Enum.uniq() |> Enum.sort()
+
+        %{
+          caller: caller,
+          callee: callee,
+          call_count: length(calls),
+          functions: functions,
+          distinct_functions: length(functions)
+        }
+      end)
+      |> Enum.sort_by(fn p -> -p.call_count end)
+      |> Enum.take(50)
+
+    {:ok, %{pairs: pairs, count: length(pairs)}}
+  end
+
+  # ============================================================================
+  # API Surface Analysis
+  # ============================================================================
+
+  defp compute_api_surface do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    modules =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        modules = data[:modules] || []
+        functions = data[:functions] || []
+
+        case modules do
+          [mod | _] ->
+            public = Enum.count(functions, fn f -> f.type == :def end)
+            private = Enum.count(functions, fn f -> f.type == :defp end)
+            total = public + private
+            ratio = if total > 0, do: Float.round(public / total, 2), else: 0.0
+
+            [%{
+              module: mod.name,
+              public: public,
+              private: private,
+              total: total,
+              ratio: ratio,
+              file: path
+            }]
+
+          _ ->
+            []
+        end
+      end)
+      |> Enum.sort_by(fn m -> -m.ratio end)
+
+    {:ok, %{modules: modules, count: length(modules)}}
+  end
+
+  # ============================================================================
+  # Change Risk Score (The Killer One)
+  # ============================================================================
+
+  defp compute_change_risk(graph) do
+    all_asts = Giulia.Context.Store.all_asts()
+
+    # Pre-compute coupling map: module -> max coupling to any single other module
+    coupling_map = build_coupling_map(all_asts)
+
+    # Build module -> file lookup
+    module_files =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+      end)
+      |> Map.new()
+
+    # Get module vertices
+    module_vertices =
+      Graph.vertices(graph)
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+
+    modules =
+      module_vertices
+      |> Enum.map(fn mod ->
+        # Fan-in / Fan-out
+        fan_in = length(Graph.in_neighbors(graph, mod))
+        fan_out = length(Graph.out_neighbors(graph, mod))
+
+        # Centrality (already have)
+        centrality = fan_in
+
+        # Complexity from AST
+        path = Map.get(module_files, mod)
+        complexity =
+          if path do
+            case File.read(path) do
+              {:ok, source} ->
+                case Sourceror.parse_string(source) do
+                  {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
+                  _ -> 0
+                end
+              _ -> 0
+            end
+          else
+            0
+          end
+
+        # Function count + API surface
+        {public, private} =
+          case path do
+            nil -> {0, 0}
+            _ ->
+              all_asts_data = Map.get(all_asts |> Map.new(), path, %{})
+              functions = all_asts_data[:functions] || []
+              pub = Enum.count(functions, fn f -> f.type == :def end)
+              priv = Enum.count(functions, fn f -> f.type == :defp end)
+              {pub, priv}
+          end
+
+        total_funcs = public + private
+        api_ratio = if total_funcs > 0, do: public / total_funcs, else: 0.0
+
+        # Max coupling to any single module
+        max_coupling = Map.get(coupling_map, mod, 0)
+
+        # ===== COMPOSITE SCORE =====
+        # Centrality: high fan-in = many things break if you change this (weight: 3)
+        # Complexity: hard to reason about (weight: 3)
+        # Fan-out: module knows too much (weight: 2)
+        # Max coupling: tightly bound to another module (weight: 2)
+        # API surface: over-exposed public interface (weight: 1)
+        # Function count: raw size (weight: 1)
+        api_penalty = trunc(Float.round(api_ratio * total_funcs, 0))
+
+        score =
+          (centrality * 3) +
+          (complexity * 3) +
+          (fan_out * 2) +
+          (max_coupling * 2) +
+          api_penalty +
+          total_funcs
+
+        %{
+          module: mod,
+          score: score,
+          breakdown: %{
+            centrality: centrality,
+            complexity: complexity,
+            fan_in: fan_in,
+            fan_out: fan_out,
+            max_coupling: max_coupling,
+            public_functions: public,
+            private_functions: private,
+            api_ratio: Float.round(api_ratio, 2)
+          },
+          file: path || "unknown"
+        }
+      end)
+      |> Enum.sort_by(fn m -> -m.score end)
+      |> Enum.take(20)
+
+    {:ok, %{modules: modules, count: length(modules)}}
+  end
+
+  # Build a map of module -> max coupling count to any single other module
+  defp build_coupling_map(all_asts) do
+    # Collect all remote calls: {caller_module, callee_module}
+    call_pairs =
+      Enum.reduce(all_asts, [], fn {path, data}, acc ->
+        modules = data[:modules] || []
+        caller = List.first(modules)[:name]
+
+        if caller do
+          source = case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              {_ast, calls} =
+                Macro.prewalk(ast, acc, fn
+                  {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
+                  when is_atom(func_name) and is_list(args) ->
+                    callee = Enum.map_join(parts, ".", &to_string/1)
+                    if callee != caller do
+                      {node, [{caller, callee} | list]}
+                    else
+                      {node, list}
+                    end
+
+                  node, list ->
+                    {node, list}
+                end)
+
+              calls
+            _ -> acc
+          end
+        else
+          acc
+        end
+      end)
+
+    # For each caller module, find the max call count to any single callee
+    call_pairs
+    |> Enum.group_by(fn {caller, _callee} -> caller end)
+    |> Enum.map(fn {caller, pairs} ->
+      max_to_one =
+        pairs
+        |> Enum.frequencies_by(fn {_caller, callee} -> callee end)
+        |> Map.values()
+        |> Enum.max(fn -> 0 end)
+
+      {caller, max_to_one}
+    end)
+    |> Map.new()
   end
 
   # ============================================================================
