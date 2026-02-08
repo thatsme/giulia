@@ -426,6 +426,38 @@ defmodule Giulia.Daemon.Endpoint do
     end
   end
 
+  # Fan-in/fan-out analysis — dependency direction imbalance
+  get "/api/knowledge/fan_in_out" do
+    case Giulia.Knowledge.Store.find_fan_in_out() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # Coupling score — function-level dependency strength between module pairs
+  get "/api/knowledge/coupling" do
+    case Giulia.Knowledge.Store.find_coupling() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # API surface analysis — public vs private function ratio per module
+  get "/api/knowledge/api_surface" do
+    case Giulia.Knowledge.Store.find_api_surface() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
+  # Change risk score — composite refactoring priority
+  get "/api/knowledge/change_risk" do
+    case Giulia.Knowledge.Store.change_risk_score() do
+      {:ok, result} ->
+        send_json(conn, 200, result)
+    end
+  end
+
   # Shortest path between two modules
   get "/api/knowledge/path" do
     from = conn.query_params["from"]

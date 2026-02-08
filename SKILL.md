@@ -47,6 +47,10 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Circular dependencies | `GET /api/knowledge/cycles` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
 | God modules | `GET /api/knowledge/god_modules` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
 | Orphan specs | `GET /api/knowledge/orphan_specs` | @spec declarations where no matching function definition exists (name/arity mismatch) |
+| Fan-in / fan-out | `GET /api/knowledge/fan_in_out` | Modules ranked by incoming + outgoing dependency count — high fan-out = knows too much, high fan-in = too many dependents |
+| Coupling score | `GET /api/knowledge/coupling` | Top 50 module pairs ranked by how many function calls flow between them — tight coupling quantified |
+| API surface | `GET /api/knowledge/api_surface` | Public vs private function ratio per module — high ratio = poor encapsulation |
+| Change risk | `GET /api/knowledge/change_risk` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
 
 ### 3. Modifying Code
 
