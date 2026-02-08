@@ -308,19 +308,29 @@ defmodule Giulia.Prompt.Builder do
 
     Code goes in ```elixir block AFTER </action>. NOT inside JSON.
 
-    RULES: lookup_function for known functions. read_file for files. patch_function for code changes. edit_file for small text edits (rename, imports, config). bulk_replace for renaming across many files. commit_changes after multi-file edits. run_tests to verify. respond when done.
+    RULES: lookup_function for known functions. read_file for files. patch_function for code changes. edit_file for small text edits (imports, config). rename_mfa for ANY function rename. bulk_replace for text string replacements only. commit_changes after multi-file edits. run_tests to verify. respond when done.
 
-    WORKFLOW for multi-file refactoring:
+    WORKFLOW for RENAMING a function:
     1. get_impact_map to find all dependents of the target module
-    2. bulk_replace with pattern, replacement, and the file_list from the impact map
-    3. commit_changes to verify all edits compile
+    2. rename_mfa with module, old_name, new_name, arity — it handles EVERYTHING automatically (def/defp, @callback, remote calls, local calls, dynamic dispatch, all implementers and callers)
+    3. commit_changes is called automatically after rename_mfa
     4. respond with summary
 
-    rename_mfa example — rename a function across the entire codebase using AST analysis:
+    WORKFLOW for TEXT replacements (imports, module references, config):
+    1. get_impact_map to find affected files
+    2. bulk_replace with pattern, replacement, and file_list
+    3. commit_changes to verify
+    4. respond with summary
+
+    CRITICAL: rename_mfa vs bulk_replace:
+    - rename_mfa = AST-aware, finds ALL function definitions, calls, callbacks. Use for renaming functions.
+    - bulk_replace = string matching only, cannot find function definitions. Use for text patterns only.
+    - NEVER use bulk_replace to rename a function. It will miss def/defp definitions and cause compile errors.
+
+    rename_mfa example:
     <action>
     {"tool": "rename_mfa", "parameters": {"module": "Giulia.Tools.Registry", "old_name": "execute", "new_name": "dispatch", "arity": 3}}
     </action>
-    NOTE: For ANY function rename, ALWAYS use rename_mfa instead of bulk_replace or manual edits. It uses the Knowledge Graph and Sourceror AST to find all definitions, callbacks, and call sites automatically.
 
     WARNING: If you used get_impact_map and found N dependents, you MUST modify all of them before responding. The system tracks your progress and will block respond if you skip files.
 
@@ -418,19 +428,27 @@ defmodule Giulia.Prompt.Builder do
     - SPECIFIC FUNCTION by name: "lookup_function" (fast, uses index)
     - Whole FILE: "read_file"
     - PATTERNS in code: "search_code"
-    - RENAMING function calls across files: "bulk_replace" with pattern/replacement/file_list — ONE call replaces ALL files
+    - RENAMING A FUNCTION: "rename_mfa" — AST-aware, handles ALL definitions, callbacks, calls, implementers automatically
     - REPLACING a function BODY (rewriting logic): "patch_function" — code in ```elixir block
     - SMALL TEXT EDITS (imports, attrs): "edit_file" (exact old_text match)
+    - TEXT PATTERNS across files: "bulk_replace" — string find-and-replace only, NOT for function renames
     - TESTS: "run_tests" after code changes
     - CHANGE IMPACT: "get_impact_map" before modifying shared modules
     - MULTI-FILE EDITS: call "commit_changes" after all edits to verify atomically
 
-    ## Workflow for Multi-File Refactoring (IMPORTANT)
-    1. get_impact_map to identify ALL dependents of the module you're changing
-    2. bulk_replace with the pattern, replacement, and file_list from the impact map
-    3. commit_changes — atomically compiles and tests everything
-    4. If commit fails: read the error, fix the issue, commit_changes again
+    ## Workflow for Renaming a Function (IMPORTANT)
+    1. get_impact_map to identify ALL dependents of the module
+    2. rename_mfa with module, old_name, new_name, arity — handles everything
+    3. commit_changes is called automatically
+    4. If commit fails: read the error, fix the issue, try rename_mfa again
     5. respond with summary only after green build
+
+    ## Workflow for Text Replacements (imports, config, module references)
+    1. get_impact_map to identify affected files
+    2. bulk_replace with pattern, replacement, and file_list
+    3. commit_changes to verify
+    4. respond with summary
+
     WARNING: The system tracks how many dependents you found vs how many you modified. If you skip files, respond will be BLOCKED.
 
     #{build_transaction_section(opts[:transaction_mode], opts[:staged_files])}
