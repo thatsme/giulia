@@ -316,10 +316,11 @@ defmodule Giulia.Prompt.Builder do
     3. commit_changes to verify all edits compile
     4. respond with summary
 
-    bulk_replace example — rename a function call across 22 files:
+    rename_mfa example — rename a function across the entire codebase using AST analysis:
     <action>
-    {"tool": "bulk_replace", "parameters": {"pattern": "Registry.execute(", "replacement": "Registry.dispatch(", "file_list": ["lib/giulia/tools/edit_file.ex", "lib/giulia/tools/read_file.ex", "..."]}}
+    {"tool": "rename_mfa", "parameters": {"module": "Giulia.Tools.Registry", "old_name": "execute", "new_name": "dispatch", "arity": 3}}
     </action>
+    NOTE: For ANY function rename, ALWAYS use rename_mfa instead of bulk_replace or manual edits. It uses the Knowledge Graph and Sourceror AST to find all definitions, callbacks, and call sites automatically.
 
     WARNING: If you used get_impact_map and found N dependents, you MUST modify all of them before responding. The system tracks your progress and will block respond if you skip files.
 
