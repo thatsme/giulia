@@ -58,6 +58,7 @@ defmodule Giulia.Tools.SearchCode do
     |> validate_required([:pattern])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{pattern: pattern, file_pattern: file_pattern, case_sensitive: case_sensitive, max_results: max_results}, opts) do

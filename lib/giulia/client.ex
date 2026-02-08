@@ -724,6 +724,27 @@ defmodule Giulia.Client do
     render_file_list(event["files"], "  \e[90m")
   end
 
+  defp render_event_line(%{"type" => "commit_compiling"}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[36m│ COMMIT: Compiling...\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_compile_passed"} = event) do
+    suffix = if event["warnings"], do: " (with warnings)", else: ""
+    IO.puts("\e[90m#{ts()}\e[0m \e[32m│ COMMIT: Compile passed#{suffix}\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_integrity_checking"}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[36m│ COMMIT: Integrity check...\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_integrity_passed"}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[32m│ COMMIT: Integrity check passed\e[0m")
+  end
+
+  defp render_event_line(%{"type" => "commit_testing", "test_count" => count}) do
+    IO.puts("\e[90m#{ts()}\e[0m \e[36m│ COMMIT: Running #{count} regression test(s)...\e[0m")
+  end
+
   defp render_event_line(%{"type" => "commit_success", "file_count" => count} = event) do
     IO.puts("\e[90m#{ts()}\e[0m \e[1;32m│ COMMIT SUCCESS: #{count} file(s) verified and written\e[0m")
     render_file_list(event["files"], "  \e[32m")

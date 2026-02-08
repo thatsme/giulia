@@ -52,6 +52,7 @@ defmodule Giulia.Tools.ListFiles do
     |> cast(params, [:path, :pattern, :recursive])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{path: path, pattern: pattern, recursive: recursive}, opts) do

@@ -38,6 +38,7 @@ defmodule Giulia.Tools.CommitChanges do
   end
 
   # This should never be called directly — Orchestrator intercepts it
+  @impl true
   def execute(%{"message" => message}, _opts), do: {:ok, "commit_changes intercepted: #{message}"}
   def execute(_params, _opts), do: {:ok, "commit_changes intercepted"}
 end

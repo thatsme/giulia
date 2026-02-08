@@ -66,6 +66,7 @@ defmodule Giulia.Tools.LookupFunction do
     |> validate_required([:function_name])
   end
 
+  @impl true
   def execute(params, _opts \\ [])
 
   def execute(%__MODULE__{} = params, _opts) do

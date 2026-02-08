@@ -64,6 +64,7 @@ defmodule Giulia.Tools.GetContext do
     |> validate_number(:context_lines, greater_than: 0, less_than: 50)
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{file: file, line: line, context_lines: ctx_lines, smart: smart}, opts) do

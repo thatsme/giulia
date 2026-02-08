@@ -67,6 +67,7 @@ defmodule Giulia.Tools.CycleCheck do
     |> validate_inclusion(:label, ["compile-connected", "compile", "all"])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{label: label, fail_above: fail_above}, opts) do

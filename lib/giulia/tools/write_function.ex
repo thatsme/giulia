@@ -71,6 +71,7 @@ defmodule Giulia.Tools.WriteFunction do
     |> validate_required([:module, :function_name, :arity, :code])
   end
 
+  @impl true
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{} = params, opts) do

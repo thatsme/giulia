@@ -57,6 +57,7 @@ defmodule Giulia.Tools.BulkReplace do
   end
 
   # This should never be called directly — Orchestrator intercepts it
+  @impl true
   def execute(%{"pattern" => p, "replacement" => r, "file_list" => _files}, _opts) do
     {:ok, "bulk_replace intercepted: '#{p}' → '#{r}'"}
   end
