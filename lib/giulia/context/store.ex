@@ -66,6 +66,35 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  Store embedding vectors for a project.
+  Type: :module (Architectural) or :function (Surgical)
+  Entries: list of %{id: key, vector: binary, metadata: map}
+  """
+  def put_embeddings(project_path, type, entries) when type in [:module, :function] do
+    :ets.insert(@table, {{:embedding, type, project_path}, entries})
+    :ok
+  end
+
+  @doc """
+  Get embedding vectors for a project by type.
+  """
+  def get_embeddings(project_path, type) when type in [:module, :function] do
+    case :ets.lookup(@table, {:embedding, type, project_path}) do
+      [{{:embedding, ^type, ^project_path}, entries}] -> {:ok, entries}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Clear all embeddings for a project.
+  """
+  def clear_embeddings(project_path) do
+    :ets.delete(@table, {:embedding, :module, project_path})
+    :ets.delete(@table, {:embedding, :function, project_path})
+    :ok
+  end
+
+  @doc """
   Store arbitrary key-value data.
   """
   def put(key, value) do

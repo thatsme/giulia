@@ -29,6 +29,8 @@ services:
       - MIX_ENV=dev
       - MIX_BUILD_PATH=/tmp/giulia_build
       - MIX_DEPS_PATH=/tmp/giulia_deps
+      # EXLA backend for Nx (semantic search)
+      - XLA_TARGET=cpu
       # Path mapping: The Translation Shim
       # GIULIA_HOST_PROJECTS_PATH = Windows path prefix (e.g., C:/Development/GitHub)
       # Maps to /projects inside container
@@ -46,6 +48,7 @@ services:
       - giulia_data:/data
       - giulia_build:/tmp/giulia_build
       - giulia_deps:/tmp/giulia_deps
+      - giulia_models:/root/.cache
       - ${GIULIA_PROJECTS_PATH:-./test_projects}:/projects:rw
       - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
 
@@ -56,9 +59,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
         reservations:
-          memory: 512M
+          memory: 1G
 
     logging:
       driver: "json-file"
@@ -73,3 +76,5 @@ volumes:
     name: giulia_build
   giulia_deps:
     name: giulia_deps
+  giulia_models:
+    name: giulia_models

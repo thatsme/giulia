@@ -4162,7 +4162,14 @@ defmodule Giulia.Inference.Orchestrator do
       staged_files: Map.keys(state.staging_buffer)
     ]
 
-    Builder.build_messages(prompt, opts)
+    # Layer 1+2: Automatic Surgical Briefing
+    briefing_opt =
+      case Giulia.Intelligence.SurgicalBriefing.build(prompt, state.project_path) do
+        {:ok, briefing} -> [surgical_briefing: briefing]
+        :skip -> []
+      end
+
+    Builder.build_messages(prompt, opts ++ briefing_opt)
   end
 
   defp inject_distilled_context(messages, state) do

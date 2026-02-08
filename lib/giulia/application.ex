@@ -72,6 +72,12 @@ defmodule Giulia.Application do
       # Knowledge graph (depends on Store + Indexer)
       Giulia.Knowledge.Store,
 
+      # Embedding model serving (optional — returns :ignore if model fails to load)
+      Giulia.Intelligence.EmbeddingServing,
+
+      # Semantic search index (depends on Store + EmbeddingServing)
+      Giulia.Intelligence.SemanticIndex,
+
       # Dynamic supervisor for provider connections
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
 

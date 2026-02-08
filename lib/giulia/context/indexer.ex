@@ -187,6 +187,9 @@ defmodule Giulia.Context.Indexer do
     # Rebuild knowledge graph from fresh AST data
     Giulia.Knowledge.Store.rebuild(project_path)
 
+    # Trigger semantic embedding (async, no-op if model unavailable)
+    Giulia.Intelligence.SemanticIndex.embed_project(project_path)
+
     {:noreply, new_state}
   end
 
