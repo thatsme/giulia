@@ -231,6 +231,10 @@ defmodule Giulia.Context.Indexer do
         {:exit, reason} ->
           Logger.error("Task crashed: #{inspect(reason)}")
       end)
+
+      # Store the master file list in ETS — SearchCode reads from here, not disk
+      Giulia.Context.Store.put_project_files(project_path, files)
+      Logger.info("Stored #{length(files)} project files in ETS file registry")
     else
       Logger.warning("No lib directory found at #{lib_path}")
     end

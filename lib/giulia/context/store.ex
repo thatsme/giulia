@@ -46,6 +46,26 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  Store the master list of indexed source files for a project.
+  Called by the Indexer after a scan completes.
+  """
+  def put_project_files(project_path, file_list) do
+    :ets.insert(@table, {{:project_files, project_path}, file_list})
+    :ok
+  end
+
+  @doc """
+  Get the list of indexed source files for a project.
+  Returns [] if no scan has been performed yet.
+  """
+  def get_project_files(project_path) do
+    case :ets.lookup(@table, {:project_files, project_path}) do
+      [{{:project_files, ^project_path}, files}] -> files
+      [] -> []
+    end
+  end
+
+  @doc """
   Store arbitrary key-value data.
   """
   def put(key, value) do
