@@ -45,6 +45,7 @@ defmodule Giulia.AST.Processor do
   Quick test function to verify extraction works.
   Call from iex: Giulia.AST.Processor.test_extraction()
   """
+  @spec test_extraction() :: %{modules: [module_info()], functions: [function_info()]} | {:error, term()}
   def test_extraction do
     require Logger
 
@@ -93,6 +94,7 @@ defmodule Giulia.AST.Processor do
   @doc """
   Debug function to analyze a real file and show AST structure.
   """
+  @spec debug_file(String.t()) :: %{modules: [module_info()], functions: [function_info()]} | {:error, :parse_failed | :read_failed}
   def debug_file(path) do
     require Logger
 

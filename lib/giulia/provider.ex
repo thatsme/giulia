@@ -27,6 +27,7 @@ defmodule Giulia.Provider do
   @doc """
   Get the currently configured provider module.
   """
+  @spec current() :: module()
   def current do
     Application.get_env(:giulia, :provider, Giulia.Provider.Anthropic)
   end
@@ -34,6 +35,7 @@ defmodule Giulia.Provider do
   @doc """
   Send a chat request to the current provider.
   """
+  @spec chat([message()], keyword()) :: {:ok, response()} | {:error, term()}
   def chat(messages, opts \\ []) do
     current().chat(messages, opts)
   end
@@ -41,6 +43,7 @@ defmodule Giulia.Provider do
   @doc """
   Send a chat request with tools to the current provider.
   """
+  @spec chat_with_tools([message()], [tool()], keyword()) :: {:ok, response()} | {:error, term()}
   def chat_with_tools(messages, tools, opts \\ []) do
     current().chat(messages, tools, opts)
   end

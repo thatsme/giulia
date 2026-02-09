@@ -12,6 +12,8 @@ defmodule Giulia.Tools.Registry do
 
   @table __MODULE__
 
+  @type tool_spec :: %{module: module(), name: String.t(), description: String.t(), parameters: map()}
+
   # Tool behavior that all tools must implement
   @callback name() :: String.t()
   @callback description() :: String.t()
@@ -20,6 +22,7 @@ defmodule Giulia.Tools.Registry do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -27,6 +30,7 @@ defmodule Giulia.Tools.Registry do
   @doc """
   Register a tool module.
   """
+  @spec register(module()) :: {:ok, String.t()} | {:error, {:registration_failed, module(), term()}}
   def register(tool_module) do
     GenServer.call(__MODULE__, {:register, tool_module})
   end
@@ -34,6 +38,7 @@ defmodule Giulia.Tools.Registry do
   @doc """
   Get all registered tools as a list for the LLM.
   """
+  @spec list_tools() :: [tool_spec()]
   def list_tools do
     GenServer.call(__MODULE__, :list_tools)
   end
@@ -41,6 +46,7 @@ defmodule Giulia.Tools.Registry do
   @doc """
   Get a tool by name.
   """
+  @spec get_tool(String.t()) :: {:ok, module()} | :not_found
   def get_tool(name) do
     GenServer.call(__MODULE__, {:get_tool, name})
   end
@@ -51,6 +57,7 @@ defmodule Giulia.Tools.Registry do
 
   Accepts optional opts for sandbox and project_path.
   """
+  @spec execute(String.t(), map(), keyword()) :: {:ok, term()} | {:error, term()}
   def execute(name, arguments, opts \\ []) do
     case get_tool(name) do
       {:ok, module} ->
@@ -64,6 +71,7 @@ defmodule Giulia.Tools.Registry do
   @doc """
   Get just the tool names (for error messages).
   """
+  @spec list_tool_names() :: [String.t()]
   def list_tool_names do
     GenServer.call(__MODULE__, :list_tool_names)
   end
@@ -71,6 +79,7 @@ defmodule Giulia.Tools.Registry do
   @doc """
   Auto-discover and register all tools in the tools directory.
   """
+  @spec discover_tools() :: :ok
   def discover_tools do
     GenServer.cast(__MODULE__, :discover_tools)
   end
