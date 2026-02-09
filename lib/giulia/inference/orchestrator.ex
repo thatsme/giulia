@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -109,14 +109,7 @@ defmodule Giulia.Inference.Orchestrator do
     last_compile_error: nil,
 
     # Transactional Exoskeleton — staging buffer for multi-file atomic changes
-    # Whether staging is active
-    transaction_mode: false,
-    # %{file_path => new_content}
-    staging_buffer: %{},
-    # %{file_path => original_content | :new_file}
-    staging_backups: %{},
-    # Consecutive staging-lock blocks (cleared on non-respond action)
-    staging_lock_count: 0,
+    transaction: %Transaction{},
 
     # Multi-action queue — when model batches multiple tool calls in one response
     # [{tool_name, params}, ...] queued for sequential execution
@@ -200,7 +193,7 @@ defmodule Giulia.Inference.Orchestrator do
     state = %__MODULE__{
       project_path: Keyword.get(opts, :project_path),
       project_pid: project_pid,
-      transaction_mode: transaction_pref
+      transaction: Transaction.new(transaction_pref)
     }
 
     {:ok, state}
@@ -494,8 +487,8 @@ defmodule Giulia.Inference.Orchestrator do
     model_tier = Builder.detect_model_tier()
 
     prompt_opts = [
-      transaction_mode: state.transaction_mode,
-      staged_files: Map.keys(state.staging_buffer)
+      transaction_mode: state.transaction.mode,
+      staged_files: Map.keys(state.transaction.staging_buffer)
     ]
 
     system_prompt = Builder.build_tiered_prompt(model_tier, prompt_opts)
@@ -1416,11 +1409,12 @@ defmodule Giulia.Inference.Orchestrator do
       {:tool_call, "respond", %{"message" => message}} ->
         cond do
           # STAGING-LOCK GATE: Block respond if there are uncommitted staged changes
-          state.transaction_mode and map_size(state.staging_buffer) > 0 ->
-            lock_count = state.staging_lock_count + 1
+          state.transaction.mode and map_size(state.transaction.staging_buffer) > 0 ->
+            tx = state.transaction
+            lock_count = tx.lock_count + 1
 
             Logger.warning(
-              "STAGING-LOCK: Model tried to respond with #{map_size(state.staging_buffer)} uncommitted staged file(s) (attempt #{lock_count})"
+              "STAGING-LOCK: Model tried to respond with #{map_size(tx.staging_buffer)} uncommitted staged file(s) (attempt #{lock_count})"
             )
 
             if lock_count >= 3 do
@@ -1432,28 +1426,22 @@ defmodule Giulia.Inference.Orchestrator do
               Logger.info("=== TASK COMPLETE (staging-lock release) ===")
               send_reply(state, {:ok, message})
 
-              state = %{
-                state
-                | staging_buffer: %{},
-                  staging_backups: %{},
-                  transaction_mode: false,
-                  staging_lock_count: 0
-              }
+              state = %{state | transaction: Transaction.new()}
 
               {:noreply, reset_state(state)}
             else
               staged_list =
-                state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
+                tx.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
 
               lock_msg = """
-              BLOCKED: You have uncommitted staged changes in #{map_size(state.staging_buffer)} file(s):
+              BLOCKED: You have uncommitted staged changes in #{map_size(tx.staging_buffer)} file(s):
               #{staged_list}
 
               You MUST call commit_changes before respond. Or fix your changes and try again.
               """
 
               messages = state.messages ++ [%{role: "user", content: lock_msg}]
-              state = %{state | messages: messages, staging_lock_count: lock_count}
+              state = %{state | messages: messages, transaction: %{tx | lock_count: lock_count}}
               {:noreply, state, {:continue, :step}}
             end
 
@@ -1719,7 +1707,7 @@ defmodule Giulia.Inference.Orchestrator do
             # Check if tool requires approval (interactive consent gate)
             # When transaction_mode is active and tool is stageable, skip approval
             # (changes go to staging buffer, not disk — approval happens at commit)
-            if state.transaction_mode and tool_name in @stageable_tools do
+            if state.transaction.mode and tool_name in @stageable_tools do
               execute_tool_direct(tool_name, params, response, state)
             else
               if requires_approval?(tool_name, params, state) do
@@ -1927,11 +1915,11 @@ defmodule Giulia.Inference.Orchestrator do
         execute_commit_changes(params, response, state)
 
       # Stage write tools when transaction mode is on
-      state.transaction_mode and tool_name in @stageable_tools ->
+      state.transaction.mode and tool_name in @stageable_tools ->
         execute_tool_staged(tool_name, params, response, state)
 
       # Overlay read_file with staged content when transaction mode is on
-      state.transaction_mode and tool_name == "read_file" ->
+      state.transaction.mode and tool_name == "read_file" ->
         execute_read_with_overlay(params, response, state)
 
       # Intercept get_staged_files — return staging buffer info
@@ -2129,26 +2117,34 @@ defmodule Giulia.Inference.Orchestrator do
     Logger.info("=== STAGED TOOL CALL [#{state.iteration}] ===")
     Logger.info("Tool: #{tool_name} (transaction mode)")
 
-    {result, state} =
+    resolve_fn = &resolve_tool_path(&1, state)
+
+    {result, new_tx} =
       case tool_name do
         "write_file" ->
-          stage_write_file(params, state)
+          Transaction.stage_write(state.transaction, params, resolve_fn)
 
         "edit_file" ->
-          stage_edit_file(params, state)
+          Transaction.stage_edit(state.transaction, params, resolve_fn)
 
         tool when tool in ["patch_function", "write_function"] ->
-          stage_ast_tool(tool, params, state)
+          Transaction.stage_ast(state.transaction, tool, params,
+            project_path: state.project_path,
+            resolve_fn: resolve_fn,
+            tool_opts: build_tool_opts(state)
+          )
 
         _ ->
-          {{:error, "Unknown stageable tool: #{tool_name}"}, state}
+          {{:error, "Unknown stageable tool: #{tool_name}"}, state.transaction}
       end
+
+    state = %{state | transaction: new_tx}
 
     # Build observation with [STAGED] prefix
     {result_preview, observation} =
       case result do
         {:ok, msg} ->
-          staged_count = map_size(state.staging_buffer)
+          staged_count = map_size(state.transaction.staging_buffer)
 
           obs =
             "[STAGED] #{tool_name}: #{msg}\nCurrently staging #{staged_count} file(s). Use commit_changes to flush to disk."
@@ -2197,154 +2193,15 @@ defmodule Giulia.Inference.Orchestrator do
     {:noreply, state, {:continue, :step}}
   end
 
-  # Stage write_file: store content in staging buffer
-  defp stage_write_file(params, state) do
-    path = params["path"] || params[:path]
-    content = params["content"] || params[:content] || ""
-    resolved_path = resolve_tool_path(path, state)
-
-    # Backup original content if not already backed up
-    state = backup_original(resolved_path, state)
-
-    staging_buffer = Map.put(state.staging_buffer, resolved_path, content)
-    state = %{state | staging_buffer: staging_buffer}
-
-    {{:ok, "#{path} (#{byte_size(content)} bytes)"}, state}
-  end
-
-  # Stage edit_file: apply search/replace in memory (using staged content as overlay)
-  defp stage_edit_file(params, state) do
-    file = params["file"] || params[:file]
-    old_text = params["old_text"] || params[:old_text] || ""
-    new_text = params["new_text"] || params[:new_text] || ""
-    resolved_path = resolve_tool_path(file, state)
-
-    # Read from staging buffer first, fall back to disk
-    current_content =
-      case Map.get(state.staging_buffer, resolved_path) do
-        nil ->
-          case File.read(resolved_path) do
-            {:ok, content} -> content
-            {:error, _} -> nil
-          end
-
-        staged ->
-          staged
-      end
-
-    case current_content do
-      nil ->
-        {{:error, "File not found: #{file}"}, state}
-
-      content ->
-        if String.contains?(content, old_text) do
-          # Backup original content if not already backed up
-          state = backup_original(resolved_path, state)
-
-          new_content = String.replace(content, old_text, new_text, global: false)
-          staging_buffer = Map.put(state.staging_buffer, resolved_path, new_content)
-          state = %{state | staging_buffer: staging_buffer}
-          {{:ok, "#{file} (edit applied in staging)"}, state}
-        else
-          {{:error, "old_text not found in #{file} (checked staging buffer)"}, state}
-        end
-    end
-  end
-
-  # Stage AST tools (patch_function/write_function): use temp file strategy
-  # 1. Write staged content to temp file (or use original)
-  # 2. Let the tool operate on the temp file
-  # 3. Read result back into staging_buffer
-  # 4. Restore original file from backup
-  defp stage_ast_tool(tool_name, params, state) do
-    module = params["module"] || params[:module]
-
-    # Find the file for this module
-    case Store.find_module(state.project_path, module) do
-      {:ok, %{file: file_path}} ->
-        resolved_path = resolve_tool_path(file_path, state)
-
-        # Backup original if not already backed up
-        state = backup_original(resolved_path, state)
-
-        # If we have staged content, write it to disk temporarily
-        staged_content = Map.get(state.staging_buffer, resolved_path)
-        original_disk = if staged_content, do: File.read(resolved_path), else: nil
-
-        if staged_content do
-          File.write(resolved_path, staged_content)
-        end
-
-        # Let the AST tool operate on the (possibly temp) file (wrapped for safety)
-        tool_opts = build_tool_opts(state)
-
-        result =
-          try do
-            Registry.execute(tool_name, params, tool_opts)
-          rescue
-            e -> {:error, "Tool #{tool_name} crashed: #{Exception.message(e)}"}
-          end
-
-        # Read the result back into staging regardless of success/failure
-        case result do
-          {:ok, _msg} ->
-            # Read the modified file back into staging buffer
-            case File.read(resolved_path) do
-              {:ok, new_content} ->
-                staging_buffer = Map.put(state.staging_buffer, resolved_path, new_content)
-                state = %{state | staging_buffer: staging_buffer}
-
-                # Restore original disk content
-                restore_disk_content(resolved_path, original_disk, state)
-
-                {{:ok,
-                  "#{module}.#{params["function_name"]}/#{params["arity"]} (AST patched in staging)"},
-                 state}
-
-              {:error, read_err} ->
-                restore_disk_content(resolved_path, original_disk, state)
-                {{:error, "Failed to read back after #{tool_name}: #{inspect(read_err)}"}, state}
-            end
-
-          {:error, reason} ->
-            # Restore original disk content on failure too
-            restore_disk_content(resolved_path, original_disk, state)
-            {{:error, reason}, state}
-        end
-
-      :not_found ->
-        {{:error, "Module #{module} not found in index"}, state}
-    end
-  end
-
-  # Backup original file content before first staging
-  defp backup_original(resolved_path, state) do
-    if Map.has_key?(state.staging_backups, resolved_path) do
-      # Already backed up
-      state
-    else
-      backup =
-        case File.read(resolved_path) do
-          {:ok, content} -> content
-          {:error, :enoent} -> :new_file
-          {:error, _} -> :new_file
-        end
-
-      %{state | staging_backups: Map.put(state.staging_backups, resolved_path, backup)}
-    end
-  end
-
-  # Restore original disk content after AST tool temp-file operation
-  defp restore_disk_content(_path, nil, _state), do: :ok
-  defp restore_disk_content(path, {:ok, original}, _state), do: File.write(path, original)
-  defp restore_disk_content(_path, {:error, _}, _state), do: :ok
+  # NOTE: stage_write_file, stage_edit_file, stage_ast_tool, backup_original,
+  # and restore_disk_content have been extracted to Giulia.Inference.Transaction
 
   # Read file with staging overlay
   defp execute_read_with_overlay(params, response, state) do
     path = params["path"] || params[:path] || params["file"] || params[:file]
     resolved_path = resolve_tool_path(path, state)
 
-    case Map.get(state.staging_buffer, resolved_path) do
+    case Transaction.read_with_overlay(state.transaction, resolved_path) do
       nil ->
         # Not in staging buffer — proceed with normal read
         execute_tool_normal("read_file", params, response, state)
@@ -2401,24 +2258,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Intercept get_staged_files — return staging buffer contents to the model
   defp execute_get_staged_files(response, state) do
-    file_list =
-      state.staging_buffer
-      |> Enum.map(fn {path, content} ->
-        "  - #{path} (#{byte_size(content)} bytes)"
-      end)
-      |> Enum.sort()
-      |> Enum.join("\n")
-
-    count = map_size(state.staging_buffer)
-
-    result_text =
-      if count == 0 do
-        "No files staged. Transaction mode: #{state.transaction_mode}"
-      else
-        "STAGED FILES (#{count}):\n#{file_list}\n\nTransaction mode: #{state.transaction_mode}"
-      end
-
-    result = {:ok, result_text}
+    result = {:ok, Transaction.format_staged_files(state.transaction)}
 
     # Record and continue
     assistant_msg =
@@ -2477,7 +2317,7 @@ defmodule Giulia.Inference.Orchestrator do
   defp do_bulk_replace(pattern, replacement, file_list, use_regex, params, response, state) do
     # Auto-enable transaction mode for bulk operations
     state =
-      if not state.transaction_mode do
+      if not state.transaction.mode do
         Logger.info("BULK_REPLACE: Auto-enabling transaction mode for batch operation")
 
         if state.request_id do
@@ -2487,7 +2327,7 @@ defmodule Giulia.Inference.Orchestrator do
           })
         end
 
-        %{state | transaction_mode: true}
+        %{state | transaction: %{state.transaction | mode: true}}
       else
         state
       end
@@ -2513,7 +2353,7 @@ defmodule Giulia.Inference.Orchestrator do
 
           # Read from staging buffer first, then disk
           content =
-            case Map.get(state.staging_buffer, resolved_path) do
+            case Map.get(state.transaction.staging_buffer, resolved_path) do
               nil ->
                 case File.read(resolved_path) do
                   {:ok, c} -> c
@@ -2558,10 +2398,11 @@ defmodule Giulia.Inference.Orchestrator do
       {state, staged, skipped, errors} =
         Enum.reduce(results, {state, [], [], []}, fn
           {file, resolved, {:replaced, count, new_content}}, {st, s, sk, e} ->
-            st = backup_original(resolved, st)
-            staging_buffer = Map.put(st.staging_buffer, resolved, new_content)
+            new_tx = Transaction.backup_original(st.transaction, resolved)
+            staging_buffer = Map.put(new_tx.staging_buffer, resolved, new_content)
+            new_tx = %{new_tx | staging_buffer: staging_buffer}
             modified_files = MapSet.put(st.modified_files, resolved)
-            st = %{st | staging_buffer: staging_buffer, modified_files: modified_files}
+            st = %{st | transaction: new_tx, modified_files: modified_files}
             {st, [{file, count} | s], sk, e}
 
           {file, _resolved, :no_match}, {st, s, sk, e} ->
@@ -2598,7 +2439,7 @@ defmodule Giulia.Inference.Orchestrator do
         end
 
       total_replacements = Enum.reduce(staged, 0, fn {_, c}, acc -> acc + c end)
-      staged_count = map_size(state.staging_buffer)
+      staged_count = map_size(state.transaction.staging_buffer)
 
       # DIAGNOSTIC FEEDBACK: If 0 matches, search for broader pattern and show what exists
       diagnostic =
@@ -2728,7 +2569,7 @@ defmodule Giulia.Inference.Orchestrator do
         resolved = resolve_tool_path(file_path, state)
 
         content =
-          case Map.get(state.staging_buffer, resolved) do
+          case Map.get(state.transaction.staging_buffer, resolved) do
             nil -> File.read(resolved) |> elem(1)
             staged -> staged
           end
@@ -2804,7 +2645,7 @@ defmodule Giulia.Inference.Orchestrator do
 
     # Auto-enable transaction mode
     state =
-      if not state.transaction_mode do
+      if not state.transaction.mode do
         Logger.info("RENAME_MFA: Auto-enabling transaction mode")
 
         if state.request_id do
@@ -2814,7 +2655,7 @@ defmodule Giulia.Inference.Orchestrator do
           })
         end
 
-        %{state | transaction_mode: true}
+        %{state | transaction: %{state.transaction | mode: true}}
       else
         state
       end
@@ -2841,7 +2682,7 @@ defmodule Giulia.Inference.Orchestrator do
       target_resolved = resolve_tool_path(target_entry.file, state)
 
       target_source =
-        case Map.get(state.staging_buffer, target_resolved) do
+        case Map.get(state.transaction.staging_buffer, target_resolved) do
           nil ->
             case File.read(target_resolved) do
               {:ok, c} -> c
@@ -2920,7 +2761,7 @@ defmodule Giulia.Inference.Orchestrator do
           resolved = resolve_tool_path(file_path, st)
 
           content =
-            case Map.get(st.staging_buffer, resolved) do
+            case Map.get(st.transaction.staging_buffer, resolved) do
               nil ->
                 case File.read(resolved) do
                   {:ok, c} -> c
@@ -2952,10 +2793,11 @@ defmodule Giulia.Inference.Orchestrator do
                 )
 
               if changes > 0 do
-                st = backup_original(resolved, st)
-                staging_buffer = Map.put(st.staging_buffer, resolved, new_source)
+                new_tx = Transaction.backup_original(st.transaction, resolved)
+                staging_buffer = Map.put(new_tx.staging_buffer, resolved, new_source)
+                new_tx = %{new_tx | staging_buffer: staging_buffer}
                 modified_files = MapSet.put(st.modified_files, resolved)
-                st = %{st | staging_buffer: staging_buffer, modified_files: modified_files}
+                st = %{st | transaction: new_tx, modified_files: modified_files}
                 {st, [{file_path, {:ok, changes}} | acc]}
               else
                 {st, [{file_path, :no_match} | acc]}
@@ -3013,7 +2855,7 @@ defmodule Giulia.Inference.Orchestrator do
           #{staged_summary}#{skipped_summary}#{error_summary}
 
           Discovery: #{length(callers)} callers, #{length(implementers)} implementers
-          Currently staging #{map_size(state.staging_buffer)} file(s) total. Use commit_changes to flush.
+          Currently staging #{map_size(state.transaction.staging_buffer)} file(s) total. Use commit_changes to flush.
           """
         end
 
@@ -3272,7 +3114,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Execute the commit_changes pseudo-tool
   defp execute_commit_changes(params, response, state) do
-    if map_size(state.staging_buffer) == 0 do
+    if map_size(state.transaction.staging_buffer) == 0 do
       # Nothing to commit
       observation = "Nothing staged to commit. Use write_file or edit_file first."
 
@@ -3301,7 +3143,8 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def handle_continue({:commit_changes, params}, state) do
-    staged_files = Map.keys(state.staging_buffer)
+    tx = state.transaction
+    staged_files = Map.keys(tx.staging_buffer)
     file_count = length(staged_files)
     message = params["message"] || "Committing #{file_count} staged file(s)"
 
@@ -3319,14 +3162,16 @@ defmodule Giulia.Inference.Orchestrator do
     end
 
     # Phase 1: Ensure backups are current (re-read from disk for safety)
-    state =
-      Enum.reduce(staged_files, state, fn path, acc ->
-        backup_original(path, acc)
+    tx =
+      Enum.reduce(staged_files, tx, fn path, acc ->
+        Transaction.backup_original(acc, path)
       end)
+
+    state = %{state | transaction: tx}
 
     # Phase 2: Flush all staged files to disk
     write_results =
-      Enum.map(state.staging_buffer, fn {path, content} ->
+      Enum.map(tx.staging_buffer, fn {path, content} ->
         {path, File.write(path, content)}
       end)
 
@@ -3335,7 +3180,7 @@ defmodule Giulia.Inference.Orchestrator do
     if write_failures != [] do
       # Write failed — rollback
       Logger.warning("COMMIT: Write phase failed, rolling back")
-      state = rollback_staged_changes(state)
+      state = %{state | transaction: Transaction.rollback(state.transaction, state.project_path)}
 
       error_msg = "COMMIT FAILED (write phase): #{inspect(write_failures)}"
 
@@ -3384,7 +3229,7 @@ defmodule Giulia.Inference.Orchestrator do
             {:error, errors} ->
               # Compile failed — rollback
               Logger.warning("COMMIT: Compile failed, rolling back")
-              state = rollback_staged_changes(state)
+              state = %{state | transaction: Transaction.rollback(state.transaction, state.project_path)}
 
               error_msg = """
               COMMIT FAILED: Compilation errors after flushing staged changes. All changes have been ROLLED BACK.
@@ -3421,7 +3266,7 @@ defmodule Giulia.Inference.Orchestrator do
         {:error, reason} ->
           # Couldn't run compile — rollback to be safe
           Logger.warning("COMMIT: Could not run compile: #{inspect(reason)}, rolling back")
-          state = rollback_staged_changes(state)
+          state = %{state | transaction: Transaction.rollback(state.transaction, state.project_path)}
 
           error_msg =
             "COMMIT FAILED: Could not verify compilation: #{inspect(reason)}. Changes rolled back. Staging buffer cleared."
@@ -3467,9 +3312,9 @@ defmodule Giulia.Inference.Orchestrator do
 
       {:error, fractures} ->
         Logger.warning("COMMIT: Integrity check FAILED — architectural fracture detected")
-        state = rollback_staged_changes(state)
+        state = %{state | transaction: Transaction.rollback(state.transaction, state.project_path)}
 
-        report = format_fracture_report(fractures)
+        report = Transaction.format_fracture_report(fractures)
 
         error_msg = """
         COMMIT FAILED: ARCHITECTURAL FRACTURE — behaviour-implementer mismatch detected.
@@ -3500,17 +3345,7 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
-  defp format_fracture_report(fractures) when is_map(fractures) do
-    Enum.map_join(fractures, "\n\n", fn {behaviour, impl_fractures} ->
-      impl_details =
-        Enum.map_join(impl_fractures, "\n", fn %{implementer: impl, missing: missing} ->
-          missing_str = Enum.map_join(missing, ", ", fn {name, arity} -> "#{name}/#{arity}" end)
-          "  - #{impl}: missing #{missing_str}"
-        end)
-
-      "BEHAVIOUR #{behaviour}:\n#{impl_details}"
-    end)
-  end
+  # NOTE: format_fracture_report has been extracted to Giulia.Inference.Transaction
 
   # Auto-regression phase of commit
   defp commit_auto_regress(staged_files, _params, state) do
@@ -3558,7 +3393,7 @@ defmodule Giulia.Inference.Orchestrator do
       else
         # Tests failed — rollback
         Logger.warning("COMMIT: Auto-regression failed, rolling back")
-        state = rollback_staged_changes(state)
+        state = %{state | transaction: Transaction.rollback(state.transaction, state.project_path)}
 
         failure_summary =
           Enum.map_join(failures, "\n", fn {path, _, output} ->
@@ -3599,8 +3434,8 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Commit succeeded — clear staging and continue
   defp commit_success(state) do
-    file_count = map_size(state.staging_buffer)
-    file_list = state.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
+    tx = state.transaction
+    file_count = map_size(tx.staging_buffer)
 
     Logger.info("COMMIT: Success! #{file_count} file(s) committed")
 
@@ -3608,70 +3443,26 @@ defmodule Giulia.Inference.Orchestrator do
       Events.broadcast(state.request_id, %{
         type: :commit_success,
         file_count: file_count,
-        files: Map.keys(state.staging_buffer),
+        files: Map.keys(tx.staging_buffer),
         message: "All #{file_count} file(s) verified and written to disk"
       })
     end
 
-    observation = """
-    COMMIT SUCCESS: #{file_count} file(s) atomically written to disk and verified.
-    #{file_list}
-
-    Build: GREEN. All changes are now on disk.
-    """
+    observation = Transaction.success_report(tx)
 
     messages = state.messages ++ [%{role: "user", content: observation}]
 
     state = %{
       state
       | messages: messages,
-        transaction_mode: false,
-        staging_buffer: %{},
-        staging_backups: %{},
+        transaction: Transaction.new(),
         consecutive_failures: 0
     }
 
     {:noreply, state, {:continue, :step}}
   end
 
-  # Rollback all staged changes to their original state and clear the staging buffer.
-  # Returns updated state with empty staging fields so the model isn't trapped in staging-lock.
-  defp rollback_staged_changes(state) do
-    Enum.each(state.staging_backups, fn
-      {path, :new_file} ->
-        # File didn't exist before — delete it
-        File.rm(path)
-
-      {path, original_content} when is_binary(original_content) ->
-        # Restore original content
-        File.write(path, original_content)
-    end)
-
-    count = map_size(state.staging_backups)
-    Logger.info("ROLLBACK: Restored #{count} file(s) to original state")
-
-    # POST-ROLLBACK RE-VALIDATION: Recompile to resync the BEAM VM.
-    # The failed compile during commit may have purged modules from memory.
-    # Without recompiling, tools that depend on those modules will crash
-    # with "module is not available" errors (the "Stroke" scenario).
-    Logger.info("ROLLBACK: Re-validating BEAM state (recompiling clean files)")
-
-    case System.cmd("mix", ["compile", "--force"],
-           cd: state.project_path || File.cwd!(),
-           stderr_to_stdout: true
-         ) do
-      {_output, 0} ->
-        Logger.info("ROLLBACK: BEAM re-validation succeeded — all modules reloaded")
-
-      {output, _} ->
-        Logger.warning("ROLLBACK: BEAM re-validation had issues: #{String.slice(output, 0, 300)}")
-        # Even if recompile has warnings, the original code should be valid.
-        # The BEAM will at least have the clean modules loaded.
-    end
-
-    # Clear staging buffer so the model can make fresh edits or respond
-    %{state | staging_buffer: %{}, staging_backups: %{}}
-  end
+  # NOTE: rollback_staged_changes has been extracted to Transaction.rollback/2
 
   # ============================================================================
   # Transactional Exoskeleton — Auto-Enable for Hub Modules
@@ -3680,43 +3471,21 @@ defmodule Giulia.Inference.Orchestrator do
   # Check if a write tool targets a hub module and auto-enable transaction mode
   defp maybe_auto_enable_transaction(tool_name, params, state)
        when tool_name in @stageable_tools do
-    if state.transaction_mode do
-      # Already in transaction mode
-      state
+    {new_tx, new_max} =
+      Transaction.maybe_auto_enable(state.transaction, params,
+        tool_name: tool_name,
+        project_path: state.project_path,
+        resolve_module_fn: &resolve_module_from_params/3,
+        request_id: state.request_id
+      )
+
+    state = %{state | transaction: new_tx}
+
+    if new_max do
+      %{state | max_iterations: max(state.max_iterations, new_max)}
     else
-      module_name = resolve_module_from_params(tool_name, params, state.project_path)
-
-      if module_name do
-        case Giulia.Knowledge.Store.centrality(state.project_path, module_name) do
-          {:ok, %{in_degree: in_degree}} when in_degree >= 3 ->
-            Logger.info(
-              "TRANSACTION AUTO-ENABLED: #{module_name} is a hub (#{in_degree} dependents)"
-            )
-
-            if state.request_id do
-              Events.broadcast(state.request_id, %{
-                type: :transaction_auto_enabled,
-                module: module_name,
-                centrality: in_degree,
-                message: "Transaction mode auto-enabled for hub module #{module_name}"
-              })
-            end
-
-            # Bump max_iterations for transaction runs (need headroom for staging 16+ files)
-            new_max = max(state.max_iterations, 40)
-            %{state | transaction_mode: true, max_iterations: new_max}
-
-          _ ->
-            state
-        end
-      else
-        state
-      end
+      state
     end
-  rescue
-    _ -> state
-  catch
-    _, _ -> state
   end
 
   defp maybe_auto_enable_transaction(_tool_name, _params, state), do: state
@@ -4158,8 +3927,8 @@ defmodule Giulia.Inference.Orchestrator do
       minimal: minimal,
       project_summary: project_summary,
       cwd: cwd,
-      transaction_mode: state.transaction_mode,
-      staged_files: Map.keys(state.staging_buffer)
+      transaction_mode: state.transaction.mode,
+      staged_files: Map.keys(state.transaction.staging_buffer)
     ]
 
     # Layer 1+2: Automatic Surgical Briefing
@@ -4563,9 +4332,7 @@ defmodule Giulia.Inference.Orchestrator do
         final_response: nil,
         pending_verification: false,
         test_status: :untested,
-        transaction_mode: false,
-        staging_buffer: %{},
-        staging_backups: %{},
+        transaction: Transaction.new(),
         pending_tool_calls: [],
         last_impact_map: nil,
         modified_files: MapSet.new()
