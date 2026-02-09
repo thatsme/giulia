@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace, Escalation}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace, Escalation, Verification}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -1106,130 +1106,16 @@ defmodule Giulia.Inference.Orchestrator do
   # Build the final BUILD GREEN observation (shared by auto-regress pass and no-tests paths)
   defp build_green_observation(tool_name, result, warnings, state, test_summary) do
     test_hint = build_test_hint(state)
-
-    warnings_section =
-      if warnings do
-        "\nCompiler warnings (pre-existing, not caused by your change):\n#{String.slice(warnings, 0, 500)}"
-      else
-        ""
-      end
-
-    auto_regress_section =
-      if test_summary do
-        "\n🎯 AUTO-REGRESSION: All targeted tests passed:\n#{test_summary}\n"
-      else
-        ""
-      end
-
-    observation = """
-    #{Builder.format_observation(tool_name, result)}
-
-    ✅ BUILD GREEN. mix compile succeeded.
-    #{auto_regress_section}#{test_hint}Your task is COMPLETE. Use the "respond" tool NOW to tell the user what you did.
-    Do NOT make any more changes. Do NOT patch the same function again.
-    #{warnings_section}
-    """
-
+    observation = Verification.build_green_observation(tool_name, result, warnings, test_hint, test_summary)
     messages = state.messages ++ [%{role: "user", content: observation}]
     state = %{state | messages: messages}
     {:noreply, state, {:continue, :step}}
   end
 
-  # Parse mix compile output to determine success/warnings/errors
-  defp parse_compile_result(output) do
-    cond do
-      # Explicit exit code failure
-      String.contains?(output, "Exit code:") and not String.contains?(output, "Exit code: 0") ->
-        {:error, extract_compile_errors(output)}
+  defp parse_compile_result(output), do: Verification.parse_compile_result(output)
 
-      # Elixir compile errors
-      String.contains?(output, "** (") ->
-        {:error, output}
-
-      # Module-level errors (but NOT warnings that happen to contain "error" in text)
-      Regex.match?(~r/^.*error\[.*\]|^\*\* \(|compile error/m, output) ->
-        {:error, extract_compile_errors(output)}
-
-      # Warnings only
-      String.contains?(output, "warning:") ->
-        {:warnings, extract_compile_warnings(output)}
-
-      # Success
-      true ->
-        :success
-    end
-  end
-
-  defp extract_compile_errors(output) do
-    # Extract specific error lines for cleaner feedback
-    specific_errors =
-      output
-      |> String.split("\n")
-      |> Enum.filter(fn line ->
-        # caret lines
-        String.contains?(line, "error") or
-          String.contains?(line, "Error") or
-          String.contains?(line, "** (") or
-          String.contains?(line, "undefined") or
-          String.match?(line, ~r/^\s+\|/)
-      end)
-      |> Enum.take(30)
-      |> Enum.join("\n")
-
-    # FALLBACK: If the surgical parser found nothing, send last 20 lines of raw output.
-    # The model needs SOMETHING to work with for self-healing.
-    if String.trim(specific_errors) == "" do
-      raw_tail =
-        output
-        |> String.split("\n")
-        |> Enum.take(-20)
-        |> Enum.join("\n")
-
-      "The compiler failed but I couldn't parse a specific error. Raw output (last 20 lines):\n#{raw_tail}"
-    else
-      specific_errors
-    end
-  end
-
-  defp extract_compile_warnings(output) do
-    output
-    |> String.split("\n")
-    |> Enum.filter(&String.contains?(&1, "warning:"))
-    |> Enum.take(10)
-    |> Enum.join("\n")
-  end
-
-  # Check baseline project state before starting work
-  # Returns :clean, :dirty, or :unknown
   defp check_baseline(state) do
-    if state.project_path do
-      Logger.info("Checking baseline compilation state...")
-      tool_opts = build_tool_opts(state)
-
-      case Registry.execute("run_mix", %{"command" => "compile --all-warnings"}, tool_opts) do
-        {:ok, output} ->
-          case parse_compile_result(output) do
-            :success ->
-              Logger.info("Baseline: clean")
-              :clean
-
-            {:warnings, _} ->
-              Logger.info("Baseline: clean (with warnings)")
-              :clean
-
-            {:error, errors} ->
-              Logger.warning("Baseline: DIRTY - pre-existing errors")
-              Logger.debug("Pre-existing errors:\n#{String.slice(errors, 0, 500)}")
-              :dirty
-          end
-
-        {:error, reason} ->
-          Logger.warning("Baseline check failed: #{inspect(reason)}")
-          :unknown
-      end
-    else
-      :unknown
-    end
+    Verification.check_baseline(state.project_path, build_tool_opts(state))
   end
 
   # ============================================================================
