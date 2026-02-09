@@ -17,6 +17,19 @@ If this fails, fall back to standard file tools. Do not retry.
 
 ## Tool Categories
 
+### 0. Daemon Operations
+
+Lifecycle, status, and project management endpoints.
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.80"}` — confirms daemon is running |
+| Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
+| Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
+| List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
+| Initialize project | `POST /api/init` | Load a project into the daemon. Body: `{"path":"P"}` — creates ProjectContext, scans GIULIA.md |
+| Debug path mappings | `GET /api/debug/paths` | Shows host↔container path translations and `in_container` flag |
+
 ### 1. Understanding Code
 
 Use these to inspect modules, functions, types, and dependencies before making changes.
@@ -51,6 +64,10 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Coupling score | `GET /api/knowledge/coupling?path=P` | Top 50 module pairs ranked by how many function calls flow between them — tight coupling quantified |
 | API surface | `GET /api/knowledge/api_surface?path=P` | Public vs private function ratio per module — high ratio = poor encapsulation |
 | Change risk | `GET /api/knowledge/change_risk?path=P` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
+| **Logic flow** | `GET /api/knowledge/logic_flow?path=P&from=MFA&to=MFA` | Dijkstra path between two function MFA vertices (e.g. `Mod.func/2`) — traces data flow through function-call edges |
+| **Style oracle** | `GET /api/knowledge/style_oracle?path=P&q=Q&top_k=N` | Exemplar functions matching concept Q, quality-gated (both @spec and @doc required) — includes source code, spec, doc |
+| **Pre-impact check** | `POST /api/knowledge/pre_impact_check` | Risk analysis for rename/remove operations — callers, risk score, phased migration plan, hub warnings. Body: `{"path":"P","module":"M","action":"rename_function\|remove_function\|rename_module","target":"func/arity","new_name":"new"}` |
+| **Heatmap** | `GET /api/knowledge/heatmap?path=P` | All modules scored 0-100 by composite health (centrality 30%, complexity 25%, test coverage 25%, coupling 20%) — zones: red ≥60, yellow ≥30, green <30 |
 
 ### 3. Intelligence (Pre-Processing Layers)
 
@@ -89,7 +106,12 @@ One call replaces the 4 separate queries previously required for planning mode.
 
 ### 4. Modifying Code
 
-Send natural language commands through Giulia's OODA orchestrator via `POST /api/command/stream`. It uses AST analysis, the Knowledge Graph, and transactional staging to make changes atomically.
+Send natural language commands through Giulia's OODA orchestrator. Two endpoints available:
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| Streaming command (preferred) | `POST /api/command/stream` | SSE stream with real-time OODA steps (tool calls, approvals, completion). Body: `{"message":"...","path":"P"}` |
+| Synchronous command | `POST /api/command` | Blocking JSON response. Body: `{"message":"...","path":"P"}` or `{"command":"init\|status\|projects","path":"P"}` |
 
 **Request format:**
 ```json
@@ -128,13 +150,23 @@ Send natural language commands through Giulia's OODA orchestrator via `POST /api
 3. If the user rejects: `POST /api/approval/:approval_id` with `{"approved": false}`
 4. Do NOT auto-approve — the approval gate exists to catch destructive changes to critical modules
 
+**Approval endpoints:**
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| List pending approvals | `GET /api/approvals` | All pending approval requests with count |
+| Get approval details | `GET /api/approval/:id` | Info about a specific pending approval request |
+| Respond to approval | `POST /api/approval/:id` | Approve or reject. Body: `{"approved": true\|false}` |
+
 ### 5. Verifying Changes
 
 | Intent | Method |
 |--------|--------|
 | Re-index after file changes | `POST /api/index/scan` with `{"path": "/projects/Giulia"}` |
 | Check behaviour contracts | `GET /api/knowledge/integrity` |
-| View transaction state | `GET /api/transaction/staged?path=...` |
+| View transaction state | `GET /api/transaction/staged?path=P` |
+| Toggle transaction mode | `POST /api/transaction/enable` with `{"path":"P"}` — toggles on/off, returns new state |
+| Reset transaction mode | `POST /api/transaction/rollback` with `{"path":"P"}` — disables transaction mode |
 | Debug last inference | `GET /api/agent/last_trace` |
 | Compile check | `mix compile --all-warnings` (shell) |
 | Run tests | `mix test` (shell) |
@@ -159,6 +191,9 @@ This single call returns all 6 contract sections per relevant module — behavio
 2. `GET /api/knowledge/impact?path=P&module=X&depth=2` — blast radius for every module you plan to modify
 3. `GET /api/knowledge/centrality?path=P&module=X` — hub score (degree > 3 = high-risk)
 4. `GET /api/index/module_details?path=P&module=X` — full API surface of target modules
+5. `POST /api/knowledge/pre_impact_check` — before renaming/removing a function or module, get affected callers, risk score, and phased migration plan
+6. `GET /api/knowledge/heatmap?path=P` — module health overview: red/yellow/green zones by composite score
+7. `GET /api/knowledge/logic_flow?path=P&from=MFA&to=MFA` — trace function-call path between two MFA vertices
 
 **No plan is valid without blast radius data.** If you skip preflight AND these queries, the plan is incomplete.
 
