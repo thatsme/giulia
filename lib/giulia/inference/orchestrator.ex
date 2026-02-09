@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events, Transaction}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -2604,48 +2604,17 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   # ============================================================================
-  # RenameMFA — AST-based function rename across the codebase
+  # RenameMFA — delegates to Giulia.Inference.RenameMFA (pure-functional)
   # ============================================================================
 
   defp execute_rename_mfa(params, response, state) do
-    module = params["module"] || params[:module]
-    old_name = params["old_name"] || params[:old_name]
-    new_name = params["new_name"] || params[:new_name]
-    arity = params["arity"] || params[:arity]
-
-    cond do
-      is_nil(module) or module == "" ->
-        send_rename_error("Missing required parameter: module", params, response, state)
-
-      is_nil(old_name) or old_name == "" ->
-        send_rename_error("Missing required parameter: old_name", params, response, state)
-
-      is_nil(new_name) or new_name == "" ->
-        send_rename_error("Missing required parameter: new_name", params, response, state)
-
-      is_nil(arity) ->
-        send_rename_error("Missing required parameter: arity", params, response, state)
-
-      old_name == new_name ->
-        send_rename_error(
-          "old_name and new_name are identical: #{old_name}",
-          params,
-          response,
-          state
-        )
-
-      true ->
-        arity = if is_binary(arity), do: String.to_integer(arity), else: arity
-        do_rename_mfa(module, old_name, new_name, arity, params, response, state)
-    end
-  end
-
-  defp do_rename_mfa(module, old_name, new_name, arity, params, response, state) do
-    old_atom = String.to_atom(old_name)
-
-    # Auto-enable transaction mode
+    # Auto-enable transaction mode for rename operations
     state =
       if not state.transaction.mode do
+        module = params["module"] || params[:module]
+        old_name = params["old_name"] || params[:old_name]
+        arity = params["arity"] || params[:arity]
+        new_name = params["new_name"] || params[:new_name]
         Logger.info("RENAME_MFA: Auto-enabling transaction mode")
 
         if state.request_id do
@@ -2660,436 +2629,59 @@ defmodule Giulia.Inference.Orchestrator do
         state
       end
 
-    # === PHASE 1: Discovery via Knowledge Graph + ETS ===
-    Logger.info("RENAME_MFA: Phase 1 — Discovery for #{module}.#{old_name}/#{arity}")
+    opts = [
+      project_path: state.project_path,
+      resolve_fn: &resolve_tool_path(&1, state),
+      modified_files: state.modified_files
+    ]
 
-    # Get all modules with their file paths from ETS
-    all_modules = Giulia.Context.Store.list_modules(state.project_path)
+    case RenameMFA.execute(params, state.transaction, opts) do
+      {:ok, observation, new_tx, modified_files, meta} ->
+        # Broadcast events
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :tool_call,
+            iteration: state.iteration,
+            tool: "rename_mfa",
+            params: %{module: meta.module, old_name: meta.old_name,
+                       new_name: meta.new_name, arity: meta.arity},
+            staged: true
+          })
 
-    # Find the source file for the target module
-    target_entry = Enum.find(all_modules, fn m -> m.name == module end)
-
-    if is_nil(target_entry) do
-      send_rename_error(
-        "Module '#{module}' not found in index. Run /scan first.",
-        params,
-        response,
-        state
-      )
-    else
-      # Detect default args to expand arity range
-      # e.g., def execute(name, args, opts \\ []) → arities [2, 3]
-      target_resolved = resolve_tool_path(target_entry.file, state)
-
-      target_source =
-        case Map.get(state.transaction.staging_buffer, target_resolved) do
-          nil ->
-            case File.read(target_resolved) do
-              {:ok, c} -> c
-              _ -> ""
-            end
-          staged -> staged
+          Events.broadcast(state.request_id, %{
+            type: :tool_result,
+            tool: "rename_mfa",
+            success: meta.total_changes > 0,
+            preview: "#{length(meta.staged)} files, #{meta.total_changes} renames",
+            staged: true
+          })
         end
 
-      arity_range = detect_arity_range(target_source, old_atom, arity)
+        assistant_msg = response.content || Jason.encode!(%{tool: "rename_mfa", parameters: params})
 
-      Logger.info("RENAME_MFA: Arity range: #{inspect(arity_range)} (default args detected: #{length(arity_range) > 1})")
+        messages =
+          state.messages ++
+            [
+              %{role: "assistant", content: assistant_msg},
+              %{role: "user", content: observation}
+            ]
 
-      # Get dependents (callers) from Knowledge Graph
-      callers =
-        case Giulia.Knowledge.Store.dependents(state.project_path, module) do
-          {:ok, deps} -> deps
-          {:error, _} -> []
-        end
+        state = %{
+          state
+          | transaction: new_tx,
+            modified_files: modified_files,
+            messages: messages,
+            last_action: {"rename_mfa", params},
+            action_history: [
+              {"rename_mfa", params, {:ok, "staged"}} | Enum.take(state.action_history, 4)
+            ],
+            consecutive_failures: 0
+        }
 
-      # Get implementers ONLY if old_name is a declared @callback in the target module.
-      # Without this check, renaming Registry.execute/3 would also rename
-      # every tool's execute/2 — because they're "implementers" of Registry,
-      # but execute/2 is NOT a @callback (only name/0, description/0, parameters/0 are).
-      callbacks = Giulia.Context.Store.list_callbacks(state.project_path, module)
+        {:noreply, state, {:continue, :step}}
 
-      is_callback =
-        Enum.any?(callbacks, fn cb ->
-          cb_name = if is_atom(cb.function), do: Atom.to_string(cb.function), else: cb.function
-          cb_name == old_name and cb.arity in arity_range
-        end)
-
-      implementers =
-        if is_callback do
-          case get_implementers_from_graph(state.project_path, module) do
-            {:ok, impls} -> impls
-            _ -> []
-          end
-        else
-          Logger.info("RENAME_MFA: #{old_name} is NOT a @callback in #{module} — skipping implementers")
-          []
-        end
-
-      # Build the set of all files to scan.
-      # For @callback renames, we also need callers of each implementer
-      # (e.g., endpoint.ex calls RunTests.execute directly, not through Registry)
-      implementer_callers =
-        if is_callback do
-          Enum.flat_map(implementers, fn impl ->
-            case Giulia.Knowledge.Store.dependents(state.project_path, impl) do
-              {:ok, deps} -> deps
-              _ -> []
-            end
-          end)
-        else
-          []
-        end
-
-      affected_modules =
-        ([module] ++ callers ++ implementers ++ implementer_callers)
-        |> Enum.uniq()
-
-      affected_files =
-        all_modules
-        |> Enum.filter(fn m -> m.name in affected_modules end)
-        |> Enum.map(fn m -> m.file end)
-        |> Enum.uniq()
-
-      Logger.info(
-        "RENAME_MFA: #{length(affected_files)} files to scan " <>
-          "(#{length(callers)} callers, #{length(implementers)} implementers, #{length(implementer_callers)} impl_callers)"
-      )
-
-      # === PHASE 2: AST-guided line-level rename in each file ===
-      {state, results} =
-        Enum.reduce(affected_files, {state, []}, fn file_path, {st, acc} ->
-          resolved = resolve_tool_path(file_path, st)
-
-          content =
-            case Map.get(st.transaction.staging_buffer, resolved) do
-              nil ->
-                case File.read(resolved) do
-                  {:ok, c} -> c
-                  {:error, reason} -> {:error, reason}
-                end
-              staged -> staged
-            end
-
-          case content do
-            {:error, reason} ->
-              {st, [{file_path, {:error, "Cannot read: #{inspect(reason)}"}} | acc]}
-
-            source ->
-              modules_in_file =
-                all_modules
-                |> Enum.filter(fn m -> m.file == file_path end)
-                |> Enum.map(fn m -> m.name end)
-
-              is_target = module in modules_in_file
-              is_implementer = Enum.any?(modules_in_file, fn m -> m in implementers end)
-              is_caller = Enum.any?(modules_in_file, fn m -> m in callers end)
-
-              {new_source, changes} =
-                rename_in_source(source, module, old_atom, old_name, new_name, arity_range,
-                  is_target: is_target,
-                  is_implementer: is_implementer,
-                  is_caller: is_caller,
-                  implementer_modules: implementers
-                )
-
-              if changes > 0 do
-                new_tx = Transaction.backup_original(st.transaction, resolved)
-                staging_buffer = Map.put(new_tx.staging_buffer, resolved, new_source)
-                new_tx = %{new_tx | staging_buffer: staging_buffer}
-                modified_files = MapSet.put(st.modified_files, resolved)
-                st = %{st | transaction: new_tx, modified_files: modified_files}
-                {st, [{file_path, {:ok, changes}} | acc]}
-              else
-                {st, [{file_path, :no_match} | acc]}
-              end
-          end
-        end)
-
-      # === PHASE 3: Build report ===
-      staged = Enum.filter(results, fn {_, r} -> match?({:ok, _}, r) end) |> Enum.reverse()
-      skipped = Enum.filter(results, fn {_, r} -> r == :no_match end) |> Enum.reverse()
-      errors = Enum.filter(results, fn {_, r} -> match?({:error, _}, r) end) |> Enum.reverse()
-
-      total_changes = Enum.reduce(staged, 0, fn {_, {:ok, c}}, acc -> acc + c end)
-
-      staged_summary =
-        staged
-        |> Enum.map_join("\n", fn {file, {:ok, count}} ->
-          "  [STAGED] #{Path.basename(file)} (#{count} rename#{if count > 1, do: "s", else: ""})"
-        end)
-
-      skipped_summary =
-        if skipped != [] do
-          "\nSkipped (no matches):\n" <>
-            Enum.map_join(skipped, "\n", fn {f, _} -> "  - #{Path.basename(f)}" end)
-        else
-          ""
-        end
-
-      error_summary =
-        if errors != [] do
-          "\nErrors:\n" <>
-            Enum.map_join(errors, "\n", fn {f, {:error, r}} -> "  - #{Path.basename(f)}: #{r}" end)
-        else
-          ""
-        end
-
-      observation =
-        if staged == [] do
-          """
-          [RENAME_MFA] FAILED: #{module}.#{old_name}/#{arity} → #{new_name}
-          0 renames across #{length(affected_files)} files.
-          Callers found: #{length(callers)}, Implementers: #{length(implementers)}
-          Arity range: #{inspect(arity_range)}
-          #{error_summary}
-
-          HINT: Verify the function exists with get_module_info or lookup_function.
-          """
-        else
-          """
-          [RENAME_MFA] #{module}.#{old_name}/#{arity} → #{new_name}
-          #{length(staged)} file(s) staged, #{total_changes} total renames
-          Arity range: #{inspect(arity_range)}
-
-          Staged:
-          #{staged_summary}#{skipped_summary}#{error_summary}
-
-          Discovery: #{length(callers)} callers, #{length(implementers)} implementers
-          Currently staging #{map_size(state.transaction.staging_buffer)} file(s) total. Use commit_changes to flush.
-          """
-        end
-
-      Logger.info("RENAME_MFA: #{length(staged)} files staged, #{total_changes} renames")
-
-      # Broadcast events
-      if state.request_id do
-        Events.broadcast(state.request_id, %{
-          type: :tool_call,
-          iteration: state.iteration,
-          tool: "rename_mfa",
-          params: %{module: module, old_name: old_name, new_name: new_name, arity: arity},
-          staged: true
-        })
-
-        Events.broadcast(state.request_id, %{
-          type: :tool_result,
-          tool: "rename_mfa",
-          success: length(staged) > 0,
-          preview: "#{length(staged)} files, #{total_changes} renames",
-          staged: true
-        })
-      end
-
-      # Record in history
-      assistant_msg = response.content || Jason.encode!(%{tool: "rename_mfa", parameters: params})
-
-      messages =
-        state.messages ++
-          [
-            %{role: "assistant", content: assistant_msg},
-            %{role: "user", content: String.trim(observation)}
-          ]
-
-      state = %{
-        state
-        | messages: messages,
-          last_action: {"rename_mfa", params},
-          action_history: [
-            {"rename_mfa", params, {:ok, "staged"}} | Enum.take(state.action_history, 4)
-          ],
-          consecutive_failures: 0
-      }
-
-      {:noreply, state, {:continue, :step}}
-    end
-  end
-
-  # Detect default arguments and return the range of valid arities.
-  # e.g., def execute(name, args, opts \\ []) → [2, 3]
-  defp detect_arity_range(source, old_atom, declared_arity) do
-    case Sourceror.parse_string(source) do
-      {:ok, ast} ->
-        # Scan ALL definitions to find max arity and max default count
-        {_ast, {max_total_arity, max_defaults}} =
-          Macro.prewalk(ast, {0, 0}, fn
-            {def_type, _meta, [{^old_atom, _fn_meta, args} | _]} = node, {max_a, max_d}
-            when def_type in [:def, :defp] and is_list(args) ->
-              total = length(args)
-
-              defaults =
-                Enum.count(args, fn
-                  {:\\, _, _} -> true
-                  _ -> false
-                end)
-
-              {node, {max(max_a, total), max(max_d, defaults)}}
-
-            node, acc ->
-              {node, acc}
-          end)
-
-        # Range covers: lowest possible arity (declared - defaults) to highest found arity
-        # This ensures arity=2 still catches a function with 3 args + 1 default
-        max_arity = max(declared_arity, max_total_arity)
-        min_arity = min(declared_arity, max_arity - max_defaults)
-        min_arity = max(min_arity, 0)
-        Enum.to_list(min_arity..max_arity)
-
-      _ ->
-        [declared_arity]
-    end
-  end
-
-  # AST-guided, line-level rename within a single source file.
-  # Uses Sourceror to find exact line numbers, then string replacement to preserve formatting.
-  # Returns {new_source, change_count}.
-  defp rename_in_source(source, target_module, old_atom, old_name, new_name, arity_range, opts) do
-    is_target = Keyword.get(opts, :is_target, false)
-    is_implementer = Keyword.get(opts, :is_implementer, false)
-    _is_caller = Keyword.get(opts, :is_caller, false)
-    implementer_modules = Keyword.get(opts, :implementer_modules, [])
-
-    case Sourceror.parse_string(source) do
-      {:ok, ast} ->
-        # Phase 1: Walk AST to collect {line_number, type} of rename targets
-        {_ast, raw_targets} =
-          Macro.prewalk(ast, [], fn node, acc ->
-            case node do
-              # def/defp definitions in target or implementer
-              {def_type, _meta, [{^old_atom, fn_meta, args} | _]}
-              when def_type in [:def, :defp] and (is_target or is_implementer) ->
-                if length(args || []) in arity_range do
-                  {node, [{fn_meta[:line], :def} | acc]}
-                else
-                  {node, acc}
-                end
-
-              # @callback declarations in target (behaviour module)
-              {:@, _attr_meta,
-               [{:callback, _cb_meta,
-                 [{:"::", _spec_meta, [{^old_atom, fn_meta, args} | _]} | _]}]}
-              when is_target ->
-                if length(args || []) in arity_range do
-                  {node, [{fn_meta[:line], :callback} | acc]}
-                else
-                  {node, acc}
-                end
-
-              # Dynamic dispatch: var.old_name(args) inside the target module
-              # e.g., module.execute(arguments, opts) in Registry
-              # MUST come before remote call pattern (both match {{:., _, [_, ^old_atom]}, _, _})
-              {{:., _dot_meta2, [{_var, _var_meta, ctx}, ^old_atom]}, call_meta, args}
-              when is_target and is_atom(ctx) ->
-                if length(args || []) in arity_range do
-                  {node, [{call_meta[:line], :dynamic_call} | acc]}
-                else
-                  {node, acc}
-                end
-
-              # Remote calls: Module.old_name(args)
-              # Matches calls to the target module (Registry.execute) AND
-              # calls to any implementer module (RunTests.execute, SearchCode.execute)
-              {{:., _dot_meta, [alias_node, ^old_atom]}, call_meta, args} ->
-                if length(args || []) in arity_range and
-                     (ast_matches_module?(alias_node, target_module) or
-                      ast_matches_any_module?(alias_node, implementer_modules)) do
-                  {node, [{call_meta[:line], :remote_call} | acc]}
-                else
-                  {node, acc}
-                end
-
-              # Local function calls: execute(struct, opts) inside target/implementer
-              # AST: {:execute, meta, [arg1, arg2]} where args is a list (not a variable)
-              {^old_atom, call_meta, args}
-              when (is_target or is_implementer) and is_list(args) ->
-                if length(args) in arity_range do
-                  {node, [{call_meta[:line], :local_call} | acc]}
-                else
-                  {node, acc}
-                end
-
-              _ ->
-                {node, acc}
-            end
-          end)
-
-        # Deduplicate by line (prewalk may hit the same line via nested nodes)
-        target_lines =
-          raw_targets
-          |> Enum.map(fn {line, _type} -> line end)
-          |> Enum.uniq()
-          |> MapSet.new()
-
-        if MapSet.size(target_lines) == 0 do
-          {source, 0}
-        else
-          # Phase 2: Line-level string replacement (preserves formatting perfectly)
-          {new_lines, count} =
-            source
-            |> String.split("\n")
-            |> Enum.with_index(1)
-            |> Enum.map_reduce(0, fn {line, num}, acc ->
-              if MapSet.member?(target_lines, num) do
-                new_line = rename_on_line(line, old_name, new_name)
-
-                if new_line != line do
-                  {new_line, acc + 1}
-                else
-                  {line, acc}
-                end
-              else
-                {line, acc}
-              end
-            end)
-
-          {Enum.join(new_lines, "\n"), count}
-        end
-
-      {:error, _} ->
-        Logger.warning("RENAME_MFA: Sourceror parse failed, skipping file")
-        {source, 0}
-    end
-  end
-
-  # Replace function name on a specific line, using context-aware patterns.
-  # Tries most specific patterns first to avoid false matches.
-  defp rename_on_line(line, old_name, new_name) do
-    # Use word-boundary regex to replace the function name precisely.
-    # Matches: def execute(, defp execute(, .execute(, @callback execute(,
-    # and bare local calls: execute(struct, opts)
-    # The \b ensures we don't match partial names (e.g., "pre_execute").
-    Regex.replace(~r/\b#{Regex.escape(old_name)}\(/, line, "#{new_name}(")
-  end
-
-  # Check if an AST alias node matches a fully-qualified module name.
-  defp ast_matches_module?({:__aliases__, _meta, parts}, target_module) when is_list(parts) do
-    alias_str = Enum.map_join(parts, ".", &Atom.to_string/1)
-    alias_str == target_module or
-      Atom.to_string(List.last(parts)) == last_segment(target_module)
-  end
-
-  defp ast_matches_module?(atom, target_module) when is_atom(atom) do
-    Atom.to_string(atom) == target_module or
-      Atom.to_string(atom) == last_segment(target_module)
-  end
-
-  defp ast_matches_module?(_, _), do: false
-
-  defp ast_matches_any_module?(_alias_node, []), do: false
-  defp ast_matches_any_module?(alias_node, modules) do
-    Enum.any?(modules, &ast_matches_module?(alias_node, &1))
-  end
-
-  defp last_segment(module_name) do
-    module_name |> String.split(".") |> List.last()
-  end
-
-  # Get implementers from the Knowledge Graph (modules with :implements edges)
-  defp get_implementers_from_graph(project_path, behaviour_module) do
-    try do
-      GenServer.call(Giulia.Knowledge.Store, {:get_implementers, project_path, behaviour_module})
-    catch
-      :exit, _ -> {:ok, []}
+      {:error, reason} ->
+        send_rename_error(reason, params, response, state)
     end
   end
 
