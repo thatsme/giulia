@@ -681,6 +681,110 @@ defmodule Giulia.Daemon.Endpoint do
   end
 
   # ============================================================================
+  # Synthesized Logic View (Oracle Endpoints)
+  # ============================================================================
+
+  # Logic flow: function-level Dijkstra path between two MFA vertices
+  get "/api/knowledge/logic_flow" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        from = conn.query_params["from"]
+        to = conn.query_params["to"]
+
+        if from && to do
+          case Giulia.Knowledge.Store.logic_flow(project_path, from, to) do
+            {:ok, :no_path} ->
+              send_json(conn, 200, %{from: from, to: to, steps: nil, hop_count: 0, message: "No path found"})
+
+            {:ok, steps} ->
+              send_json(conn, 200, %{from: from, to: to, steps: steps, hop_count: max(length(steps) - 1, 0)})
+
+            {:error, {:not_found, vertex}} ->
+              send_json(conn, 404, %{error: "MFA vertex not found in graph", vertex: vertex})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query params: from, to (MFA format: Module.func/arity)"})
+        end
+    end
+  end
+
+  # Style oracle: semantic search + quality gate (@spec + @doc)
+  get "/api/knowledge/style_oracle" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        query = conn.query_params["q"]
+
+        if query do
+          top_k =
+            case Integer.parse(conn.query_params["top_k"] || "3") do
+              {n, _} -> n
+              :error -> 3
+            end
+
+          case Giulia.Knowledge.Store.style_oracle(project_path, query, top_k) do
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, "Semantic search unavailable" <> _} ->
+              send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: inspect(reason)})
+          end
+        else
+          send_json(conn, 400, %{error: "Missing required query param: q"})
+        end
+    end
+  end
+
+  # Pre-impact check: rename/remove risk analysis
+  post "/api/knowledge/pre_impact_check" do
+    path = conn.body_params["path"]
+    module = conn.body_params["module"]
+    action = conn.body_params["action"]
+
+    if path && module && action do
+      resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+      case Giulia.Knowledge.Store.pre_impact_check(resolved_path, conn.body_params) do
+        {:ok, result} ->
+          send_json(conn, 200, result)
+
+        {:error, {:not_found, vertex}} ->
+          send_json(conn, 404, %{error: "Vertex not found in graph", vertex: vertex})
+
+        {:error, {:unknown_action, act}} ->
+          send_json(conn, 400, %{error: "Unknown action: #{act}. Use: rename_function, remove_function, rename_module"})
+
+        {:error, {:invalid_target, target}} ->
+          send_json(conn, 400, %{error: "Invalid target format: #{target}. Use: func_name/arity"})
+
+        {:error, reason} ->
+          send_json(conn, 500, %{error: inspect(reason)})
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required fields: path, module, action"})
+    end
+  end
+
+  # Heatmap: composite module health scores
+  get "/api/knowledge/heatmap" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Knowledge.Store.heatmap(project_path) do
+          {:ok, result} ->
+            send_json(conn, 200, result)
+
+          {:error, reason} ->
+            send_json(conn, 500, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  # ============================================================================
   # Approval Endpoints (Interactive Consent Gate)
   # ============================================================================
 

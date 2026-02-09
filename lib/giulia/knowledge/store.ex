@@ -246,6 +246,44 @@ defmodule Giulia.Knowledge.Store do
     GenServer.call(__MODULE__, {:get_implementers, project_path, behaviour})
   end
 
+  @doc """
+  Trace the function-call path between two MFA vertices.
+  Uses Dijkstra on the enriched graph (Pass 4 function-call edges).
+  """
+  @spec logic_flow(project_path(), String.t(), String.t()) ::
+          {:ok, [map()]} | {:ok, :no_path} | {:error, {:not_found, String.t()}}
+  def logic_flow(project_path, from_mfa, to_mfa) do
+    GenServer.call(__MODULE__, {:logic_flow, project_path, from_mfa, to_mfa}, 30_000)
+  end
+
+  @doc """
+  Find exemplar functions matching a concept query.
+  Quality gate: only functions with both @spec and @doc.
+  """
+  @spec style_oracle(project_path(), String.t(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()}
+  def style_oracle(project_path, query, top_k \\ 3) do
+    GenServer.call(__MODULE__, {:style_oracle, project_path, query, top_k}, 30_000)
+  end
+
+  @doc """
+  Pre-impact check for rename/remove operations.
+  Returns affected callers, risk score, and suggested phases.
+  """
+  @spec pre_impact_check(project_path(), map()) :: {:ok, map()} | {:error, term()}
+  def pre_impact_check(project_path, params) do
+    GenServer.call(__MODULE__, {:pre_impact_check, project_path, params}, 30_000)
+  end
+
+  @doc """
+  Heatmap of module health — composite score from centrality, complexity,
+  test coverage, and coupling.
+  """
+  @spec heatmap(project_path()) :: {:ok, map()}
+  def heatmap(project_path) do
+    GenServer.call(__MODULE__, {:heatmap, project_path}, 30_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -422,6 +460,33 @@ defmodule Giulia.Knowledge.Store do
     {:reply, :ok, put_graph(state, project_path, new_graph)}
   end
 
+  @impl true
+  def handle_call({:logic_flow, project_path, from_mfa, to_mfa}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_logic_flow(graph, project_path, from_mfa, to_mfa)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:style_oracle, project_path, query, top_k}, _from, state) do
+    result = compute_style_oracle(project_path, query, top_k)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:pre_impact_check, project_path, params}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_pre_impact_check(graph, project_path, params)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:heatmap, project_path}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = compute_heatmap(graph, project_path)
+    {:reply, result, state}
+  end
+
   # ============================================================================
   # Graph Construction
   # ============================================================================
@@ -454,7 +519,12 @@ defmodule Giulia.Knowledge.Store do
     end)
 
     # Pass 3: Add xref call edges (if compiled BEAM files exist)
-    add_xref_edges(graph)
+    graph = add_xref_edges(graph)
+
+    # Pass 4: Function-level call edges (AST-based)
+    # Walks each function body to find calls to other project functions,
+    # creating MFA→MFA edges like "Mod.foo/2" → "Other.bar/1"
+    add_function_call_edges(graph, ast_data, all_modules)
   end
 
   defp add_module_vertices(graph, data) do
@@ -630,6 +700,139 @@ defmodule Giulia.Knowledge.Store do
   end
 
   defp add_module_call_edges(graph, _), do: graph
+
+  # ============================================================================
+  # Pass 4: Function-Level Call Edges (AST-based)
+  # ============================================================================
+
+  defp add_function_call_edges(graph, ast_data, all_modules) do
+    Enum.reduce(ast_data, graph, fn {path, data}, g ->
+      modules = data[:modules] || []
+      functions = data[:functions] || []
+
+      case modules do
+        [source_mod | _] ->
+          caller_module = source_mod.name
+
+          # Build alias map for this file
+          alias_map =
+            (data[:imports] || [])
+            |> Enum.filter(fn imp -> imp.type == :alias end)
+            |> Map.new(fn imp ->
+              short = imp.module |> String.split(".") |> List.last()
+              {short, imp.module}
+            end)
+
+          # Read and parse source
+          source = case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              extract_calls_per_function(g, ast, caller_module, functions, alias_map, all_modules)
+            _ ->
+              g
+          end
+
+        _ ->
+          g
+      end
+    end)
+  end
+
+  # Single-pass: walk the entire AST, find def/defp nodes, extract calls from their body.
+  # This avoids relying on get_function_range (whose line-range detection is fragile with Sourceror).
+  defp extract_calls_per_function(graph, ast, caller_module, _functions, alias_map, all_modules) do
+    # Walk the AST to find all def/defp nodes and their bodies
+    {_ast, func_call_map} =
+      Macro.prewalk(ast, %{}, fn
+        # Match def/defp function definitions (with args)
+        {def_type, _meta, [{func_name, _fn_meta, args}, body]} = node, acc
+        when def_type in [:def, :defp] and is_atom(func_name) ->
+          arity = if is_list(args), do: length(args), else: 0
+          caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
+          calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
+          existing = Map.get(acc, caller_mfa, MapSet.new())
+          {node, Map.put(acc, caller_mfa, MapSet.union(existing, calls))}
+
+        # Match def/defp with guard clause: def foo(x) when is_integer(x)
+        {def_type, _meta, [{:when, _, [{func_name, _fn_meta, args} | _guards]}, body]} = node, acc
+        when def_type in [:def, :defp] and is_atom(func_name) ->
+          arity = if is_list(args), do: length(args), else: 0
+          caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
+          calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
+          existing = Map.get(acc, caller_mfa, MapSet.new())
+          {node, Map.put(acc, caller_mfa, MapSet.union(existing, calls))}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    # Add edges for all discovered caller→callee relationships
+    Enum.reduce(func_call_map, graph, fn {caller_mfa, call_targets}, g ->
+      if Graph.has_vertex?(g, caller_mfa) do
+        Enum.reduce(call_targets, g, fn target_mfa, g2 ->
+          if target_mfa != caller_mfa and Graph.has_vertex?(g2, target_mfa) do
+            Graph.add_edge(g2, caller_mfa, target_mfa, label: :calls)
+          else
+            g2
+          end
+        end)
+      else
+        g
+      end
+    end)
+  end
+
+  # Walk a function body AST and collect all call targets as MFA strings
+  defp extract_calls_from_body(body, caller_module, alias_map, all_modules) do
+    {_body, calls} =
+      Macro.prewalk(body, MapSet.new(), fn
+        # Remote call: Module.func(args) — resolve aliases
+        {{:., _, [{:__aliases__, _meta, parts}, func_name]}, _call_meta, args} = node, set
+        when is_atom(func_name) and is_list(args) ->
+          raw_mod = Enum.map_join(parts, ".", &to_string/1)
+          mod = Map.get(alias_map, raw_mod, raw_mod)
+          if MapSet.member?(all_modules, mod) do
+            target_mfa = "#{mod}.#{func_name}/#{length(args)}"
+            {node, MapSet.put(set, target_mfa)}
+          else
+            {node, set}
+          end
+
+        # Remote call with atom module: :erlang.func(args)
+        {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
+        when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
+          mod = Atom.to_string(mod_atom) |> String.replace_leading("Elixir.", "")
+          if MapSet.member?(all_modules, mod) do
+            target_mfa = "#{mod}.#{func_name}/#{length(args)}"
+            {node, MapSet.put(set, target_mfa)}
+          else
+            {node, set}
+          end
+
+        # Local call: func(args) — same module
+        {local_name, _meta, args} = node, set
+        when is_atom(local_name) and is_list(args) and
+             local_name not in [:def, :defp, :defmodule, :defmacro, :defmacrop,
+                                :if, :unless, :case, :cond, :with, :for, :fn,
+                                :quote, :unquote, :import, :alias, :use, :require,
+                                :raise, :reraise, :throw, :try, :receive, :send,
+                                :spawn, :spawn_link, :super, :__block__, :__aliases__,
+                                :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
+                                :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
+                                :sigil_r, :sigil_s, :sigil_c, :sigil_w] ->
+          target_mfa = "#{caller_module}.#{local_name}/#{length(args)}"
+          {node, MapSet.put(set, target_mfa)}
+
+        node, set ->
+          {node, set}
+      end)
+
+    calls
+  end
 
   # ============================================================================
   # Query Implementation
@@ -1557,6 +1760,485 @@ defmodule Giulia.Knowledge.Store do
       |> Enum.sort_by(&{&1.module, &1.spec_function, &1.spec_arity})
 
     {:ok, %{orphans: orphans, count: length(orphans)}}
+  end
+
+  # ============================================================================
+  # Logic Flow (Function-level Dijkstra path)
+  # ============================================================================
+
+  defp compute_logic_flow(graph, project_path, from_mfa, to_mfa) do
+    cond do
+      not Graph.has_vertex?(graph, from_mfa) ->
+        {:error, {:not_found, from_mfa}}
+
+      not Graph.has_vertex?(graph, to_mfa) ->
+        {:error, {:not_found, to_mfa}}
+
+      true ->
+        case Graph.dijkstra(graph, from_mfa, to_mfa) do
+          nil ->
+            {:ok, :no_path}
+
+          path ->
+            steps = Enum.map(path, fn mfa -> enrich_mfa_vertex(mfa, project_path) end)
+            {:ok, steps}
+        end
+    end
+  end
+
+  defp enrich_mfa_vertex(mfa, project_path) do
+    case parse_mfa_vertex(mfa) do
+      {:ok, module, function, arity} ->
+        # Look up file and line from ETS
+        {file, line} =
+          case Giulia.Context.Store.find_module(project_path, module) do
+            {:ok, %{file: file, ast_data: ast_data}} ->
+              func_line =
+                (ast_data[:functions] || [])
+                |> Enum.find(fn f ->
+                  to_string(f.name) == function and f.arity == arity
+                end)
+                |> case do
+                  nil -> nil
+                  f -> f.line
+                end
+              {file, func_line}
+            _ ->
+              {nil, nil}
+          end
+
+        %{mfa: mfa, module: module, function: function, arity: arity, file: file, line: line}
+
+      :error ->
+        %{mfa: mfa, module: mfa, function: nil, arity: nil, file: nil, line: nil}
+    end
+  end
+
+  # Parse "Giulia.Foo.bar/2" into {:ok, "Giulia.Foo", "bar", 2}
+  defp parse_mfa_vertex(mfa) do
+    case Regex.run(~r/^(.+)\.([^.]+)\/(\d+)$/, mfa) do
+      [_, module, function, arity_str] ->
+        {:ok, module, function, String.to_integer(arity_str)}
+      _ ->
+        :error
+    end
+  end
+
+  # ============================================================================
+  # Style Oracle (Semantic search + quality gate)
+  # ============================================================================
+
+  defp compute_style_oracle(project_path, query, top_k) do
+    # Broad semantic search (3x top_k for filtering headroom)
+    case Giulia.Intelligence.SemanticIndex.search(project_path, query, top_k * 3) do
+      {:ok, %{functions: function_results}} ->
+        # Quality gate: only functions with BOTH @spec AND @doc
+        exemplars =
+          function_results
+          |> Enum.map(fn result ->
+            module = result.metadata.module
+            function = result.metadata.function
+            arity = result.metadata.arity
+            file = result.metadata.file
+            line = result.metadata.line
+
+            spec = case Giulia.Context.Store.get_spec(project_path, module, function, arity) do
+              %{spec: s} when is_binary(s) and s != "" -> s
+              _ -> nil
+            end
+
+            doc = case Giulia.Context.Store.get_function_doc(project_path, module, function, arity) do
+              %{doc: d} when is_binary(d) and d != "" -> d
+              _ -> nil
+            end
+
+            # Try to get source code
+            source = if file do
+              func_atom = String.to_atom(function)
+              case File.read(file) do
+                {:ok, content} ->
+                  case Giulia.AST.Processor.slice_function(content, func_atom, arity) do
+                    {:ok, src} -> src
+                    _ -> nil
+                  end
+                _ -> nil
+              end
+            end
+
+            %{
+              mfa: "#{module}.#{function}/#{arity}",
+              score: result.score,
+              spec: spec,
+              doc: doc,
+              source: source,
+              file: file,
+              line: line,
+              has_spec: spec != nil,
+              has_doc: doc != nil
+            }
+          end)
+          |> Enum.filter(fn e -> e.has_spec and e.has_doc end)
+          |> Enum.take(top_k)
+          |> Enum.map(fn e -> Map.drop(e, [:has_spec, :has_doc]) end)
+
+        {:ok, %{
+          query: query,
+          exemplars: exemplars,
+          count: length(exemplars),
+          quality_gate: "Functions with both @spec and @doc"
+        }}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # ============================================================================
+  # Pre-Impact Check (Rename/Remove risk analysis)
+  # ============================================================================
+
+  defp compute_pre_impact_check(graph, project_path, params) do
+    action = params["action"]
+    module = params["module"]
+    target = params["target"]
+    new_name = params["new_name"]
+
+    case action do
+      "rename_function" ->
+        check_rename_function(graph, project_path, module, target, new_name)
+
+      "remove_function" ->
+        check_remove_function(graph, project_path, module, target)
+
+      "rename_module" ->
+        check_rename_module(graph, project_path, module, new_name)
+
+      _ ->
+        {:error, {:unknown_action, action}}
+    end
+  end
+
+  defp check_rename_function(graph, project_path, module, target, new_name) do
+    case parse_func_target(target) do
+      {:ok, func_name, arity} ->
+        mfa = "#{module}.#{func_name}/#{arity}"
+
+        if not Graph.has_vertex?(graph, mfa) do
+          {:error, {:not_found, mfa}}
+        else
+          # Find all callers (in-neighbors on MFA vertex)
+          callers = Graph.in_neighbors(graph, mfa)
+                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+
+          affected = Enum.map(callers, fn caller_mfa ->
+            enrich_mfa_vertex(caller_mfa, project_path)
+          end)
+
+          affected_modules =
+            affected
+            |> Enum.map(& &1.module)
+            |> Enum.uniq()
+
+          new_mfa = "#{module}.#{new_name}/#{arity}"
+
+          risk = compute_impact_risk(length(callers), length(affected_modules), graph, affected_modules)
+          phases = build_phases(module, affected, graph)
+
+          warnings = build_hub_warnings(graph, affected_modules)
+
+          {:ok, %{
+            action: "rename_function",
+            target: mfa,
+            new_name: new_mfa,
+            affected_callers: affected,
+            affected_count: length(affected),
+            affected_modules: length(affected_modules),
+            risk_score: risk,
+            risk_level: risk_level(risk),
+            phases: phases,
+            warnings: warnings
+          }}
+        end
+
+      :error ->
+        {:error, {:invalid_target, target}}
+    end
+  end
+
+  defp check_remove_function(graph, project_path, module, target) do
+    case parse_func_target(target) do
+      {:ok, func_name, arity} ->
+        mfa = "#{module}.#{func_name}/#{arity}"
+
+        if not Graph.has_vertex?(graph, mfa) do
+          {:error, {:not_found, mfa}}
+        else
+          callers = Graph.in_neighbors(graph, mfa)
+                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+
+          callees = Graph.out_neighbors(graph, mfa)
+                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+
+          affected = Enum.map(callers, fn caller_mfa ->
+            enrich_mfa_vertex(caller_mfa, project_path)
+          end)
+
+          affected_modules =
+            affected
+            |> Enum.map(& &1.module)
+            |> Enum.uniq()
+
+          risk = compute_impact_risk(length(callers), length(affected_modules), graph, affected_modules)
+          phases = build_phases(module, affected, graph)
+
+          warnings =
+            build_hub_warnings(graph, affected_modules) ++
+            if length(callers) > 0 do
+              ["BREAKING: #{length(callers)} callers will break if #{mfa} is removed"]
+            else
+              []
+            end
+
+          # Find orphaned callees (things only called by this function)
+          orphaned = Enum.filter(callees, fn callee ->
+            callers_of_callee = Graph.in_neighbors(graph, callee)
+            callers_of_callee == [mfa] or callers_of_callee == []
+          end)
+
+          {:ok, %{
+            action: "remove_function",
+            target: mfa,
+            affected_callers: affected,
+            affected_count: length(affected),
+            affected_modules: length(affected_modules),
+            potentially_orphaned: orphaned,
+            risk_score: risk,
+            risk_level: risk_level(risk),
+            phases: phases,
+            warnings: warnings
+          }}
+        end
+
+      :error ->
+        {:error, {:invalid_target, target}}
+    end
+  end
+
+  defp check_rename_module(graph, project_path, module, new_name) do
+    if not Graph.has_vertex?(graph, module) do
+      {:error, {:not_found, module}}
+    else
+      # Module-level blast radius using existing dependents
+      case compute_dependents(graph, module) do
+        {:ok, deps} ->
+          # Hub penalty
+          hub_penalty = case compute_centrality(graph, module) do
+            {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> in_deg * 3
+            {:ok, %{in_degree: in_deg}} -> in_deg
+            _ -> 0
+          end
+
+          affected = Enum.map(deps, fn dep ->
+            case Giulia.Context.Store.find_module(project_path, dep) do
+              {:ok, %{file: file}} -> %{module: dep, file: file}
+              _ -> %{module: dep, file: nil}
+            end
+          end)
+
+          risk = length(deps) * 5 + hub_penalty
+          warnings = if hub_penalty > 30, do: ["HUB MODULE: #{module} has #{hub_penalty} hub penalty"], else: []
+
+          {:ok, %{
+            action: "rename_module",
+            target: module,
+            new_name: new_name,
+            affected_dependents: affected,
+            affected_count: length(affected),
+            risk_score: risk,
+            risk_level: risk_level(risk),
+            warnings: warnings
+          }}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  # Phase algorithm: target first, then leaf callers, then interconnected
+  defp build_phases(target_module, affected_callers, graph) do
+    phase1 = %{phase: 1, description: "Update target definition", modules: [target_module]}
+
+    # Group callers by module
+    caller_modules =
+      affected_callers
+      |> Enum.map(& &1.module)
+      |> Enum.uniq()
+      |> Enum.reject(& &1 == target_module)
+
+    affected_set = MapSet.new(caller_modules)
+
+    # Leaf callers: no deps on other affected modules
+    {leaves, interconnected} =
+      Enum.split_with(caller_modules, fn mod ->
+        deps = case Graph.out_neighbors(graph, mod) do
+          neighbors when is_list(neighbors) -> neighbors
+          _ -> []
+        end
+
+        not Enum.any?(deps, fn dep -> MapSet.member?(affected_set, dep) and dep != mod end)
+      end)
+
+    phases = [phase1]
+    phases = if leaves != [], do: phases ++ [%{phase: 2, description: "Update leaf callers", modules: Enum.sort(leaves)}], else: phases
+    phases = if interconnected != [], do: phases ++ [%{phase: 3, description: "Update interconnected callers", modules: Enum.sort(interconnected)}], else: phases
+    phases
+  end
+
+  defp compute_impact_risk(caller_count, module_count, graph, affected_modules) do
+    hub_penalty =
+      Enum.sum(Enum.map(affected_modules, fn mod ->
+        case compute_centrality(graph, mod) do
+          {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> 10
+          _ -> 0
+        end
+      end))
+
+    caller_count * 2 + module_count * 5 + hub_penalty
+  end
+
+  defp risk_level(score) when score < 20, do: "low"
+  defp risk_level(score) when score < 50, do: "medium"
+  defp risk_level(_score), do: "high"
+
+  defp build_hub_warnings(graph, affected_modules) do
+    Enum.flat_map(affected_modules, fn mod ->
+      case compute_centrality(graph, mod) do
+        {:ok, %{in_degree: in_deg}} when in_deg >= 10 ->
+          ["HUB CALLER: #{mod} has #{in_deg} dependents"]
+        _ ->
+          []
+      end
+    end)
+  end
+
+  # Parse "func/arity" or "func_name/2" into {:ok, "func", 2}
+  defp parse_func_target(target) do
+    case Regex.run(~r/^(.+)\/(\d+)$/, target) do
+      [_, func, arity_str] -> {:ok, func, String.to_integer(arity_str)}
+      _ -> :error
+    end
+  end
+
+  # ============================================================================
+  # Heatmap (Composite module health score)
+  # ============================================================================
+
+  defp compute_heatmap(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
+    coupling_map = build_coupling_map(all_asts)
+
+    # Module -> file lookup
+    module_files =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+      end)
+      |> Map.new()
+
+    # Get all module vertices
+    module_vertices =
+      Graph.vertices(graph)
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+
+    # Compute per-module scores
+    modules =
+      module_vertices
+      |> Enum.map(fn mod ->
+        path = Map.get(module_files, mod)
+
+        # Factor 1: Centrality (in-degree)
+        centrality = length(Graph.in_neighbors(graph, mod))
+
+        # Factor 2: Complexity
+        complexity =
+          if path do
+            case File.read(path) do
+              {:ok, source} ->
+                case Sourceror.parse_string(source) do
+                  {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
+                  _ -> 0
+                end
+              _ -> 0
+            end
+          else
+            0
+          end
+
+        # Factor 3: Test fragility (does a test file exist?)
+        has_test =
+          if path do
+            test_file = Giulia.Tools.RunTests.suggest_test_file(path)
+            full_test = Path.join(project_path, test_file)
+            File.exists?(full_test)
+          else
+            false
+          end
+
+        # Factor 4: Max coupling
+        max_coupling = Map.get(coupling_map, mod, 0)
+
+        # Normalize each factor to 0-100
+        # Centrality: cap at 15 in-degree = 100
+        norm_centrality = min(centrality / 15 * 100, 100) |> trunc()
+        # Complexity: cap at 200 = 100
+        norm_complexity = min(complexity / 200 * 100, 100) |> trunc()
+        # Test fragility: 100 if no test, 0 if has test
+        norm_test = if has_test, do: 0, else: 100
+        # Max coupling: cap at 50 calls to one module = 100
+        norm_coupling = min(max_coupling / 50 * 100, 100) |> trunc()
+
+        # Weighted composite
+        score =
+          trunc(
+            norm_centrality * 0.30 +
+            norm_complexity * 0.25 +
+            norm_test * 0.25 +
+            norm_coupling * 0.20
+          )
+
+        zone = cond do
+          score >= 60 -> "red"
+          score >= 30 -> "yellow"
+          true -> "green"
+        end
+
+        %{
+          module: mod,
+          score: score,
+          zone: zone,
+          breakdown: %{
+            complexity: complexity,
+            centrality: centrality,
+            max_coupling: max_coupling,
+            has_test: has_test
+          },
+          file: path || "unknown"
+        }
+      end)
+      |> Enum.sort_by(fn m -> -m.score end)
+
+    zones = Enum.frequencies_by(modules, & &1.zone)
+
+    {:ok, %{
+      modules: modules,
+      count: length(modules),
+      zones: %{
+        red: Map.get(zones, "red", 0),
+        yellow: Map.get(zones, "yellow", 0),
+        green: Map.get(zones, "green", 0)
+      }
+    }}
   end
 
   defp compute_stats(graph) do
