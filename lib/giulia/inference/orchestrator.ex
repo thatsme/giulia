@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -2285,39 +2285,15 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   # ============================================================================
-  # Bulk Replace — Batch find-and-replace across multiple files
+  # Bulk Replace — delegates to Giulia.Inference.BulkReplace (pure-functional)
   # ============================================================================
 
   defp execute_bulk_replace(params, response, state) do
-    pattern = params["pattern"] || params[:pattern]
-    replacement = params["replacement"] || params[:replacement]
-    file_list = params["file_list"] || params[:file_list] || []
-    use_regex = params["regex"] || params[:regex] || false
-
-    cond do
-      is_nil(pattern) or pattern == "" ->
-        send_bulk_error("Missing required parameter: pattern", params, response, state)
-
-      is_nil(replacement) ->
-        send_bulk_error("Missing required parameter: replacement", params, response, state)
-
-      file_list == [] ->
-        send_bulk_error(
-          "file_list is empty. Use get_impact_map first to find dependents.",
-          params,
-          response,
-          state
-        )
-
-      true ->
-        do_bulk_replace(pattern, replacement, file_list, use_regex, params, response, state)
-    end
-  end
-
-  defp do_bulk_replace(pattern, replacement, file_list, use_regex, params, response, state) do
     # Auto-enable transaction mode for bulk operations
+    file_list = params["file_list"] || params[:file_list] || []
+
     state =
-      if not state.transaction.mode do
+      if not state.transaction.mode and file_list != [] do
         Logger.info("BULK_REPLACE: Auto-enabling transaction mode for batch operation")
 
         if state.request_id do
@@ -2332,189 +2308,59 @@ defmodule Giulia.Inference.Orchestrator do
         state
       end
 
-    # Compile the regex if needed
-    regex =
-      if use_regex do
-        case Regex.compile(pattern) do
-          {:ok, r} -> r
-          {:error, _} -> nil
-        end
-      else
-        nil
-      end
+    opts = [
+      project_path: state.project_path,
+      resolve_fn: &resolve_tool_path(&1, state),
+      modified_files: state.modified_files
+    ]
 
-    if use_regex and is_nil(regex) do
-      send_bulk_error("Invalid regex pattern: #{pattern}", params, response, state)
-    else
-      # Process each file
-      results =
-        Enum.map(file_list, fn file_path ->
-          resolved_path = resolve_tool_path(file_path, state)
+    case BulkReplace.execute(params, state.transaction, opts) do
+      {:ok, observation, new_tx, modified_files, meta} ->
+        if state.request_id do
+          Events.broadcast(state.request_id, %{
+            type: :tool_call,
+            iteration: state.iteration,
+            tool: "bulk_replace",
+            params: %{pattern: meta.pattern, replacement: meta.replacement,
+                       files: meta.file_count},
+            staged: true
+          })
 
-          # Read from staging buffer first, then disk
-          content =
-            case Map.get(state.transaction.staging_buffer, resolved_path) do
-              nil ->
-                case File.read(resolved_path) do
-                  {:ok, c} -> c
-                  {:error, reason} -> {:error, "Cannot read #{file_path}: #{inspect(reason)}"}
-                end
-
-              staged ->
-                staged
-            end
-
-          case content do
-            {:error, _} = err ->
-              {file_path, resolved_path, err}
-
-            text ->
-              # Count occurrences before replacing
-              count =
-                if regex do
-                  length(Regex.scan(regex, text))
-                else
-                  # Count non-overlapping occurrences
-                  parts = String.split(text, pattern)
-                  length(parts) - 1
-                end
-
-              if count > 0 do
-                new_content =
-                  if regex do
-                    Regex.replace(regex, text, replacement)
-                  else
-                    String.replace(text, pattern, replacement)
-                  end
-
-                {file_path, resolved_path, {:replaced, count, new_content}}
-              else
-                {file_path, resolved_path, :no_match}
-              end
-          end
-        end)
-
-      # Stage all successful replacements
-      {state, staged, skipped, errors} =
-        Enum.reduce(results, {state, [], [], []}, fn
-          {file, resolved, {:replaced, count, new_content}}, {st, s, sk, e} ->
-            new_tx = Transaction.backup_original(st.transaction, resolved)
-            staging_buffer = Map.put(new_tx.staging_buffer, resolved, new_content)
-            new_tx = %{new_tx | staging_buffer: staging_buffer}
-            modified_files = MapSet.put(st.modified_files, resolved)
-            st = %{st | transaction: new_tx, modified_files: modified_files}
-            {st, [{file, count} | s], sk, e}
-
-          {file, _resolved, :no_match}, {st, s, sk, e} ->
-            {st, s, [file | sk], e}
-
-          {file, _resolved, {:error, reason}}, {st, s, sk, e} ->
-            {st, s, sk, [{file, reason} | e]}
-        end)
-
-      # Build summary
-      staged_summary =
-        staged
-        |> Enum.reverse()
-        |> Enum.map_join("\n", fn {file, count} ->
-          "  [STAGED] #{Path.basename(file)} (#{count} replacement#{if count > 1, do: "s", else: ""})"
-        end)
-
-      skipped_summary =
-        if skipped != [] do
-          "\nSkipped (no matches):\n" <>
-            Enum.map_join(Enum.reverse(skipped), "\n", &"  - #{Path.basename(&1)}")
-        else
-          ""
+          Events.broadcast(state.request_id, %{
+            type: :tool_result,
+            tool: "bulk_replace",
+            success: meta.total_replacements > 0,
+            preview: "#{length(meta.staged)} files staged, #{meta.total_replacements} replacements",
+            staged: true
+          })
         end
 
-      error_summary =
-        if errors != [] do
-          "\nErrors:\n" <>
-            Enum.map_join(Enum.reverse(errors), "\n", fn {f, r} ->
-              "  - #{Path.basename(f)}: #{r}"
-            end)
-        else
-          ""
-        end
+        assistant_msg =
+          response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
 
-      total_replacements = Enum.reduce(staged, 0, fn {_, c}, acc -> acc + c end)
-      staged_count = map_size(state.transaction.staging_buffer)
+        messages =
+          state.messages ++
+            [
+              %{role: "assistant", content: assistant_msg},
+              %{role: "user", content: observation}
+            ]
 
-      # DIAGNOSTIC FEEDBACK: If 0 matches, search for broader pattern and show what exists
-      diagnostic =
-        if staged == [] and skipped != [] do
-          broad_pattern = extract_broad_pattern(pattern)
-          bulk_diagnose(broad_pattern, file_list, state)
-        else
-          ""
-        end
+        state = %{
+          state
+          | transaction: new_tx,
+            modified_files: modified_files,
+            messages: messages,
+            last_action: {"bulk_replace", params},
+            action_history: [
+              {"bulk_replace", params, {:ok, "staged"}} | Enum.take(state.action_history, 4)
+            ],
+            consecutive_failures: 0
+        }
 
-      observation =
-        if staged == [] do
-          """
-          [BULK_REPLACE] FAILED: '#{pattern}' → '#{replacement}'
-          0 files matched the exact pattern '#{pattern}' across #{length(file_list)} files.
-          #{diagnostic}#{error_summary}
+        {:noreply, state, {:continue, :step}}
 
-          HINT: Your pattern must match the EXACT text in the source code. Use a shorter, simpler pattern.
-          """
-        else
-          """
-          [BULK_REPLACE] '#{pattern}' → '#{replacement}'
-          #{length(staged)} file(s) staged, #{length(skipped)} skipped, #{length(errors)} error(s)
-          Total replacements: #{total_replacements}
-
-          Staged:
-          #{staged_summary}#{skipped_summary}#{error_summary}
-
-          Currently staging #{staged_count} file(s) total. Use commit_changes to flush to disk.
-          """
-        end
-
-      Logger.info("BULK_REPLACE: #{length(staged)} files staged, #{length(skipped)} skipped")
-
-      # BROADCAST
-      if state.request_id do
-        Events.broadcast(state.request_id, %{
-          type: :tool_call,
-          iteration: state.iteration,
-          tool: "bulk_replace",
-          params: %{pattern: pattern, replacement: replacement, files: length(file_list)},
-          staged: true
-        })
-
-        Events.broadcast(state.request_id, %{
-          type: :tool_result,
-          tool: "bulk_replace",
-          success: length(staged) > 0,
-          preview: "#{length(staged)} files staged, #{total_replacements} replacements",
-          staged: true
-        })
-      end
-
-      # Record in history
-      assistant_msg =
-        response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
-
-      messages =
-        state.messages ++
-          [
-            %{role: "assistant", content: assistant_msg},
-            %{role: "user", content: String.trim(observation)}
-          ]
-
-      state = %{
-        state
-        | messages: messages,
-          last_action: {"bulk_replace", params},
-          action_history: [
-            {"bulk_replace", params, {:ok, "staged"}} | Enum.take(state.action_history, 4)
-          ],
-          consecutive_failures: 0
-      }
-
-      {:noreply, state, {:continue, :step}}
+      {:error, reason} ->
+        send_bulk_error(reason, params, response, state)
     end
   end
 
@@ -2531,76 +2377,6 @@ defmodule Giulia.Inference.Orchestrator do
 
     state = %{state | messages: messages, consecutive_failures: state.consecutive_failures + 1}
     {:noreply, state, {:continue, :step}}
-  end
-
-  # Diagnostic: extract a broader search term from the failed pattern
-  # "def execute(params, opts)" → "def execute("
-  # "Registry.execute(" → "execute("
-  defp extract_broad_pattern(pattern) do
-    cond do
-      # "def execute(params, opts)" → "def execute("
-      String.starts_with?(pattern, "def ") ->
-        case String.split(pattern, "(", parts: 2) do
-          [prefix, _] -> prefix <> "("
-          _ -> pattern
-        end
-
-      # "Registry.execute(" → "execute("
-      String.contains?(pattern, ".") and String.contains?(pattern, "(") ->
-        case String.split(pattern, "(", parts: 2) do
-          [prefix, _] ->
-            func = prefix |> String.split(".") |> List.last()
-            func <> "("
-
-          _ ->
-            pattern
-        end
-
-      true ->
-        pattern
-    end
-  end
-
-  # Scan the target files for the broader pattern and return sample matches
-  defp bulk_diagnose(broad_pattern, file_list, state) do
-    samples =
-      file_list
-      |> Enum.flat_map(fn file_path ->
-        resolved = resolve_tool_path(file_path, state)
-
-        content =
-          case Map.get(state.transaction.staging_buffer, resolved) do
-            nil -> File.read(resolved) |> elem(1)
-            staged -> staged
-          end
-
-        if is_binary(content) do
-          content
-          |> String.split("\n")
-          |> Enum.with_index(1)
-          |> Enum.filter(fn {line, _} ->
-            String.contains?(line, broad_pattern)
-          end)
-          |> Enum.map(fn {line, num} ->
-            "  #{Path.basename(file_path)}:#{num}: #{String.trim(line)}"
-          end)
-        else
-          []
-        end
-      end)
-      |> Enum.take(10)
-
-    if samples != [] do
-      """
-
-      DIAGNOSTIC: Your exact pattern was not found. Searching for '#{broad_pattern}' instead, I found these actual lines:
-      #{Enum.join(samples, "\n")}
-
-      Use one of these exact strings as your pattern instead.
-      """
-    else
-      "\nDIAGNOSTIC: No similar patterns found with '#{broad_pattern}' either. The files may not contain what you expect.\n"
-    end
   end
 
   # ============================================================================
