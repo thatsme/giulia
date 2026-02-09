@@ -43,6 +43,8 @@ defmodule Giulia.Context.Indexer do
     .nuxt
   )
 
+  @type indexer_status :: %{project_path: String.t() | nil, status: :idle | :scanning, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
+
   # File patterns to ignore
   @ignore_patterns [
     ~r/\.beam$/,
@@ -61,6 +63,7 @@ defmodule Giulia.Context.Indexer do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -68,6 +71,7 @@ defmodule Giulia.Context.Indexer do
   @doc """
   Trigger a full project scan.
   """
+  @spec scan(String.t()) :: :ok
   def scan(project_path) do
     GenServer.cast(__MODULE__, {:scan, project_path})
   end
@@ -75,11 +79,13 @@ defmodule Giulia.Context.Indexer do
   @doc """
   Alias for scan/1 - used by ProjectContext.
   """
+  @spec index_path(String.t()) :: :ok
   def index_path(project_path), do: scan(project_path)
 
   @doc """
   Trigger a scan of a single file.
   """
+  @spec scan_file(String.t()) :: :ok
   def scan_file(file_path) do
     GenServer.cast(__MODULE__, {:scan_file, file_path})
   end
@@ -87,11 +93,13 @@ defmodule Giulia.Context.Indexer do
   @doc """
   Alias for scan_file/1 - used by ProjectContext.
   """
+  @spec index_file(String.t()) :: :ok
   def index_file(file_path), do: scan_file(file_path)
 
   @doc """
   Get the current indexing status.
   """
+  @spec status() :: indexer_status()
   def status do
     GenServer.call(__MODULE__, :status)
   end
@@ -269,11 +277,13 @@ defmodule Giulia.Context.Indexer do
   @doc """
   Get the list of ignored directories.
   """
+  @spec ignored_dirs() :: [String.t()]
   def ignored_dirs, do: @ignore_dirs
 
   @doc """
   Check if a specific path should be ignored.
   """
+  @spec ignored?(String.t()) :: boolean()
   def ignored?(path), do: should_ignore?(path)
 
   defp process_file(file_path) do

@@ -27,8 +27,28 @@ defmodule Giulia.Knowledge.Store do
 
   require Logger
 
+  @type project_path :: String.t()
+  @type vertex_id :: String.t()
+  @type impact_map :: %{
+          vertex: vertex_id(),
+          upstream: [{vertex_id(), non_neg_integer()}],
+          downstream: [{vertex_id(), non_neg_integer()}],
+          function_edges: [{String.t(), [vertex_id()]}],
+          depth: non_neg_integer()
+        }
+  @type graph_stats :: %{
+          vertices: non_neg_integer(),
+          edges: non_neg_integer(),
+          components: non_neg_integer(),
+          type_counts: map(),
+          hubs: [{vertex_id(), non_neg_integer()}]
+        }
+  @type centrality_info :: %{in_degree: non_neg_integer(), out_degree: non_neg_integer(), dependents: [vertex_id()]}
+  @type test_targets :: %{direct: String.t() | nil, dependents: [{vertex_id(), String.t()}], all_paths: [String.t()]}
+
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -37,6 +57,7 @@ defmodule Giulia.Knowledge.Store do
   Rebuild the entire knowledge graph from Context.Store AST data for a project.
   Called automatically after indexing completes.
   """
+  @spec rebuild(project_path()) :: :ok
   def rebuild(project_path) when is_binary(project_path) do
     GenServer.cast(__MODULE__, {:rebuild, project_path})
   end
@@ -44,6 +65,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Rebuild with a specific set of AST data (for testing or commit verification).
   """
+  @spec rebuild(project_path(), %{String.t() => map()}) :: :ok
   def rebuild(project_path, ast_data) when is_binary(project_path) and is_map(ast_data) do
     GenServer.call(__MODULE__, {:rebuild, project_path, ast_data}, 30_000)
   end
@@ -51,6 +73,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get impact map for a module — who depends on it and what it depends on.
   """
+  @spec impact_map(project_path(), vertex_id(), non_neg_integer()) :: {:ok, impact_map()} | {:error, {:not_found, vertex_id(), [vertex_id()], map()}}
   def impact_map(project_path, vertex_id, depth \\ 2) do
     GenServer.call(__MODULE__, {:impact_map, project_path, vertex_id, depth})
   end
@@ -58,6 +81,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Trace the shortest path between two vertices.
   """
+  @spec trace_path(project_path(), vertex_id(), vertex_id()) :: {:ok, [vertex_id()] | :no_path} | {:error, {:not_found, vertex_id()}}
   def trace_path(project_path, from, to) do
     GenServer.call(__MODULE__, {:trace_path, project_path, from, to})
   end
@@ -65,6 +89,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get modules that depend on the given module (downstream).
   """
+  @spec dependents(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   def dependents(project_path, module) do
     GenServer.call(__MODULE__, {:dependents, project_path, module})
   end
@@ -72,6 +97,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get modules that the given module depends on (upstream).
   """
+  @spec dependencies(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   def dependencies(project_path, module) do
     GenServer.call(__MODULE__, {:dependencies, project_path, module})
   end
@@ -81,6 +107,7 @@ defmodule Giulia.Knowledge.Store do
   Returns {:ok, %{in_degree: N, out_degree: N, dependents: [names]}} or {:error, :not_found}.
   Used by the Orchestrator's Hub Alarm to assess risk before approving edits.
   """
+  @spec centrality(project_path(), vertex_id()) :: {:ok, centrality_info()} | {:error, :not_found}
   def centrality(project_path, module) do
     GenServer.call(__MODULE__, {:centrality, project_path, module})
   end
@@ -90,6 +117,7 @@ defmodule Giulia.Knowledge.Store do
   Used by the Orchestrator's auto-regression to run only the tests that matter.
   Returns {:ok, %{direct: path, dependents: [{module, path}], all_paths: [paths]}}
   """
+  @spec get_test_targets(project_path(), vertex_id()) :: {:ok, test_targets()} | {:error, :not_found}
   def get_test_targets(project_path, module) do
     GenServer.call(__MODULE__, {:test_targets, project_path, module})
   end
@@ -98,6 +126,7 @@ defmodule Giulia.Knowledge.Store do
   Check behaviour-implementer consistency for a specific behaviour module.
   Returns {:ok, :consistent} or {:error, fractures}.
   """
+  @spec check_behaviour_integrity(project_path(), vertex_id()) :: {:ok, :consistent} | {:error, :not_found | [map()]}
   def check_behaviour_integrity(project_path, behaviour_module) do
     GenServer.call(__MODULE__, {:check_behaviour_integrity, project_path, behaviour_module})
   end
@@ -106,6 +135,7 @@ defmodule Giulia.Knowledge.Store do
   Check all behaviours in the project for implementer consistency.
   Returns {:ok, :consistent} or {:error, %{behaviour => [fracture]}}.
   """
+  @spec check_all_behaviours(project_path()) :: {:ok, :consistent} | {:error, %{vertex_id() => [map()]}}
   def check_all_behaviours(project_path) do
     GenServer.call(__MODULE__, {:check_all_behaviours, project_path}, 30_000)
   end
@@ -114,6 +144,7 @@ defmodule Giulia.Knowledge.Store do
   Find dead code — functions that are defined but never called anywhere.
   Returns {:ok, %{dead: [%{module, name, arity, type, file, line}], count: N, total: N}}.
   """
+  @spec find_dead_code(project_path()) :: {:ok, %{dead: [map()], count: non_neg_integer(), total: non_neg_integer()}}
   def find_dead_code(project_path) do
     GenServer.call(__MODULE__, {:find_dead_code, project_path}, 30_000)
   end
@@ -122,6 +153,7 @@ defmodule Giulia.Knowledge.Store do
   Find circular dependencies using strongly connected components.
   Returns {:ok, %{cycles: [[module_name]], count: N}}.
   """
+  @spec find_cycles(project_path()) :: {:ok, %{cycles: [[vertex_id()]], count: non_neg_integer()}}
   def find_cycles(project_path) do
     GenServer.call(__MODULE__, {:find_cycles, project_path}, 30_000)
   end
@@ -130,6 +162,7 @@ defmodule Giulia.Knowledge.Store do
   Find god modules — high function count + high complexity + high centrality.
   Returns {:ok, %{modules: [%{module, functions, complexity, centrality, score, file}], count: N}}.
   """
+  @spec find_god_modules(project_path()) :: {:ok, %{modules: [map()], count: non_neg_integer()}}
   def find_god_modules(project_path) do
     GenServer.call(__MODULE__, {:find_god_modules, project_path}, 30_000)
   end
@@ -138,6 +171,7 @@ defmodule Giulia.Knowledge.Store do
   Find orphan specs — @spec declarations that don't match any defined function.
   Returns {:ok, %{orphans: [%{module, spec_function, spec_arity, line, file}], count: N}}.
   """
+  @spec find_orphan_specs(project_path()) :: {:ok, %{orphans: [map()], count: non_neg_integer()}}
   def find_orphan_specs(project_path) do
     GenServer.call(__MODULE__, {:find_orphan_specs, project_path}, 30_000)
   end
@@ -146,6 +180,7 @@ defmodule Giulia.Knowledge.Store do
   Fan-in/fan-out analysis — modules with too many incoming or outgoing dependencies.
   Returns {:ok, %{modules: [%{module, fan_in, fan_out, total, file}], count: N}}.
   """
+  @spec find_fan_in_out(project_path()) :: {:ok, %{modules: [map()], count: non_neg_integer()}}
   def find_fan_in_out(project_path) do
     GenServer.call(__MODULE__, {:find_fan_in_out, project_path}, 30_000)
   end
@@ -154,6 +189,7 @@ defmodule Giulia.Knowledge.Store do
   Coupling score — how many functions in A call functions in B, quantified per pair.
   Returns {:ok, %{pairs: [%{caller, callee, call_count, functions}], count: N}}.
   """
+  @spec find_coupling(project_path()) :: {:ok, %{pairs: [map()], count: non_neg_integer()}}
   def find_coupling(project_path) do
     GenServer.call(__MODULE__, {:find_coupling, project_path}, 30_000)
   end
@@ -162,6 +198,7 @@ defmodule Giulia.Knowledge.Store do
   API surface analysis — ratio of public to private functions per module.
   Returns {:ok, %{modules: [%{module, public, private, total, ratio, file}], count: N}}.
   """
+  @spec find_api_surface(project_path()) :: {:ok, %{modules: [map()], count: non_neg_integer()}}
   def find_api_surface(project_path) do
     GenServer.call(__MODULE__, {:find_api_surface, project_path}, 30_000)
   end
@@ -171,6 +208,7 @@ defmodule Giulia.Knowledge.Store do
   coupling, and API surface. Single prioritized refactoring list.
   Returns {:ok, %{modules: [%{module, score, breakdown, file}], count: N}}.
   """
+  @spec change_risk_score(project_path()) :: {:ok, %{modules: [map()], count: non_neg_integer()}}
   def change_risk_score(project_path) do
     GenServer.call(__MODULE__, {:change_risk_score, project_path}, 30_000)
   end
@@ -178,6 +216,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get graph statistics for a project.
   """
+  @spec stats(project_path()) :: graph_stats()
   def stats(project_path) do
     GenServer.call(__MODULE__, {:stats, project_path})
   end
@@ -185,6 +224,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get the raw graph for a project (for debugging).
   """
+  @spec graph(project_path()) :: Graph.t()
   def graph(project_path) do
     GenServer.call(__MODULE__, {:graph, project_path})
   end
@@ -193,6 +233,7 @@ defmodule Giulia.Knowledge.Store do
   Add a semantic edge to the knowledge graph.
   Used by SemanticIndex to record concept-level relationships.
   """
+  @spec add_semantic_edge(project_path(), vertex_id(), vertex_id(), String.t()) :: :ok
   def add_semantic_edge(project_path, from, to, reason) do
     GenServer.call(__MODULE__, {:add_semantic_edge, project_path, from, to, reason})
   end
@@ -200,6 +241,7 @@ defmodule Giulia.Knowledge.Store do
   @doc """
   Get implementers of a behaviour module.
   """
+  @spec get_implementers(project_path(), vertex_id()) :: {:ok, [vertex_id()]}
   def get_implementers(project_path, behaviour) do
     GenServer.call(__MODULE__, {:get_implementers, project_path, behaviour})
   end
