@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace, Escalation, Verification}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace, Escalation, Verification, ResponseParser}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -1355,12 +1355,7 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
-  # Extract context around a JSON parse error position
-  defp extract_error_context(json, position) do
-    start_pos = max(0, position - 30)
-    end_pos = min(String.length(json), position + 30)
-    String.slice(json, start_pos, end_pos - start_pos)
-  end
+  defp extract_error_context(json, position), do: ResponseParser.extract_error_context(json, position)
 
   defp execute_tool(tool_name, params, response, state) do
     current_action = {tool_name, params}
@@ -2965,34 +2960,13 @@ defmodule Giulia.Inference.Orchestrator do
             handle_model_response(%{response | content: json}, state)
 
           {:error, _} ->
-            # Accept as final response after cleanup
-            send_reply(state, {:ok, clean_model_output(text)})
+            send_reply(state, {:ok, ResponseParser.clean_output(text)})
             {:noreply, reset_state(state)}
         end
 
       {:error, _} ->
-        # Plain text - accept as response after cleanup
-        send_reply(state, {:ok, clean_model_output(text)})
+        send_reply(state, {:ok, ResponseParser.clean_output(text)})
         {:noreply, reset_state(state)}
-    end
-  end
-
-  # Clean up model output that contains internal tokens or malformed data
-  defp clean_model_output(text) do
-    text
-    # Remove common model internal tokens
-    |> String.replace(~r/<\|im_start\|>.*?(<\|im_end\|>)?/s, "")
-    |> String.replace(~r/<\|im_end\|>/, "")
-    |> String.replace(~r/<action>.*?<\/action>/s, "")
-    # Unclosed action tag
-    |> String.replace(~r/<action>.*$/s, "")
-    |> String.replace(~r/<\/?think>/s, "")
-    # Trim whitespace
-    |> String.trim()
-    # If nothing left, return a fallback message
-    |> case do
-      "" -> "I wasn't able to formulate a proper response. Please try rephrasing your request."
-      cleaned -> cleaned
     end
   end
 
@@ -3283,92 +3257,7 @@ defmodule Giulia.Inference.Orchestrator do
   # Helpers
   # ============================================================================
 
-  defp parse_model_response(%{content: nil}), do: {:error, :empty_response}
-
-  defp parse_model_response(%{tool_calls: [tc | _]}) do
-    {:tool_call, tc.name, tc.arguments}
-  end
-
-  defp parse_model_response(%{content: content}) when is_binary(content) do
-    # Log raw model output for debugging
-    Logger.info("Raw model response: #{String.slice(content, 0, 300)}")
-
-    # Try hybrid parser first when <payload> or <action> tags are present
-    if Parser.hybrid_format?(content) or String.contains?(content, "<action>") do
-      # Check for multiple <action> blocks first (batched tool calls)
-      action_count = length(Regex.scan(~r/<action>/, content))
-
-      if action_count > 1 do
-        case Parser.parse_all_actions(content) do
-          {:ok, [first | rest]} ->
-            Logger.info(
-              "Parsed #{action_count} batched actions via Parser (executing sequentially)"
-            )
-
-            {:multi_tool_call, first["tool"], first["parameters"], rest}
-
-          {:error, reason} ->
-            Logger.warning("Multi-action parse failed (#{inspect(reason)}), trying single")
-            parse_single_action(content)
-        end
-      else
-        parse_single_action(content)
-      end
-    else
-      parse_model_response_json(content)
-    end
-  end
-
-  defp parse_model_response(_), do: {:error, :unknown_response_format}
-
-  defp parse_single_action(content) do
-    case Parser.parse_response(content) do
-      {:ok, %{"tool" => tool, "parameters" => params}} ->
-        Logger.info("Parsed via hybrid Parser: tool=#{tool}")
-        {:tool_call, tool, params}
-
-      {:error, reason} ->
-        Logger.warning("Hybrid parse failed (#{inspect(reason)}), falling back to JSON path")
-        parse_model_response_json(content)
-    end
-  end
-
-  # JSON-only parsing path (original logic, extracted for reuse)
-  defp parse_model_response_json(content) do
-    case StructuredOutput.extract_json(content) do
-      {:ok, json} ->
-        # Trim and clean JSON before decode
-        clean_json = String.trim(json)
-        Logger.info("Extracted JSON (#{byte_size(clean_json)} bytes): #{clean_json}")
-
-        case Jason.decode(clean_json) do
-          {:ok, %{"tool" => tool, "parameters" => params}} ->
-            {:tool_call, tool, params}
-
-          {:ok, %{"tool" => tool}} ->
-            # Model didn't include parameters - log warning
-            Logger.warning("Tool call missing parameters: #{tool}")
-            {:tool_call, tool, %{}}
-
-          {:ok, decoded} ->
-            Logger.warning("Invalid tool format: #{inspect(decoded)}")
-            {:error, :invalid_tool_format}
-
-          {:error, %Jason.DecodeError{position: pos} = decode_error} ->
-            # JSON decode failed - return structured error for self-healing retry
-            Logger.warning("JSON decode error at position #{pos}: #{inspect(decode_error)}")
-            {:error, {:json_escape_error, pos, clean_json}}
-
-          {:error, decode_error} ->
-            Logger.warning("JSON decode error: #{inspect(decode_error)}")
-            {:error, {:json_decode_error, decode_error}}
-        end
-
-      {:error, reason} ->
-        Logger.debug("No JSON found: #{inspect(reason)}")
-        {:text, content}
-    end
-  end
+  defp parse_model_response(response), do: ResponseParser.parse(response)
 
   defp call_provider(%{provider_module: module, messages: messages}) do
     tools = Registry.list_tools()
