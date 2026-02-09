@@ -34,7 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Context.Store
   alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
-  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace}
+  alias Giulia.Inference.{Trace, Approval, Events, Transaction, RenameMFA, BulkReplace, Escalation}
   alias Giulia.Utils.Diff
 
   # Tools that modify code and need verification
@@ -541,7 +541,7 @@ defmodule Giulia.Inference.Orchestrator do
     file_content = if target_file, do: read_fresh_content(target_file, state), else: nil
 
     # Build the v2 Senior Architect prompt (requests hybrid format)
-    senior_prompt = build_senior_architect_prompt_v2(target_file, file_content, errors, state)
+    senior_prompt = Escalation.build_prompt(target_file, file_content, errors)
 
     # BROADCAST: Escalation in progress
     if state.request_id do
@@ -552,7 +552,7 @@ defmodule Giulia.Inference.Orchestrator do
     end
 
     # Call escalation provider (Groq or Gemini)
-    case call_senior_architect(senior_prompt) do
+    case Escalation.call(senior_prompt) do
       {:ok, provider_name, response_text} ->
         Logger.info("=== SENIOR ARCHITECT RESPONSE (#{provider_name}) ===")
         Logger.info(String.slice(response_text, 0, 500))
@@ -651,11 +651,14 @@ defmodule Giulia.Inference.Orchestrator do
 
   # Legacy fallback: LINE:N / CODE: format from v1
   defp try_legacy_line_fix(response_text, target_file, provider_name, _errors, state) do
-    case parse_line_fix(response_text) do
+    case Escalation.parse_line_fix(response_text) do
       {:ok, line_num, fixed_line} ->
         Logger.info("Legacy fix: line #{line_num} -> #{String.slice(fixed_line, 0, 50)}...")
 
-        case apply_line_fix(target_file, line_num, fixed_line, state) do
+        tool_opts = build_tool_opts(state)
+        sandbox = Keyword.get(tool_opts, :sandbox)
+
+        case Escalation.apply_line_fix(target_file, line_num, fixed_line, sandbox) do
           {:ok, result} ->
             Logger.info("LEGACY FIX APPLIED: #{result}")
 
@@ -683,62 +686,6 @@ defmodule Giulia.Inference.Orchestrator do
     end
   end
 
-  # v1 build_senior_architect_prompt removed — replaced by build_senior_architect_prompt_v2
-
-  # Build the v2 Senior Architect prompt — requests hybrid <action> + <payload> format
-  # or falls back to LINE:N/CODE: for simple fixes
-  defp build_senior_architect_prompt_v2(target_file, file_content, errors, _state) do
-    """
-    You are the Senior Elixir Architect. Fix this compilation error.
-
-    FILE: #{target_file || "unknown"}
-
-    ERROR:
-    #{String.slice(errors, 0, 1500)}
-
-    CURRENT FILE (with line numbers):
-    #{add_line_numbers(file_content)}
-
-    RESPONSE FORMAT — Choose ONE:
-
-    OPTION A (for function-level fixes — PREFERRED):
-    <action>
-    {"tool": "patch_function", "parameters": {"module": "Module.Name", "function_name": "func", "arity": 2}}
-    </action>
-
-    ```elixir
-    def func(arg1, arg2) do
-      # your corrected function code here
-    end
-    ```
-
-    OPTION B (for single-line fixes):
-    LINE:NUMBER
-    CODE:THE CORRECTED LINE CONTENT
-
-    RULES:
-    - Fix ONLY the compilation error, nothing else
-    - For Option A: code goes in ```elixir fenced block after </action>
-    - For Option A: module name must be the FULL module name (e.g., Giulia.Inference.Orchestrator)
-    - For Option B: NUMBER is the line number, CODE is the exact corrected line
-    - Do NOT add any text after the closing ```
-    - Output ONLY the fix, no explanations
-    """
-  end
-
-  # Add line numbers to file content for easier reference
-  defp add_line_numbers(nil), do: "(could not read file)"
-
-  defp add_line_numbers(content) do
-    content
-    |> String.split("\n")
-    |> Enum.with_index(1)
-    |> Enum.map(fn {line, num} -> "#{String.pad_leading(Integer.to_string(num), 4)}: #{line}" end)
-    |> Enum.join("\n")
-  end
-
-  # v1 extract_code_block removed — no longer needed with hybrid format
-
   # Helper to broadcast escalation failure
   defp broadcast_escalation_failed(state, message) do
     if state.request_id do
@@ -746,121 +693,6 @@ defmodule Giulia.Inference.Orchestrator do
         type: :escalation_failed,
         message: message
       })
-    end
-  end
-
-  # Parse Groq's text response: LINE:N\nCODE:...
-  # No JSON = no escaping nightmares
-  defp parse_line_fix(response) do
-    # Clean up response - remove any markdown formatting
-    cleaned =
-      response
-      |> String.replace(~r/```\w*\s*/, "")
-      |> String.trim()
-
-    # Parse LINE:N and CODE:... format
-    line_match = Regex.run(~r/LINE:\s*(\d+)/i, cleaned)
-    code_match = Regex.run(~r/CODE:(.*)$/im, cleaned)
-
-    case {line_match, code_match} do
-      {[_, line_str], [_, code]} ->
-        line_num = String.to_integer(String.trim(line_str))
-        # Keep as-is, including leading whitespace
-        fixed_code = code
-        {:ok, line_num, fixed_code}
-
-      {nil, _} ->
-        Logger.error("No LINE: found in response: #{cleaned}")
-        {:error, :no_line_number}
-
-      {_, nil} ->
-        Logger.error("No CODE: found in response: #{cleaned}")
-        {:error, :no_code_content}
-    end
-  end
-
-  # Apply line fix: replace line N in file with fixed content
-  defp apply_line_fix(file_path, line_num, fixed_line, state) do
-    tool_opts = build_tool_opts(state)
-    sandbox = Keyword.get(tool_opts, :sandbox)
-
-    # Resolve the path
-    safe_path =
-      case PathSandbox.validate(sandbox, file_path) do
-        {:ok, path} -> path
-        # Fallback
-        {:error, _} -> file_path
-      end
-
-    case File.read(safe_path) do
-      {:ok, content} ->
-        lines = String.split(content, "\n")
-
-        if line_num > 0 and line_num <= length(lines) do
-          # Replace line at index (1-based to 0-based)
-          new_lines = List.replace_at(lines, line_num - 1, fixed_line)
-          new_content = Enum.join(new_lines, "\n")
-
-          case File.write(safe_path, new_content) do
-            :ok ->
-              {:ok, "Line #{line_num} fixed in #{Path.basename(safe_path)}"}
-
-            {:error, reason} ->
-              {:error, "Write failed: #{inspect(reason)}"}
-          end
-        else
-          {:error, "Invalid line number: #{line_num} (file has #{length(lines)} lines)"}
-        end
-
-      {:error, reason} ->
-        {:error, "Read failed: #{inspect(reason)}"}
-    end
-  end
-
-  # Call cloud provider for Senior Architect consultation (Surgical Consultant)
-  # Uses Groq (Llama 3.3 70B on LPU) - blazing fast, generous free tier
-  # Returns {:ok, provider_name, response} or {:error, reason}
-  defp call_senior_architect(prompt) do
-    messages = [
-      %{
-        role: "system",
-        content:
-          "You are a Senior Elixir Architect. Be precise and surgical. Output only the fix, no explanations."
-      },
-      %{role: "user", content: prompt}
-    ]
-
-    # Try Groq first (LPU speed + generous quota)
-    cond do
-      Giulia.Provider.Groq.available?() ->
-        Logger.info("Calling Groq (Llama 3.3 70B) as Senior Architect...")
-
-        case Giulia.Provider.Groq.chat(messages, [], timeout: 60_000) do
-          {:ok, response} ->
-            {:ok, "Groq Llama 3.3 70B", response.content || "No response content"}
-
-          {:error, reason} ->
-            Logger.warning("Groq failed: #{inspect(reason)}, trying Gemini fallback...")
-            try_gemini_fallback(messages)
-        end
-
-      Giulia.Provider.Gemini.available?() ->
-        Logger.info("Calling Gemini as Senior Architect (Groq not available)...")
-        try_gemini_fallback(messages)
-
-      true ->
-        Logger.warning("No escalation provider available - check GROQ_API_KEY or GEMINI_API_KEY")
-        {:error, :no_escalation_provider}
-    end
-  end
-
-  defp try_gemini_fallback(messages) do
-    case Giulia.Provider.Gemini.chat(messages, [], timeout: 60_000) do
-      {:ok, response} ->
-        {:ok, "Gemini 2.0 Flash", response.content || "No response content"}
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
