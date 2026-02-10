@@ -1062,7 +1062,14 @@ defmodule Giulia.Inference.ToolDispatch do
   def extract_downstream_dependents(result_str) do
     case String.split(result_str, "DOWNSTREAM (what depends on me):") do
       [_, downstream_section] ->
-        downstream_section
+        # Stop at FUNCTIONS section before parsing lines
+        downstream_only =
+          case String.split(downstream_section, ~r/\nFUNCTIONS[:\s]/i, parts: 2) do
+            [before, _] -> before
+            [all] -> all
+          end
+
+        downstream_only
         |> String.split("\n")
         |> Enum.map(&String.trim/1)
         |> Enum.filter(&String.starts_with?(&1, "- "))
@@ -1074,7 +1081,6 @@ defmodule Giulia.Inference.ToolDispatch do
           |> String.trim()
         end)
         |> Enum.reject(&(&1 == "" or &1 == "(none — nothing depends on this)"))
-        |> Enum.take_while(&(not String.starts_with?(&1, "FUNCTIONS")))
 
       _ ->
         []
