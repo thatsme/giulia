@@ -3,7 +3,7 @@ defmodule Giulia.MixProject do
 
   @version "0.1.0"
   # Build number - increment on each release
-  @build 84
+  @build 85
 
   def project do
     [

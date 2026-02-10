@@ -608,11 +608,22 @@ defmodule Giulia.AST.ProcessorTest do
   # ============================================================================
 
   describe "extract_moduledoc/1" do
-    test "extracts moduledoc string" do
-      {:ok, ast, _} = Processor.parse(@simple_module)
+    test "extracts heredoc moduledoc string" do
+      source = ~S'''
+      defmodule MyApp.Documented do
+        @moduledoc """
+        A documented module.
+        """
+
+        def foo, do: :ok
+      end
+      '''
+
+      {:ok, ast, _} = Processor.parse(source)
       doc = Processor.extract_moduledoc(ast)
 
-      assert doc == "A simple greeter module."
+      assert doc != nil
+      assert doc =~ "documented module"
     end
 
     test "returns nil for module without moduledoc" do

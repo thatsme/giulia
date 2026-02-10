@@ -18,8 +18,7 @@ defmodule Giulia.StructuredOutputTest do
       input = ~s(Sure! Here's the JSON: {"tool": "respond", "parameters": {"message": "hello"}})
       assert {:ok, json} = StructuredOutput.extract_json(input)
       assert {:ok, decoded} = Jason.decode(json)
-      # SABOTAGED: the input clearly says "respond", but we assert "think"
-      assert decoded["tool"] == "think"
+      assert decoded["tool"] == "respond"
     end
 
     test "extracts JSON from markdown code fences" do
