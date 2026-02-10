@@ -167,7 +167,8 @@ defmodule Giulia.Context.StoreTest do
     end
 
     test "returns :error for missing embeddings" do
-      assert :error = Store.get_embeddings(@project, :module)
+      # Use a fresh project to avoid leaking from other tests
+      assert :error = Store.get_embeddings("/test/clean_embed_project", :module)
     end
   end
 
