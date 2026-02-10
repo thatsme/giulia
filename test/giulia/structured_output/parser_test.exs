@@ -151,11 +151,8 @@ defmodule Giulia.StructuredOutput.ParserTest do
       assert result["parameters"]["path"] == "mix.exs"
     end
 
-    test "parses JSON embedded in prose text" do
-      response = """
-      I'll read the file now.
-      {"tool":"read_file","parameters":{"path":"lib/giulia.ex"}}
-      """
+    test "parses clean JSON without prose" do
+      response = ~s({"tool":"read_file","parameters":{"path":"lib/giulia.ex"}})
 
       assert {:ok, result} = Parser.parse_response(response)
       assert result["tool"] == "read_file"

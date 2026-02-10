@@ -1,8 +1,8 @@
 defmodule GiuliaTest do
   use ExUnit.Case
-  doctest Giulia
 
-  test "greets the world" do
-    assert Giulia.hello() == :world
+  test "version is available" do
+    assert {:ok, version} = :application.get_key(:giulia, :vsn)
+    assert is_list(version)
   end
 end

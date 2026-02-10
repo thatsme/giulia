@@ -43,7 +43,7 @@ COPY lib lib
 COPY priv priv
 COPY test test
 RUN mix compile
-RUN mix test test/giulia/inference/ --trace
+RUN mix test --trace
 
 # Model downloads on first startup (needs CUDA runtime from nvidia-docker)
 # Cached in /root/.cache via giulia_models volume

@@ -801,10 +801,18 @@ defmodule Giulia.AST.Processor do
           {:@, _, [{:moduledoc, _, [doc_content]}]} when is_binary(doc_content) ->
             {node, doc_content}
 
+          # Sourceror wraps heredoc strings in {:__block__, _, [string]}
+          {:@, _, [{:moduledoc, _, [{:__block__, _, [doc_content]}]}]} when is_binary(doc_content) ->
+            {node, doc_content}
+
           {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc_content]}, []]}]}]} when is_binary(doc_content) ->
             {node, doc_content}
 
           {:@, _, [{:moduledoc, _, [false]}]} ->
+            {node, false}
+
+          # Sourceror wraps false in {:__block__, _, [false]}
+          {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} ->
             {node, false}
 
           _ ->
