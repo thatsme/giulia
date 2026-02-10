@@ -339,4 +339,164 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   defp rank_entries([], _query_vec, _top_k), do: []
+
+  # ============================================================================
+  # Semantic Duplicate Detection (Build 89)
+  # ============================================================================
+
+  @doc """
+  Find semantically similar function pairs using pairwise cosine similarity.
+
+  Algorithm:
+  1. Load all function embeddings from ETS
+  2. Stack into Nx tensor (n x 384)
+  3. Full pairwise similarity: Nx.dot(M, M^T) — L2-normalized, so dot = cosine
+  4. Extract upper-triangle pairs >= threshold
+  5. Build connected components (BFS) to cluster duplicates
+
+  Returns clusters sorted by avg internal similarity.
+  """
+  @spec find_duplicates(String.t(), keyword()) ::
+          {:ok, %{clusters: [map()], count: non_neg_integer()}} | {:error, String.t()}
+  def find_duplicates(project_path, opts \\ []) do
+    threshold = Keyword.get(opts, :threshold, 0.85)
+    max_clusters = Keyword.get(opts, :max, 20)
+
+    unless EmbeddingServing.available?() do
+      {:error, "Semantic search unavailable. EmbeddingServing not loaded."}
+    else
+      case Store.get_embeddings(project_path, :function) do
+        :error ->
+          {:error, "No embeddings for this project. Run /api/index/scan first."}
+
+        {:ok, []} ->
+          {:ok, %{clusters: [], count: 0}}
+
+        {:ok, entries} ->
+          # Build matrix from stored binary vectors
+          vectors =
+            entries
+            |> Enum.map(fn entry ->
+              Nx.from_binary(entry.vector, :f32) |> Nx.reshape({@embedding_dims})
+            end)
+            |> Nx.stack()
+
+          # Full pairwise cosine similarity (L2-normalized → dot = cosine)
+          similarity_matrix = Nx.dot(vectors, Nx.transpose(vectors))
+
+          # Extract upper-triangle pairs above threshold
+          n = length(entries)
+          pairs = extract_similar_pairs(similarity_matrix, entries, n, threshold)
+
+          # Build connected components via BFS
+          clusters = build_clusters(pairs, entries)
+
+          # Sort by avg similarity, take top N
+          clusters =
+            clusters
+            |> Enum.sort_by(fn c -> -c.avg_similarity end)
+            |> Enum.take(max_clusters)
+
+          {:ok, %{clusters: clusters, count: length(clusters)}}
+      end
+    end
+  end
+
+  defp extract_similar_pairs(similarity_matrix, entries, n, threshold) do
+    for i <- 0..(n - 2),
+        j <- (i + 1)..(n - 1),
+        reduce: [] do
+      acc ->
+        score = similarity_matrix[i][j] |> Nx.to_number()
+
+        if score >= threshold do
+          [{i, j, Float.round(score, 4)} | acc]
+        else
+          acc
+        end
+    end
+  end
+
+  defp build_clusters(pairs, entries) do
+    # Build adjacency list
+    adjacency =
+      Enum.reduce(pairs, %{}, fn {i, j, _score}, adj ->
+        adj
+        |> Map.update(i, MapSet.new([j]), &MapSet.put(&1, j))
+        |> Map.update(j, MapSet.new([i]), &MapSet.put(&1, i))
+      end)
+
+    # BFS to find connected components
+    all_nodes = Map.keys(adjacency) |> MapSet.new()
+    {components, _visited} = bfs_components(adjacency, all_nodes)
+
+    # Build cluster info
+    pair_scores = Map.new(pairs, fn {i, j, score} -> {{i, j}, score} end)
+
+    Enum.map(components, fn component ->
+      members =
+        component
+        |> Enum.sort()
+        |> Enum.map(fn idx ->
+          entry = Enum.at(entries, idx)
+          %{id: entry.id, metadata: entry.metadata}
+        end)
+
+      # Compute avg similarity within cluster
+      component_list = Enum.sort(component)
+      sim_scores =
+        for i <- component_list,
+            j <- component_list,
+            i < j do
+          key = {min(i, j), max(i, j)}
+          Map.get(pair_scores, key, 0.0)
+        end
+
+      avg_sim =
+        if sim_scores == [] do
+          0.0
+        else
+          Float.round(Enum.sum(sim_scores) / length(sim_scores), 4)
+        end
+
+      %{
+        members: members,
+        size: length(members),
+        avg_similarity: avg_sim
+      }
+    end)
+    |> Enum.filter(fn c -> c.size >= 2 end)
+  end
+
+  defp bfs_components(adjacency, all_nodes) do
+    Enum.reduce(all_nodes, {[], MapSet.new()}, fn node, {components, visited} ->
+      if MapSet.member?(visited, node) do
+        {components, visited}
+      else
+        {component, new_visited} = bfs(adjacency, node, visited)
+        {[component | components], new_visited}
+      end
+    end)
+  end
+
+  defp bfs(adjacency, start, visited) do
+    do_bfs(adjacency, [start], MapSet.new([start]), MapSet.put(visited, start))
+  end
+
+  defp do_bfs(_adjacency, [], component, visited), do: {MapSet.to_list(component), visited}
+
+  defp do_bfs(adjacency, queue, component, visited) do
+    next_queue =
+      Enum.flat_map(queue, fn node ->
+        neighbors = Map.get(adjacency, node, MapSet.new())
+        MapSet.to_list(neighbors)
+      end)
+      |> Enum.reject(&MapSet.member?(visited, &1))
+      |> Enum.uniq()
+
+    new_component = Enum.reduce(next_queue, component, &MapSet.put(&2, &1))
+    new_visited = Enum.reduce(next_queue, visited, &MapSet.put(&2, &1))
+
+    do_bfs(adjacency, next_queue, new_component, new_visited)
+  end
 end

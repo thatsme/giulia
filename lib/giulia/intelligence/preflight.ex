@@ -19,22 +19,13 @@ defmodule Giulia.Intelligence.Preflight do
 
   alias Giulia.Context.Store
   alias Giulia.Intelligence.SemanticIndex
+  alias Giulia.Knowledge.MacroMap
   alias Giulia.Knowledge.Store, as: KnowledgeStore
 
   require Logger
 
   @embedding_dims 384
   @drift_threshold 0.3
-
-  @known_macro_implications %{
-    "GenServer" => ["requires init/1", "callbacks: handle_call/3, handle_cast/2, handle_info/2"],
-    "Supervisor" => ["requires init/1"],
-    "Agent" => ["requires start_link/1"],
-    "Application" => ["requires start/2"],
-    "Plug.Router" => ["plug :match, plug :dispatch pipeline"],
-    "Ecto.Schema" => ["defines struct via schema macro"],
-    "Phoenix.LiveView" => ["requires mount/3, handle_event/3, render/1"]
-  }
 
   @spec run(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def run(prompt, project_path, opts \\ []) do
@@ -296,18 +287,14 @@ defmodule Giulia.Intelligence.Preflight do
           []
       end
 
-    # Match known implications by last segment of module name
+    # Precise function-level implications from MacroMap
     known_implications =
       use_directives
       |> Enum.flat_map(fn directive ->
-        last_segment = directive.module |> String.split(".") |> List.last()
-
-        Enum.flat_map(@known_macro_implications, fn {key, implications} ->
-          key_last = key |> String.split(".") |> List.last()
-          if key_last == last_segment, do: implications, else: []
-        end)
+        MacroMap.injected_functions(directive.module)
       end)
       |> Enum.uniq()
+      |> Enum.map(fn {name, arity} -> "#{name}/#{arity}" end)
 
     %{
       use_directives: use_directives,

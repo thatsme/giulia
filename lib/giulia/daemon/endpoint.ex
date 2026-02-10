@@ -785,6 +785,142 @@ defmodule Giulia.Daemon.Endpoint do
   end
 
   # ============================================================================
+  # Principal Consultant Endpoints (Build 89)
+  # ============================================================================
+
+  # Unprotected hubs: hub modules with low spec/doc coverage
+  get "/api/knowledge/unprotected_hubs" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        hub_threshold =
+          case Integer.parse(conn.query_params["hub_threshold"] || "3") do
+            {n, _} -> n
+            :error -> 3
+          end
+
+        spec_threshold =
+          case Float.parse(conn.query_params["spec_threshold"] || "0.5") do
+            {f, _} -> f
+            :error -> 0.5
+          end
+
+        case Giulia.Knowledge.Store.find_unprotected_hubs(project_path,
+               hub_threshold: hub_threshold, spec_threshold: spec_threshold) do
+          {:ok, result} -> send_json(conn, 200, result)
+          {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  # Struct lifecycle: data flow tracing across modules
+  get "/api/knowledge/struct_lifecycle" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        struct_filter = conn.query_params["struct"]
+
+        case Giulia.Knowledge.Store.struct_lifecycle(project_path, struct_filter) do
+          {:ok, result} -> send_json(conn, 200, result)
+          {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  # Semantic duplicates: find redundant logic via embedding similarity
+  get "/api/knowledge/duplicates" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        threshold =
+          case Float.parse(conn.query_params["threshold"] || "0.85") do
+            {f, _} -> f
+            :error -> 0.85
+          end
+
+        max_clusters =
+          case Integer.parse(conn.query_params["max"] || "20") do
+            {n, _} -> n
+            :error -> 20
+          end
+
+        case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path,
+               threshold: threshold, max: max_clusters) do
+          {:ok, result} ->
+            send_json(conn, 200, result)
+
+          {:error, "Semantic search unavailable" <> _} ->
+            send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+
+          {:error, reason} ->
+            send_json(conn, 500, %{error: reason})
+        end
+    end
+  end
+
+  # Unified audit: combines all 4 Principal Consultant features
+  get "/api/knowledge/audit" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        # Run all 4 analyses
+        unprotected_hubs =
+          case Giulia.Knowledge.Store.find_unprotected_hubs(project_path) do
+            {:ok, result} -> result
+            {:error, _} -> %{modules: [], count: 0, severity_counts: %{red: 0, yellow: 0}}
+          end
+
+        struct_lifecycle =
+          case Giulia.Knowledge.Store.struct_lifecycle(project_path) do
+            {:ok, result} -> result
+            {:error, _} -> %{structs: [], count: 0}
+          end
+
+        semantic_duplicates =
+          case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path) do
+            {:ok, result} -> result
+            {:error, _} -> %{clusters: [], count: 0, note: "Semantic search unavailable"}
+          end
+
+        behaviour_integrity =
+          case Giulia.Knowledge.Store.check_all_behaviours(project_path) do
+            {:ok, :consistent} ->
+              %{status: "consistent", fractures: []}
+
+            {:error, fractures} when is_map(fractures) ->
+              formatted =
+                Enum.map(fractures, fn {behaviour, impl_fractures} ->
+                  %{
+                    behaviour: behaviour,
+                    fractures: Enum.map(impl_fractures, fn frac ->
+                      missing = Map.get(frac, :missing, [])
+                      injected = Map.get(frac, :injected, [])
+                      %{
+                        implementer: frac.implementer,
+                        missing: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end),
+                        injected: Enum.map(injected, fn {name, arity} -> "#{name}/#{arity}" end)
+                      }
+                    end)
+                  }
+                end)
+
+              %{status: "fractured", fractures: formatted}
+
+            _ ->
+              %{status: "unknown", fractures: []}
+          end
+
+        send_json(conn, 200, %{
+          audit_version: "build_89",
+          unprotected_hubs: unprotected_hubs,
+          struct_lifecycle: struct_lifecycle,
+          semantic_duplicates: semantic_duplicates,
+          behaviour_integrity: behaviour_integrity
+        })
+    end
+  end
+
+  # ============================================================================
   # Approval Endpoints (Interactive Consent Gate)
   # ============================================================================
 

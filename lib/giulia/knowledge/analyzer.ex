@@ -11,6 +11,8 @@ defmodule Giulia.Knowledge.Analyzer do
 
   require Logger
 
+  alias Giulia.Knowledge.MacroMap
+
   # OTP/framework callbacks that are invoked implicitly, never via direct calls
   @implicit_functions MapSet.new([
     # GenServer
@@ -336,16 +338,33 @@ defmodule Giulia.Knowledge.Analyzer do
               |> Enum.map(fn f -> {to_string(f.name), f.arity} end)
               |> MapSet.new()
 
-            # Find callbacks missing from implementer
-            missing =
+            # Get use directives for this implementer and compute macro-injected functions
+            use_directives = get_use_directives(project_path, impl_mod)
+            macro_injected =
+              use_directives
+              |> Enum.flat_map(&MacroMap.injected_functions/1)
+              |> MapSet.new()
+
+            # Union: explicitly defined + macro-injected
+            all_provided = MapSet.union(impl_functions, macro_injected)
+
+            # Find callbacks truly missing (not defined AND not injected)
+            truly_missing =
               callback_set
-              |> MapSet.difference(impl_functions)
+              |> MapSet.difference(all_provided)
               |> MapSet.to_list()
 
-            if missing == [] do
+            # Track which callbacks are covered by macros (for enriched output)
+            macro_covered =
+              callback_set
+              |> MapSet.difference(impl_functions)
+              |> MapSet.intersection(macro_injected)
+              |> MapSet.to_list()
+
+            if truly_missing == [] do
               []
             else
-              [%{implementer: impl_mod, missing: missing}]
+              [%{implementer: impl_mod, missing: truly_missing, injected: macro_covered}]
             end
           end)
 
@@ -355,6 +374,19 @@ defmodule Giulia.Knowledge.Analyzer do
           {:error, fractures}
         end
       end
+    end
+  end
+
+  # Get use directives for a module from ETS
+  defp get_use_directives(project_path, module_name) do
+    case Giulia.Context.Store.find_module(project_path, module_name) do
+      {:ok, %{ast_data: ast_data}} ->
+        (ast_data[:imports] || [])
+        |> Enum.filter(fn imp -> imp.type == :use end)
+        |> Enum.map(fn imp -> imp.module end)
+
+      _ ->
+        []
     end
   end
 
@@ -1453,5 +1485,216 @@ defmodule Giulia.Knowledge.Analyzer do
         green: Map.get(zones, "green", 0)
       }
     }}
+  end
+
+  # ============================================================================
+  # Unprotected Hub Detection (Feature 1: Build 89)
+  # ============================================================================
+
+  @doc """
+  Find hub modules with insufficient spec/doc coverage.
+
+  Merges graph centrality with ETS spec/doc data to identify dangerous gaps:
+  modules that many others depend on but lack type safety or documentation.
+
+  Severity: red (spec_ratio < 0.5), yellow (spec_ratio < 0.8).
+  """
+  @spec find_unprotected_hubs(Graph.t(), String.t(), keyword()) ::
+          {:ok, %{modules: [map()], count: non_neg_integer(), severity_counts: map()}}
+  def find_unprotected_hubs(graph, project_path, opts \\ []) do
+    hub_threshold = Keyword.get(opts, :hub_threshold, 3)
+    spec_threshold = Keyword.get(opts, :spec_threshold, 0.5)
+
+    # Get module vertices with sufficient in-degree
+    module_vertices =
+      Graph.vertices(graph)
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+
+    hubs =
+      module_vertices
+      |> Enum.map(fn mod ->
+        in_degree = length(Graph.in_neighbors(graph, mod))
+        {mod, in_degree}
+      end)
+      |> Enum.filter(fn {_mod, in_deg} -> in_deg >= hub_threshold end)
+      |> Enum.map(fn {mod, in_degree} ->
+        # Query ETS for spec/doc/function coverage
+        public_functions =
+          Giulia.Context.Store.list_functions(project_path, mod)
+          |> Enum.filter(fn f -> f.type == :def end)
+
+        specs = Giulia.Context.Store.list_specs(project_path, mod)
+        docs = Giulia.Context.Store.list_docs(project_path, mod)
+
+        public_count = length(public_functions)
+        spec_count = length(specs)
+        doc_count = length(docs)
+
+        spec_ratio = if public_count > 0, do: Float.round(spec_count / public_count, 2), else: 1.0
+        doc_ratio = if public_count > 0, do: Float.round(doc_count / public_count, 2), else: 1.0
+
+        # Check test file existence
+        has_test =
+          case Giulia.Context.Store.find_module(project_path, mod) do
+            {:ok, %{file: file}} ->
+              test_file = Giulia.Tools.RunTests.suggest_test_file(file)
+              full_path = Path.join(project_path, test_file)
+              File.exists?(full_path)
+
+            _ ->
+              false
+          end
+
+        # Severity classification
+        severity = cond do
+          spec_ratio < spec_threshold -> "red"
+          spec_ratio < 0.8 -> "yellow"
+          true -> "green"
+        end
+
+        %{
+          module: mod,
+          in_degree: in_degree,
+          public_functions: public_count,
+          spec_count: spec_count,
+          doc_count: doc_count,
+          spec_ratio: spec_ratio,
+          doc_ratio: doc_ratio,
+          has_test: has_test,
+          severity: severity
+        }
+      end)
+      |> Enum.reject(fn h -> h.severity == "green" end)
+      |> Enum.sort_by(fn h ->
+        severity_order = if h.severity == "red", do: 0, else: 1
+        {severity_order, -h.in_degree}
+      end)
+
+    severity_counts = Enum.frequencies_by(hubs, & &1.severity)
+
+    {:ok, %{
+      modules: hubs,
+      count: length(hubs),
+      severity_counts: %{
+        red: Map.get(severity_counts, "red", 0),
+        yellow: Map.get(severity_counts, "yellow", 0)
+      }
+    }}
+  end
+
+  # ============================================================================
+  # Struct Lifecycle Tracing (Feature 2: Build 89)
+  # ============================================================================
+
+  @doc """
+  Map struct data flow across modules: who creates, who consumes, logic leaks.
+
+  Walks all source files looking for `%ModuleName{}` patterns in AST to find
+  struct construction and pattern matching. Logic leaks are modules that both
+  create AND consume a struct but are NOT the defining module.
+
+  v1 limitations: cannot distinguish construction from pattern match (same AST
+  shape), cannot track struct update syntax or field access without type inference.
+  """
+  @spec struct_lifecycle(String.t(), String.t() | nil) ::
+          {:ok, %{structs: [map()], count: non_neg_integer()}}
+  def struct_lifecycle(project_path, struct_filter \\ nil) do
+    # Get all defined structs
+    all_structs = Giulia.Context.Store.list_structs(project_path)
+
+    # Optionally filter to a single struct
+    target_structs =
+      if struct_filter do
+        Enum.filter(all_structs, fn s -> s.module == struct_filter end)
+      else
+        all_structs
+      end
+
+    struct_names = Enum.map(target_structs, & &1.module) |> MapSet.new()
+
+    # Walk all source files to find struct usage
+    all_asts = Giulia.Context.Store.all_asts(project_path)
+
+    # Build alias maps and collect struct references per file
+    usage_data =
+      Enum.reduce(all_asts, %{}, fn {path, data}, acc ->
+        modules = data[:modules] || []
+        file_module = case modules do
+          [first | _] -> first.name
+          _ -> nil
+        end
+
+        if is_nil(file_module) do
+          acc
+        else
+          source = case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              # Build alias map for resolving short names
+              alias_map =
+                (data[:imports] || [])
+                |> Enum.filter(fn imp -> imp.type == :alias end)
+                |> Map.new(fn imp ->
+                  short = imp.module |> String.split(".") |> List.last()
+                  {short, imp.module}
+                end)
+
+              # Walk AST looking for struct patterns: %ModuleName{...}
+              {_ast, refs} =
+                Macro.prewalk(ast, [], fn
+                  # %Module.Name{...} — struct construction or pattern match
+                  {:%, _meta, [{:__aliases__, _, parts}, {:%{}, _, _}]} = node, refs ->
+                    raw_name = Enum.map_join(parts, ".", &to_string/1)
+                    resolved = Map.get(alias_map, raw_name, raw_name)
+                    if MapSet.member?(struct_names, resolved) do
+                      {node, [{resolved, file_module} | refs]}
+                    else
+                      {node, refs}
+                    end
+
+                  node, refs ->
+                    {node, refs}
+                end)
+
+              Enum.reduce(refs, acc, fn {struct_mod, using_mod}, map ->
+                existing = Map.get(map, struct_mod, MapSet.new())
+                Map.put(map, struct_mod, MapSet.put(existing, using_mod))
+              end)
+
+            _ ->
+              acc
+          end
+        end
+      end)
+
+    # Build lifecycle per struct
+    structs =
+      target_structs
+      |> Enum.map(fn struct_info ->
+        defining_mod = struct_info.module
+        users = Map.get(usage_data, defining_mod, MapSet.new()) |> MapSet.to_list()
+
+        # Creators = modules that reference the struct (v1: can't distinguish create vs pattern match)
+        # Consumers = same set (v1 limitation)
+        # Logic leaks = non-defining modules that appear in users
+        logic_leaks = Enum.reject(users, fn mod -> mod == defining_mod end)
+
+        %{
+          struct: defining_mod,
+          fields: struct_info.fields,
+          defining_module: defining_mod,
+          users: Enum.sort(users),
+          user_count: length(users),
+          logic_leaks: Enum.sort(logic_leaks),
+          leak_count: length(logic_leaks)
+        }
+      end)
+      |> Enum.sort_by(fn s -> -s.leak_count end)
+
+    {:ok, %{structs: structs, count: length(structs)}}
   end
 end

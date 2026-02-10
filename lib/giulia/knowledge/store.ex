@@ -287,6 +287,26 @@ defmodule Giulia.Knowledge.Store do
     GenServer.call(__MODULE__, {:heatmap, project_path}, 30_000)
   end
 
+  @doc """
+  Find hub modules with insufficient spec/doc coverage.
+  Returns modules sorted by severity (red first) with spec/doc ratios.
+  """
+  @spec find_unprotected_hubs(project_path(), keyword()) ::
+          {:ok, %{modules: [map()], count: non_neg_integer(), severity_counts: map()}}
+  def find_unprotected_hubs(project_path, opts \\ []) do
+    GenServer.call(__MODULE__, {:find_unprotected_hubs, project_path, opts}, 30_000)
+  end
+
+  @doc """
+  Map struct data flow across modules: creators, consumers, logic leaks.
+  Optionally filter to a single struct module.
+  """
+  @spec struct_lifecycle(project_path(), String.t() | nil) ::
+          {:ok, %{structs: [map()], count: non_neg_integer()}}
+  def struct_lifecycle(project_path, struct_module \\ nil) do
+    GenServer.call(__MODULE__, {:struct_lifecycle, project_path, struct_module}, 30_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -499,6 +519,19 @@ defmodule Giulia.Knowledge.Store do
   def handle_call({:heatmap, project_path}, _from, state) do
     graph = get_graph(state, project_path)
     result = Analyzer.heatmap(graph, project_path)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:find_unprotected_hubs, project_path, opts}, _from, state) do
+    graph = get_graph(state, project_path)
+    result = Analyzer.find_unprotected_hubs(graph, project_path, opts)
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call({:struct_lifecycle, project_path, struct_module}, _from, state) do
+    result = Analyzer.struct_lifecycle(project_path, struct_module)
     {:reply, result, state}
   end
 
