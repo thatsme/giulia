@@ -68,6 +68,10 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | **Style oracle** | `GET /api/knowledge/style_oracle?path=P&q=Q&top_k=N` | Exemplar functions matching concept Q, quality-gated (both @spec and @doc required) — includes source code, spec, doc |
 | **Pre-impact check** | `POST /api/knowledge/pre_impact_check` | Risk analysis for rename/remove operations — callers, risk score, phased migration plan, hub warnings. Body: `{"path":"P","module":"M","action":"rename_function\|remove_function\|rename_module","target":"func/arity","new_name":"new"}` |
 | **Heatmap** | `GET /api/knowledge/heatmap?path=P` | All modules scored 0-100 by composite health (centrality 30%, complexity 25%, test coverage 25%, coupling 20%) — zones: red ≥60, yellow ≥30, green <30 |
+| **Unprotected hubs** | `GET /api/knowledge/unprotected_hubs?path=P&hub_threshold=3&spec_threshold=0.5` | Hub modules (in-degree ≥ threshold) with low spec/doc coverage — severity: red (<50% specs), yellow (<80% specs). Merges centrality with type safety gaps |
+| **Struct lifecycle** | `GET /api/knowledge/struct_lifecycle?path=P&struct=Module.Name` | Data flow tracing per struct: which modules create/consume it, logic leaks (non-defining modules that use the struct). Optional `struct` filter |
+| **Semantic duplicates** | `GET /api/knowledge/duplicates?path=P&threshold=0.85&max=20` | Clusters of semantically similar functions (cosine similarity ≥ threshold on Bumblebee embeddings). Returns connected components with avg similarity. Requires EmbeddingServing |
+| **Unified audit** | `GET /api/knowledge/audit?path=P` | Combines all 4 Principal Consultant features: unprotected hubs + struct lifecycle + semantic duplicates + behaviour integrity. Single call for comprehensive project health report |
 
 ### 3. Intelligence (Pre-Processing Layers)
 
@@ -194,6 +198,10 @@ This single call returns all 6 contract sections per relevant module — behavio
 5. `POST /api/knowledge/pre_impact_check` — before renaming/removing a function or module, get affected callers, risk score, and phased migration plan
 6. `GET /api/knowledge/heatmap?path=P` — module health overview: red/yellow/green zones by composite score
 7. `GET /api/knowledge/logic_flow?path=P&from=MFA&to=MFA` — trace function-call path between two MFA vertices
+8. `GET /api/knowledge/audit?path=P` — unified audit combining unprotected hubs, struct lifecycle, semantic duplicates, and behaviour integrity in one call
+9. `GET /api/knowledge/unprotected_hubs?path=P` — find hub modules with insufficient spec/doc coverage (dangerous gaps)
+10. `GET /api/knowledge/struct_lifecycle?path=P` — trace struct data flow across modules (creators, consumers, logic leaks)
+11. `GET /api/knowledge/duplicates?path=P` — find semantically similar functions via embedding cosine similarity
 
 **No plan is valid without blast radius data.** If you skip preflight AND these queries, the plan is incomplete.
 
