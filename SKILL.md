@@ -55,7 +55,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Hub score | `GET /api/knowledge/centrality?path=P&module=X` | In-degree, out-degree — high = dangerous to modify |
 | Dependency path | `GET /api/knowledge/path?path=P&from=A&to=B` | Shortest path between two modules |
 | Graph overview | `GET /api/knowledge/stats?path=P` | Vertices, edges, components, top hubs |
-| Behaviour integrity | `GET /api/knowledge/integrity?path=P` | Checks all behaviour-implementer contracts match |
+| Behaviour integrity | `GET /api/knowledge/integrity?path=P` | Checks all behaviour-implementer contracts — enriched fractures with `missing` (real), `injected` (MacroMap), `optional_omitted` (legal), `heuristic_injected` (ghost-detected). Only `missing` triggers fracture status |
 | Dead code | `GET /api/knowledge/dead_code?path=P` | Functions defined but never called anywhere — excludes OTP callbacks, behaviour implementations, framework entry points |
 | Circular dependencies | `GET /api/knowledge/cycles?path=P` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
 | God modules | `GET /api/knowledge/god_modules?path=P` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
@@ -71,7 +71,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | **Unprotected hubs** | `GET /api/knowledge/unprotected_hubs?path=P&hub_threshold=3&spec_threshold=0.5` | Hub modules (in-degree ≥ threshold) with low spec/doc coverage — severity: red (<50% specs), yellow (<80% specs). Merges centrality with type safety gaps |
 | **Struct lifecycle** | `GET /api/knowledge/struct_lifecycle?path=P&struct=Module.Name` | Data flow tracing per struct: which modules create/consume it, logic leaks (non-defining modules that use the struct). Optional `struct` filter |
 | **Semantic duplicates** | `GET /api/knowledge/duplicates?path=P&threshold=0.85&max=20` | Clusters of semantically similar functions (cosine similarity ≥ threshold on Bumblebee embeddings). Returns connected components with avg similarity. Requires EmbeddingServing |
-| **Unified audit** | `GET /api/knowledge/audit?path=P` | Combines all 4 Principal Consultant features: unprotected hubs + struct lifecycle + semantic duplicates + behaviour integrity. Single call for comprehensive project health report |
+| **Unified audit** | `GET /api/knowledge/audit?path=P` | Combines all 4 Principal Consultant features: unprotected hubs + struct lifecycle + semantic duplicates + behaviour integrity (enriched with optional/heuristic fields). Single call for comprehensive project health report |
 
 ### 3. Intelligence (Pre-Processing Layers)
 
@@ -93,7 +93,7 @@ Given a natural language prompt, it:
 1. **Discovers** relevant modules via semantic search (Bumblebee embeddings)
 2. **Pre-computes** change risk scores (called once, cached in pipeline)
 3. **Builds 6 contract sections** per module:
-   - **Behaviour Contract** — callbacks defined/implemented, integrity status, missing callbacks
+   - **Behaviour Contract** — callbacks defined/implemented, optional callbacks, integrity status (4-level: `consistent`, `consistent_with_optionals`, `heuristic_match`, `fractured`), missing callbacks, optional omitted, heuristic injected
    - **Type Contract** — specs with full signatures, types, spec coverage ratio
    - **Data Contract** — struct fields, dependents count
    - **Macro Contract** — `use` directives, known implications (GenServer requires init/1, etc.)
