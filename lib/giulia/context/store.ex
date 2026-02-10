@@ -394,6 +394,15 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  List optional callbacks (where optional == true) in the project.
+  """
+  @spec list_optional_callbacks(project_path(), module_name() | nil) :: [map()]
+  def list_optional_callbacks(project_path, module_filter \\ nil) do
+    list_callbacks(project_path, module_filter)
+    |> Enum.filter(fn cb -> Map.get(cb, :optional, false) == true end)
+  end
+
+  @doc """
   List all structs defined in the project.
   """
   @spec list_structs(project_path()) :: [map()]

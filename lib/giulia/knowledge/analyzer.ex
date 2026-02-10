@@ -321,6 +321,15 @@ defmodule Giulia.Knowledge.Analyzer do
           end)
           |> MapSet.new()
 
+        # Split optional vs required callbacks
+        optional_set =
+          callbacks
+          |> Enum.filter(fn cb -> Map.get(cb, :optional, false) == true end)
+          |> Enum.map(fn cb -> {to_string(cb.function), cb.arity} end)
+          |> MapSet.new()
+
+        required_set = MapSet.difference(callback_set, optional_set)
+
         # Get implementers: modules with :implements edge pointing TO this behaviour
         implementers =
           Graph.in_edges(graph, behaviour)
@@ -330,7 +339,7 @@ defmodule Giulia.Knowledge.Analyzer do
 
         # Check each implementer
         fractures =
-          Enum.flat_map(implementers, fn impl_mod ->
+          Enum.map(implementers, fn impl_mod ->
             # Get public functions of the implementer
             impl_functions =
               Giulia.Context.Store.list_functions(project_path, impl_mod)
@@ -348,9 +357,9 @@ defmodule Giulia.Knowledge.Analyzer do
             # Union: explicitly defined + macro-injected
             all_provided = MapSet.union(impl_functions, macro_injected)
 
-            # Find callbacks truly missing (not defined AND not injected)
+            # Find required callbacks truly missing (not defined AND not injected)
             truly_missing =
-              callback_set
+              required_set
               |> MapSet.difference(all_provided)
               |> MapSet.to_list()
 
@@ -361,21 +370,85 @@ defmodule Giulia.Knowledge.Analyzer do
               |> MapSet.intersection(macro_injected)
               |> MapSet.to_list()
 
-            if truly_missing == [] do
-              []
-            else
-              [%{implementer: impl_mod, missing: truly_missing, injected: macro_covered}]
-            end
+            # Track optional callbacks that are omitted (legal, not fractures)
+            optional_missing =
+              optional_set
+              |> MapSet.difference(all_provided)
+              |> MapSet.to_list()
+
+            %{
+              implementer: impl_mod,
+              missing: truly_missing,
+              injected: macro_covered,
+              optional_omitted: optional_missing,
+              heuristic_injected: []
+            }
           end)
 
-        if fractures == [] do
+        # Post-processing: detect macro ghosts (100% miss heuristic)
+        fractures = detect_macro_ghosts(fractures, implementers, project_path)
+
+        # Only report fractures where required callbacks are genuinely missing
+        real_fractures = Enum.filter(fractures, fn f -> f.missing != [] end)
+
+        if real_fractures == [] do
           {:ok, :consistent}
         else
-          {:error, fractures}
+          {:error, real_fractures}
         end
       end
     end
   end
+
+  # Heuristic: if a callback is "missing" from 100% of implementers,
+  # AND all those implementers `use` the behaviour module (or a shared module),
+  # it's likely injected by a macro. Reclassify from missing → heuristic_injected.
+  defp detect_macro_ghosts(fractures, implementers, project_path) when length(implementers) >= 2 do
+    # Group all missing callbacks across implementers
+    all_missing =
+      fractures
+      |> Enum.flat_map(fn f -> Enum.map(f.missing, fn cb -> {cb, f.implementer} end) end)
+      |> Enum.group_by(fn {cb, _impl} -> cb end, fn {_cb, impl} -> impl end)
+
+    impl_count = length(implementers)
+
+    # Callbacks missing from ALL implementers = ghost candidates
+    ghost_candidates =
+      all_missing
+      |> Enum.filter(fn {_cb, impls} -> length(Enum.uniq(impls)) == impl_count end)
+      |> Enum.map(fn {cb, _impls} -> cb end)
+      |> MapSet.new()
+
+    if MapSet.size(ghost_candidates) == 0 do
+      fractures
+    else
+      # Verify all implementers share a common `use` directive
+      use_sets =
+        Enum.map(implementers, fn impl ->
+          get_use_directives(project_path, impl) |> MapSet.new()
+        end)
+
+      common_uses =
+        case use_sets do
+          [first | rest] -> Enum.reduce(rest, first, &MapSet.intersection/2)
+          [] -> MapSet.new()
+        end
+
+      if MapSet.size(common_uses) > 0 do
+        # Reclassify ghost candidates
+        Enum.map(fractures, fn f ->
+          {ghosts, real_missing} =
+            Enum.split_with(f.missing, fn cb -> MapSet.member?(ghost_candidates, cb) end)
+
+          %{f | missing: real_missing, heuristic_injected: f.heuristic_injected ++ ghosts}
+        end)
+      else
+        fractures
+      end
+    end
+  end
+
+  defp detect_macro_ghosts(fractures, _implementers, _project_path), do: fractures
 
   # Get use directives for a module from ETS
   defp get_use_directives(project_path, module_name) do

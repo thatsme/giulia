@@ -553,11 +553,8 @@ defmodule Giulia.Daemon.Endpoint do
               Enum.map(fractures, fn {behaviour, impl_fractures} ->
                 %{
                   behaviour: behaviour,
-                  fractures: Enum.map(impl_fractures, fn %{implementer: impl, missing: missing} ->
-                    %{
-                      implementer: impl,
-                      missing: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end)
-                    }
+                  fractures: Enum.map(impl_fractures, fn frac ->
+                    format_fracture(frac)
                   end)
                 }
               end)
@@ -893,13 +890,7 @@ defmodule Giulia.Daemon.Endpoint do
                   %{
                     behaviour: behaviour,
                     fractures: Enum.map(impl_fractures, fn frac ->
-                      missing = Map.get(frac, :missing, [])
-                      injected = Map.get(frac, :injected, [])
-                      %{
-                        implementer: frac.implementer,
-                        missing: Enum.map(missing, fn {name, arity} -> "#{name}/#{arity}" end),
-                        injected: Enum.map(injected, fn {name, arity} -> "#{name}/#{arity}" end)
-                      }
+                      format_fracture(frac)
                     end)
                   }
                 end)
@@ -911,7 +902,7 @@ defmodule Giulia.Daemon.Endpoint do
           end
 
         send_json(conn, 200, %{
-          audit_version: "build_89",
+          audit_version: "build_90",
           unprotected_hubs: unprotected_hubs,
           struct_lifecycle: struct_lifecycle,
           semantic_duplicates: semantic_duplicates,
@@ -1101,6 +1092,18 @@ defmodule Giulia.Daemon.Endpoint do
       nil -> nil
       path -> Giulia.Core.PathMapper.resolve_path(path)
     end
+  end
+
+  defp format_fracture(frac) do
+    fmt = fn list -> Enum.map(list, fn {name, arity} -> "#{name}/#{arity}" end) end
+
+    %{
+      implementer: frac.implementer,
+      missing: fmt.(Map.get(frac, :missing, [])),
+      injected: fmt.(Map.get(frac, :injected, [])),
+      optional_omitted: fmt.(Map.get(frac, :optional_omitted, [])),
+      heuristic_injected: fmt.(Map.get(frac, :heuristic_injected, []))
+    }
   end
 
   defp send_json(conn, status, data) do

@@ -33,7 +33,7 @@ defmodule Giulia.AST.Processor do
   @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
   @type type_info :: %{name: atom(), arity: non_neg_integer(), visibility: :type | :typep | :opaque, line: non_neg_integer(), definition: String.t()}
   @type spec_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
-  @type callback_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
+  @type callback_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), optional: boolean(), line: non_neg_integer()}
   @type struct_info :: %{module: String.t(), fields: [atom()], line: non_neg_integer()}
   @type doc_info :: %{function: atom(), arity: non_neg_integer(), doc: String.t(), line: non_neg_integer()}
 
@@ -214,6 +214,7 @@ defmodule Giulia.AST.Processor do
     types = extract_types(ast)
     specs = extract_specs(ast)
     callbacks = extract_callbacks(ast)
+    optional_callbacks = extract_optional_callbacks(ast)
     structs = extract_structs(ast)
     docs = extract_docs(ast)
 
@@ -224,6 +225,7 @@ defmodule Giulia.AST.Processor do
       types: types,
       specs: specs,
       callbacks: callbacks,
+      optional_callbacks: MapSet.to_list(optional_callbacks),
       structs: structs,
       docs: docs,
       line_count: safe_count_lines(source),
@@ -627,13 +629,19 @@ defmodule Giulia.AST.Processor do
 
   @doc """
   Extract @callback definitions from AST.
+  Tags each callback with `optional: true/false` based on `@optional_callbacks`.
   """
   @spec extract_callbacks(ast()) :: [callback_info()]
   def extract_callbacks(ast) do
     try do
+      optional_set = extract_optional_callbacks(ast)
+
       {_ast, callbacks} = Macro.prewalk(ast, [], fn node, acc ->
         case extract_callback_info(node) do
-          {:ok, callback_info} -> {node, [callback_info | acc]}
+          {:ok, callback_info} ->
+            tagged = Map.put(callback_info, :optional,
+              MapSet.member?(optional_set, {callback_info.function, callback_info.arity}))
+            {node, [tagged | acc]}
           :skip -> {node, acc}
         end
       end)
@@ -645,6 +653,64 @@ defmodule Giulia.AST.Processor do
       _, _ -> []
     end
   end
+
+  @doc """
+  Extract `@optional_callbacks` attribute from AST.
+  Returns a MapSet of `{function_name, arity}` tuples.
+  """
+  @spec extract_optional_callbacks(ast()) :: MapSet.t({atom(), non_neg_integer()})
+  def extract_optional_callbacks(ast) do
+    try do
+      {_ast, optionals} = Macro.prewalk(ast, [], fn node, acc ->
+        case node do
+          # @optional_callbacks [func: arity, ...] — keyword list
+          {:@, _, [{:optional_callbacks, _, [items]}]} when is_list(items) ->
+            pairs = extract_optional_pairs(items)
+            {node, pairs ++ acc}
+
+          # Sourceror wraps the list: @optional_callbacks [{:__block__, _, [...]}]
+          {:@, _, [{:optional_callbacks, _, [{:__block__, _, [items]}]}]} when is_list(items) ->
+            pairs = extract_optional_pairs(items)
+            {node, pairs ++ acc}
+
+          _ ->
+            {node, acc}
+        end
+      end)
+
+      MapSet.new(optionals)
+    rescue
+      _ -> MapSet.new()
+    catch
+      _, _ -> MapSet.new()
+    end
+  end
+
+  # Parse optional callback entries from various AST shapes
+  defp extract_optional_pairs(items) when is_list(items) do
+    Enum.flat_map(items, fn
+      # Keyword: [func_name: arity] — standard AST
+      {name, arity} when is_atom(name) and is_integer(arity) ->
+        [{name, arity}]
+
+      # Sourceror wraps integer in __block__: {name, {:__block__, _, [arity]}}
+      {name, {:__block__, _, [arity]}} when is_atom(name) and is_integer(arity) ->
+        [{name, arity}]
+
+      # Sourceror wraps atom key: {{:__block__, _, [name]}, {:__block__, _, [arity]}}
+      {{:__block__, _, [name]}, {:__block__, _, [arity]}} when is_atom(name) and is_integer(arity) ->
+        [{name, arity}]
+
+      # Tuple form: {:func_name, arity}
+      {:__block__, _, [{name, arity}]} when is_atom(name) and is_integer(arity) ->
+        [{name, arity}]
+
+      _ ->
+        []
+    end)
+  end
+
+  defp extract_optional_pairs(_), do: []
 
   # @callback function_name(args) :: return_type
   defp extract_callback_info({:@, meta, [{:callback, _, [{:"::", _, [{name, _, args}, _return]}]}]})
