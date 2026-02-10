@@ -144,8 +144,13 @@ defmodule Giulia.Intelligence.Preflight do
 
   defp behaviour_contract(project_path, module_name) do
     # Callbacks this module DEFINES
-    defines_callbacks =
-      Store.list_callbacks(project_path, module_name)
+    all_callbacks = Store.list_callbacks(project_path, module_name)
+    defines_callbacks = Enum.map(all_callbacks, fn cb -> "#{cb.function}/#{cb.arity}" end)
+
+    # Optional callbacks this module defines
+    optional_callbacks =
+      all_callbacks
+      |> Enum.filter(fn cb -> Map.get(cb, :optional, false) == true end)
       |> Enum.map(fn cb -> "#{cb.function}/#{cb.arity}" end)
 
     # Behaviours this module IMPLEMENTS (use directives)
@@ -160,37 +165,67 @@ defmodule Giulia.Intelligence.Preflight do
           []
       end
 
-    # Behaviour integrity check
-    {integrity, missing_callbacks} =
+    # Behaviour integrity check with enriched fracture data
+    {integrity, missing_callbacks, optional_omitted, heuristic_injected} =
       case KnowledgeStore.check_behaviour_integrity(project_path, module_name) do
         {:ok, :consistent} ->
           if defines_callbacks == [] do
-            {"not_a_behaviour", []}
+            {"not_a_behaviour", [], [], []}
           else
-            {"consistent", []}
+            # Check if any optionals were omitted (still consistent)
+            has_optionals = optional_callbacks != []
+            status = if has_optionals, do: "consistent_with_optionals", else: "consistent"
+            {status, [], [], []}
           end
 
         {:error, fractures} when is_list(fractures) ->
           missing =
-            Enum.flat_map(fractures, fn %{implementer: impl, missing: missing} ->
-              Enum.map(missing, fn {name, arity} -> "#{impl}: #{name}/#{arity}" end)
+            Enum.flat_map(fractures, fn frac ->
+              Enum.map(Map.get(frac, :missing, []), fn {name, arity} ->
+                "#{frac.implementer}: #{name}/#{arity}"
+              end)
             end)
 
-          {"fractured", missing}
+          opt_omitted =
+            Enum.flat_map(fractures, fn frac ->
+              Enum.map(Map.get(frac, :optional_omitted, []), fn {name, arity} ->
+                "#{frac.implementer}: #{name}/#{arity}"
+              end)
+            end)
+
+          heuristic =
+            Enum.flat_map(fractures, fn frac ->
+              Enum.map(Map.get(frac, :heuristic_injected, []), fn {name, arity} ->
+                "#{frac.implementer}: #{name}/#{arity}"
+              end)
+            end)
+
+          # 4-level status
+          status = cond do
+            missing != [] -> "fractured"
+            heuristic != [] -> "heuristic_match"
+            opt_omitted != [] -> "consistent_with_optionals"
+            true -> "consistent"
+          end
+
+          {status, missing, opt_omitted, heuristic}
 
         _ ->
           if defines_callbacks == [] do
-            {"not_a_behaviour", []}
+            {"not_a_behaviour", [], [], []}
           else
-            {"consistent", []}
+            {"consistent", [], [], []}
           end
       end
 
     %{
       defines_callbacks: defines_callbacks,
+      optional_callbacks: optional_callbacks,
       implements: implements,
       integrity: integrity,
-      missing_callbacks: missing_callbacks
+      missing_callbacks: missing_callbacks,
+      optional_omitted: optional_omitted,
+      heuristic_injected: heuristic_injected
     }
   end
 
@@ -419,15 +454,25 @@ defmodule Giulia.Intelligence.Preflight do
         end
       end)
 
-    integrity_fractured =
-      Enum.any?(modules, fn mod ->
+    integrity_status =
+      modules
+      |> Enum.map(fn mod ->
         case mod.behaviour_contract do
-          %{integrity: "fractured"} -> true
-          _ -> false
+          %{integrity: status} -> status
+          _ -> "not_a_behaviour"
         end
       end)
-
-    integrity_status = if integrity_fractured, do: "fractured", else: "consistent"
+      |> Enum.reject(fn s -> s in ["not_a_behaviour", nil] end)
+      |> case do
+        [] -> "consistent"
+        statuses ->
+          cond do
+            "fractured" in statuses -> "fractured"
+            "heuristic_match" in statuses -> "heuristic_match"
+            "consistent_with_optionals" in statuses -> "consistent_with_optionals"
+            true -> "consistent"
+          end
+      end
 
     semantic_drift_count =
       Enum.count(modules, fn mod ->

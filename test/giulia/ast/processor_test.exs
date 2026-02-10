@@ -110,6 +110,22 @@ defmodule Giulia.AST.ProcessorTest do
   end
   """
 
+  @optional_callback_module """
+  defmodule MyApp.OptBehaviour do
+    @callback required_func(term()) :: :ok
+    @callback optional_func(term(), term()) :: :ok
+    @callback another_optional() :: :ok
+    @optional_callbacks [optional_func: 2, another_optional: 0]
+  end
+  """
+
+  @no_optional_callback_module """
+  defmodule MyApp.StrictBehaviour do
+    @callback must_implement(term()) :: :ok
+    @callback also_required() :: :ok
+  end
+  """
+
   @multi_alias_module """
   defmodule MyApp.MultiAlias do
     alias MyApp.Core.{ContextManager, PathMapper, PathSandbox}
@@ -381,6 +397,57 @@ defmodule Giulia.AST.ProcessorTest do
 
       handle = Enum.find(callbacks, &(&1.function == :handle_event))
       assert handle.arity == 1
+    end
+
+    test "tags callbacks as optional: false when no @optional_callbacks" do
+      {:ok, ast, _} = Processor.parse(@no_optional_callback_module)
+      callbacks = Processor.extract_callbacks(ast)
+
+      Enum.each(callbacks, fn cb ->
+        assert cb.optional == false
+      end)
+    end
+
+    test "tags optional callbacks correctly" do
+      {:ok, ast, _} = Processor.parse(@optional_callback_module)
+      callbacks = Processor.extract_callbacks(ast)
+
+      required = Enum.find(callbacks, &(&1.function == :required_func))
+      optional_2 = Enum.find(callbacks, &(&1.function == :optional_func))
+      optional_0 = Enum.find(callbacks, &(&1.function == :another_optional))
+
+      assert required.optional == false
+      assert optional_2.optional == true
+      assert optional_0.optional == true
+    end
+  end
+
+  # ============================================================================
+  # Section 7b: Optional Callback Extraction
+  # ============================================================================
+
+  describe "extract_optional_callbacks/1" do
+    test "extracts @optional_callbacks as MapSet" do
+      {:ok, ast, _} = Processor.parse(@optional_callback_module)
+      optional_set = Processor.extract_optional_callbacks(ast)
+
+      assert MapSet.member?(optional_set, {:optional_func, 2})
+      assert MapSet.member?(optional_set, {:another_optional, 0})
+      refute MapSet.member?(optional_set, {:required_func, 1})
+    end
+
+    test "returns empty MapSet when no @optional_callbacks" do
+      {:ok, ast, _} = Processor.parse(@callback_module)
+      optional_set = Processor.extract_optional_callbacks(ast)
+
+      assert MapSet.size(optional_set) == 0
+    end
+
+    test "returns empty MapSet for module without callbacks" do
+      {:ok, ast, _} = Processor.parse(@simple_module)
+      optional_set = Processor.extract_optional_callbacks(ast)
+
+      assert MapSet.size(optional_set) == 0
     end
   end
 
