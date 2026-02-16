@@ -23,7 +23,7 @@ Lifecycle, status, and project management endpoints.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.80"}` — confirms daemon is running |
+| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.90"}` — confirms daemon is running |
 | Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
 | Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
 | List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
