@@ -229,6 +229,21 @@ If you edit Elixir files directly (using file write/edit tools instead of Giulia
 | File contents | Standard file read tools — Giulia doesn't serve raw file content |
 | Compile/test | Shell — `mix compile`, `mix test` |
 
+### Report Output Convention (MANDATORY)
+
+When a report or assessment is requested (project audit, health check, analysis, code review, etc.), you **MUST** produce a comprehensive Markdown report file with this naming convention:
+
+```
+<projectfolder>_REPORT_<AAAAMMHH>.md
+```
+
+- `<projectfolder>` — the project directory name (e.g., `Giulia`, `MyApp`)
+- `<AAAAMMHH>` — timestamp: year (4 digits) + month (2 digits) + hour (2 digits)
+
+**Example:** `Giulia_REPORT_20260211.md`
+
+The report must be saved in the project root. Do not skip file creation — a verbal summary alone is insufficient when a report or assessment is requested.
+
 ### Path Convention
 
 **All index and knowledge endpoints require a `?path=P` query parameter** identifying which project to query. This is because Giulia supports multi-project isolation — each scanned project has its own ETS namespace and Knowledge Graph. Without `?path=`, these endpoints return a 400 error.
