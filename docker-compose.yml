@@ -18,13 +18,21 @@ services:
 
     restart: unless-stopped
 
-    # Run directly with mix — no release, no RELEASE_* env poison
-    command: /bin/sh -c "cd /app && mix deps.get && mix run --no-halt"
+    # Run with distributed Erlang enabled for runtime introspection
+    # --name sets the node name, --cookie sets the auth cookie
+    # --erl sets the distribution port range (for Docker port mapping)
+    command: >-
+      /bin/sh -c "cd /app && mix deps.get &&
+      elixir --name giulia@0.0.0.0 --cookie ${GIULIA_COOKIE:-giulia_dev}
+      --erl '-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9105'
+      -S mix run --no-halt"
 
     environment:
       - GIULIA_HOME=/data
       - GIULIA_PORT=4000
       - GIULIA_IN_CONTAINER=true
+      # Distributed Erlang — cookie for remote node authentication
+      - GIULIA_COOKIE=${GIULIA_COOKIE:-giulia_dev}
       # Isolated build paths — never touch the host's Windows _build
       - MIX_ENV=dev
       - MIX_BUILD_PATH=/tmp/giulia_build
@@ -52,9 +60,12 @@ services:
       - ${GIULIA_PROJECTS_PATH:-./test_projects}:/projects:rw
       - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
 
-    # Simple HTTP port - no EPMD complexity
+    # HTTP API + Distributed Erlang ports
+    # 4000 = HTTP API, 4369 = EPMD, 9100-9105 = distribution port range
     ports:
       - "4000:4000"
+      - "4369:4369"
+      - "9100-9105:9100-9105"
 
     deploy:
       resources:
