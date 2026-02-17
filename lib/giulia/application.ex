@@ -97,7 +97,10 @@ defmodule Giulia.Application do
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
 
       # Context manager - routes requests to correct ProjectContext
-      Giulia.Core.ContextManager
+      Giulia.Core.ContextManager,
+
+      # Runtime collector (periodic BEAM health snapshots)
+      Giulia.Runtime.Collector
     ]
 
     # Skip HTTP endpoint in test env (port already in use by the running daemon)
