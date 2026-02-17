@@ -15,6 +15,16 @@ curl -s http://localhost:4000/health
 Expected: `{"status":"ok","node":"...","version":"..."}`.
 If this fails, fall back to standard file tools. Do not retry.
 
+## Session Start (MANDATORY)
+
+Before any work, always call the Architect Brief to get full project situational awareness:
+
+```bash
+curl -s "http://localhost:4000/api/brief/architect?path=<CWD>"
+```
+
+This single call returns: project stats (files, modules, functions, specs), topology (vertices, edges, hubs, cycles, god modules), health (heatmap summary, red zones, unprotected hubs, behaviour integrity), runtime (BEAM pulse, alerts, hot spots with Knowledge Graph fusion), and constitution (GIULIA.md tech stack + taboos). Zero manual prompting — start every session with this.
+
 ## Tool Categories
 
 ### 0. Daemon Operations
@@ -23,7 +33,7 @@ Lifecycle, status, and project management endpoints.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.90"}` — confirms daemon is running |
+| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.93"}` — confirms daemon is running |
 | Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
 | Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
 | List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
@@ -108,7 +118,58 @@ One call replaces the 4 separate queries previously required for planning mode.
 2. **Layer 2** (Knowledge Graph): Enriches each module with centrality (hub score), dependents count, and file path
 3. Returns a formatted briefing with hub warnings for high-centrality modules (in_degree >= 3)
 
-### 4. Modifying Code
+### 4. Runtime Introspection (Build 92)
+
+Live BEAM runtime awareness — what your code is *doing* right now, not just what it *is*.
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| **BEAM health** | `GET /api/runtime/pulse` | Processes, memory (with breakdown), schedulers, uptime, run queue, ETS tables (top 5 "god tables"), warnings |
+| **Top processes** | `GET /api/runtime/top_processes?metric=M` | Top 10 processes by metric (`reductions`, `memory`, `message_queue`). Shows PID, module, registered name, current function |
+| **Hot spots** | `GET /api/runtime/hot_spots?path=P` | Top 5 modules by runtime activity, fused with Knowledge Graph data (zone, complexity, centrality). The differentiator: PID → Module → Graph in one response |
+| **Function trace** | `GET /api/runtime/trace?module=M&duration=5000` | Short-lived per-module call frequency trace. Hard limits: max 1,000 events OR 5 seconds (whichever first). Returns sorted call counts with `aborted` flag if kill switch fires |
+| **Snapshot history** | `GET /api/runtime/history?last=N` | Last N Collector snapshots (default 20, 30s interval = 10 min window). Each snapshot includes pulse + top processes |
+| **Metric trend** | `GET /api/runtime/trend?metric=M` | Time-series for one metric (`memory`, `processes`, `run_queue`, `ets_memory`) — for charting and leak detection |
+| **Active alerts** | `GET /api/runtime/alerts` | Warnings with duration: high memory, process count, run queue pressure, message queue buildup, memory growth (>20% over window) |
+| **Connect remote node** | `POST /api/runtime/connect` | Connect to a remote BEAM node. Body: `{"node":"myapp@host","cookie":"secret"}` |
+
+All runtime endpoints accept an optional `?node=N` parameter (default: local Giulia node). The `?path=P` parameter on `hot_spots` enables Knowledge Graph fusion.
+
+### 5. Plan Validation Gate (Build 93)
+
+**After planning, before writing code**: validate your plan against the Knowledge Graph.
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| **Validate plan** | `POST /api/plan/validate` | Verdict (`approved`/`warning`/`rejected`), risk score 0-100, 5 check results, actionable recommendations |
+
+**Request format:**
+```json
+{
+  "path": "C:/Development/GitHub/Giulia",
+  "plan": {
+    "modules_touched": ["Giulia.Context.Store", "Giulia.Knowledge.Store"],
+    "actions": [
+      {"type": "modify", "module": "Giulia.Context.Store"},
+      {"type": "create", "module": "Giulia.Runtime.Inspector", "depends_on": ["Giulia.Knowledge.Store"]}
+    ]
+  }
+}
+```
+
+**Five validation checks:**
+1. **Cycle detection** — clones graph, adds proposed edges, detects new circular dependencies → `rejected` if new cycles
+2. **Red zone collision** — counts red-zone modules (heatmap score ≥60) in plan → `warning` if ≥2 red zones touched
+3. **Hub risk aggregation** — sums centrality degrees across touched modules → `warning` if total > 40
+4. **Blast radius preview** — union of all downstream dependents → info with count
+5. **Unprotected hub write** — checks if plan modifies hub modules with low spec coverage → `warning` with coverage data
+
+**Verdicts:**
+- `approved` — all checks pass, proceed without justification
+- `warning` — acknowledge each warning and explain why you're proceeding
+- `rejected` — **do not write code**, revise the plan first
+
+### 6. Modifying Code
 
 Send natural language commands through Giulia's OODA orchestrator. Two endpoints available:
 
@@ -162,7 +223,7 @@ Send natural language commands through Giulia's OODA orchestrator. Two endpoints
 | Get approval details | `GET /api/approval/:id` | Info about a specific pending approval request |
 | Respond to approval | `POST /api/approval/:id` | Approve or reject. Body: `{"approved": true\|false}` |
 
-### 5. Verifying Changes
+### 7. Verifying Changes
 
 | Intent | Method |
 |--------|--------|
@@ -204,6 +265,15 @@ This single call returns all 6 contract sections per relevant module — behavio
 11. `GET /api/knowledge/duplicates?path=P` — find semantically similar functions via embedding cosine similarity
 
 **No plan is valid without blast radius data.** If you skip preflight AND these queries, the plan is incomplete.
+
+### Planning Protocol (NON-NEGOTIABLE)
+
+When formulating a multi-file refactor or any modification touching 2+ modules:
+1. You **MUST** format your plan as a JSON object matching the `/api/plan/validate` schema
+2. You **MUST** call `POST /api/plan/validate` with that plan
+3. If the verdict is `REJECTED`, you are **FORBIDDEN** from writing code. Revise the plan.
+4. If the verdict is `WARNING`, you must acknowledge each warning and explain why you're proceeding
+5. Only `APPROVED` plans may be executed without justification
 
 ### Before Modifying Any Elixir Module
 
