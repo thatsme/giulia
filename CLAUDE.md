@@ -306,6 +306,7 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 - `GIULIA_PORT` - HTTP API port (default: 4000)
 - `GIULIA_DAEMON_MODE` - Set to "true" to force daemon mode
 - `GIULIA_CLIENT_MODE` - Set to "true" to force client mode
+- `GIULIA_COOKIE` - Erlang distribution cookie for remote node auth (default: `giulia_dev`)
 
 ## Docker Run Command (EXACT)
 
@@ -313,14 +314,22 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 docker run -d \
   --name giulia-daemon \
   -p 4000:4000 \
+  -p 4369:4369 \
+  -p 9100-9105:9100-9105 \
   -e GIULIA_LM_STUDIO_URL=http://192.168.1.52:1234 \
   -e GIULIA_HOST_PROJECTS_PATH="C:/Development/GitHub" \
+  -e GIULIA_COOKIE=giulia_dev \
   -v "C:/Development/GitHub:/projects" \
   giulia/core:latest
 ```
 
 **Critical**: `GIULIA_HOST_PROJECTS_PATH` must match the host side of the `-v` mount.
 The daemon uses this to translate Windows paths (from client) to container paths.
+
+**Ports:**
+- `4000` - HTTP API
+- `4369` - EPMD (Erlang Port Mapper Daemon)
+- `9100-9105` - Erlang distribution port range (for remote node connections)
 
 ## Debugging
 
@@ -341,6 +350,61 @@ iex -S mix
 - `:no_provider_available` - Neither LM Studio nor Anthropic API available. Check LM Studio is running.
 - Search returns nothing - Dependencies (`deps/`) are not searched, only project source files.
 
+## Runtime Introspection (Distributed Erlang)
+
+Giulia can inspect any running BEAM node — either itself or a remote application. The Docker daemon starts with distributed Erlang enabled (`--name giulia@0.0.0.0 --cookie giulia_dev`).
+
+### Mode 1: Self-Introspection (default)
+
+Giulia inspects its own BEAM VM. No configuration needed.
+
+```bash
+# BEAM health (memory, processes, schedulers, ETS)
+curl http://localhost:4000/api/runtime/pulse
+
+# Top 10 processes by CPU
+curl http://localhost:4000/api/runtime/top_processes?metric=reductions
+
+# Hot modules fused with Knowledge Graph
+curl "http://localhost:4000/api/runtime/hot_spots?path=C:/Development/GitHub/Giulia"
+```
+
+### Mode 2: Remote Node Introspection
+
+Connect to an external BEAM app to harvest its runtime data while using Giulia's static analysis on its source code.
+
+**Step 1: Start your app with distribution enabled and the same cookie:**
+```bash
+iex --name myapp@192.168.1.50 --cookie giulia_dev -S mix
+```
+
+**Step 2: Mount your app's source code in Giulia's Docker volume** (via `GIULIA_PROJECTS_PATH` or docker-compose volumes).
+
+**Step 3: Connect Giulia to your app:**
+```bash
+curl -X POST http://localhost:4000/api/runtime/connect \
+  -H "Content-Type: application/json" \
+  -d '{"node":"myapp@192.168.1.50","cookie":"giulia_dev"}'
+```
+
+**Step 4: Query with both static + runtime data:**
+```bash
+# Scan your app's source code (static analysis)
+curl -X POST http://localhost:4000/api/index/scan \
+  -H "Content-Type: application/json" \
+  -d '{"path":"C:/Development/GitHub/MyApp"}'
+
+# Hot spots: PID → Module → Knowledge Graph fusion (live + static)
+curl "http://localhost:4000/api/runtime/hot_spots?path=C:/Development/GitHub/MyApp&node=myapp@192.168.1.50"
+
+# Architect brief with runtime section included
+curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/MyApp"
+```
+
+**Cookie authentication:** Both nodes MUST share the same Erlang cookie. Set `GIULIA_COOKIE` env var in docker-compose.yml to match your app's cookie. Default is `giulia_dev`.
+
+**Network:** The remote app must be reachable from inside the Docker container. For apps on the host machine, use the Docker host IP (e.g., `host.docker.internal` on Docker Desktop).
+
 ## Current Status
 
 - HTTP daemon-client architecture implemented (Bandit on :4000)
@@ -352,6 +416,9 @@ iex -S mix
 - LM Studio provider working, Anthropic/Ollama need verification
 - Docker deployment ready (Dockerfile + docker-compose.yml)
 - HTTP thin client (`client.ex`) is the active entry point
+- **Build 91**: Architect Brief — single-call session briefing (`/api/brief/architect`)
+- **Build 92**: Runtime Proprioception — BEAM introspection, Collector, 8 runtime endpoints, Distributed Erlang enabled
+- **Build 93**: Plan Validation Gate — graph-aware plan validation (`/api/plan/validate`)
 
 ## Next Steps
 
