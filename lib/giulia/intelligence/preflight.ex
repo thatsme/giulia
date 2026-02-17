@@ -126,7 +126,8 @@ defmodule Giulia.Intelligence.Preflight do
       data_contract: safe_build(:data, fn -> data_contract(project_path, module_name) end),
       macro_contract: safe_build(:macro, fn -> macro_contract(project_path, module_name) end),
       topology: safe_build(:topology, fn -> topology_contract(project_path, module_name, depth, risk_map) end),
-      semantic_integrity: safe_build(:semantic, fn -> semantic_integrity(project_path, module_name, query_vector) end)
+      semantic_integrity: safe_build(:semantic, fn -> semantic_integrity(project_path, module_name, query_vector) end),
+      runtime_alert: safe_build(:runtime, fn -> runtime_alert(project_path, module_name) end)
     }
   end
 
@@ -428,6 +429,37 @@ defmodule Giulia.Intelligence.Preflight do
 
       :error ->
         {nil, false}
+    end
+  end
+
+  # ============================================================================
+  # Contract 7: Runtime Alert (Build 92 — Live Performance Alert)
+  # ============================================================================
+
+  defp runtime_alert(project_path, module_name) do
+    if Giulia.Runtime.Collector.active?() do
+      case Giulia.Runtime.Inspector.hot_spots(:local, project_path) do
+        {:ok, spots} ->
+          case Enum.find(spots, fn s -> s.module == module_name end) do
+            nil ->
+              nil
+
+            spot ->
+              %{
+                live: true,
+                reductions_pct: spot.reductions_pct,
+                memory_kb: spot.memory_kb,
+                message_queue: spot.message_queue,
+                alert: "LIVE PERFORMANCE ALERT: #{spot.reductions_pct}% of system reductions, " <>
+                       "#{spot.memory_kb}KB memory, message queue #{spot.message_queue}"
+              }
+          end
+
+        _ ->
+          nil
+      end
+    else
+      nil
     end
   end
 

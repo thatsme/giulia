@@ -782,6 +782,157 @@ defmodule Giulia.Daemon.Endpoint do
   end
 
   # ============================================================================
+  # Architect Brief (Build 91) — Session Start Endpoint
+  # ============================================================================
+
+  # Single-call project briefing: topology, health, constitution
+  get "/api/brief/architect" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        case Giulia.Intelligence.ArchitectBrief.build(project_path) do
+          {:ok, brief} -> send_json(conn, 200, brief)
+          {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  # ============================================================================
+  # Plan Validation Gate (Build 93)
+  # ============================================================================
+
+  # Validate a proposed plan against the Knowledge Graph
+  post "/api/plan/validate" do
+    path = conn.body_params["path"]
+    plan = conn.body_params["plan"]
+
+    if path && plan do
+      resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+      case Giulia.Intelligence.PlanValidator.validate(plan, resolved_path) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required fields: path and plan"})
+    end
+  end
+
+  # ============================================================================
+  # Runtime Proprioception Endpoints (Build 92)
+  # ============================================================================
+
+  # BEAM health snapshot
+  get "/api/runtime/pulse" do
+    node_ref = parse_node_param(conn)
+
+    case Giulia.Runtime.Inspector.pulse(node_ref) do
+      {:ok, pulse} -> send_json(conn, 200, pulse)
+      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
+  # Top 10 processes by metric (reductions, memory, message_queue)
+  get "/api/runtime/top_processes" do
+    try do
+      node_ref = parse_node_param(conn)
+      metric = String.to_existing_atom(conn.query_params["metric"] || "reductions")
+
+      case Giulia.Runtime.Inspector.top_processes(node_ref, metric) do
+        {:ok, procs} -> send_json(conn, 200, %{processes: procs, count: length(procs), metric: metric})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    rescue
+      ArgumentError -> send_json(conn, 400, %{error: "Invalid metric. Use: reductions, memory, message_queue"})
+    end
+  end
+
+  # Top modules fused with Knowledge Graph
+  get "/api/runtime/hot_spots" do
+    node_ref = parse_node_param(conn)
+    project_path = resolve_project_path(conn)
+
+    case Giulia.Runtime.Inspector.hot_spots(node_ref, project_path) do
+      {:ok, spots} -> send_json(conn, 200, %{hot_spots: spots, count: length(spots)})
+      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+    end
+  end
+
+  # Short-lived per-module function call trace
+  get "/api/runtime/trace" do
+    node_ref = parse_node_param(conn)
+    module = conn.query_params["module"]
+
+    if module do
+      duration =
+        case Integer.parse(conn.query_params["duration"] || "5000") do
+          {n, _} -> n
+          :error -> 5000
+        end
+
+      case Giulia.Runtime.Inspector.trace(node_ref, module, duration) do
+        {:ok, result} -> send_json(conn, 200, result)
+        {:error, {:unknown_module, m}} -> send_json(conn, 404, %{error: "Unknown module: #{m}"})
+        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required query param: module"})
+    end
+  end
+
+  # Collector: last N snapshots
+  get "/api/runtime/history" do
+    node_ref = parse_node_param(conn)
+    last_n =
+      case Integer.parse(conn.query_params["last"] || "20") do
+        {n, _} -> n
+        :error -> 20
+      end
+
+    snapshots = Giulia.Runtime.Collector.history(node_ref, last: last_n)
+    send_json(conn, 200, %{snapshots: snapshots, count: length(snapshots)})
+  end
+
+  # Collector: time-series for one metric
+  get "/api/runtime/trend" do
+    try do
+      node_ref = parse_node_param(conn)
+      metric = String.to_existing_atom(conn.query_params["metric"] || "memory")
+
+      points = Giulia.Runtime.Collector.trend(node_ref, metric)
+      send_json(conn, 200, %{metric: metric, points: points, count: length(points)})
+    rescue
+      ArgumentError -> send_json(conn, 400, %{error: "Invalid metric. Use: memory, processes, run_queue, ets_memory"})
+    end
+  end
+
+  # Collector: active warnings with duration
+  get "/api/runtime/alerts" do
+    node_ref = parse_node_param(conn)
+
+    alerts = Giulia.Runtime.Collector.alerts(node_ref)
+    send_json(conn, 200, %{alerts: alerts, count: length(alerts)})
+  end
+
+  # Connect to a remote BEAM node
+  post "/api/runtime/connect" do
+    node_name = conn.body_params["node"]
+    cookie = conn.body_params["cookie"]
+
+    if node_name do
+      node_atom = String.to_atom(node_name)
+      opts = if cookie, do: [cookie: cookie], else: []
+
+      case Giulia.Runtime.Inspector.connect(node_atom, opts) do
+        :ok -> send_json(conn, 200, %{status: "connected", node: node_name})
+        {:error, reason} -> send_json(conn, 422, %{error: inspect(reason), node: node_name})
+      end
+    else
+      send_json(conn, 400, %{error: "Missing required field: node"})
+    end
+  end
+
+  # ============================================================================
   # Principal Consultant Endpoints (Build 89)
   # ============================================================================
 
@@ -1091,6 +1242,15 @@ defmodule Giulia.Daemon.Endpoint do
     case conn.query_params["path"] do
       nil -> nil
       path -> Giulia.Core.PathMapper.resolve_path(path)
+    end
+  end
+
+  # Parse ?node= param for runtime endpoints, default to :local
+  defp parse_node_param(conn) do
+    case conn.query_params["node"] do
+      nil -> :local
+      "" -> :local
+      node_str -> String.to_atom(node_str)
     end
   end
 
