@@ -87,6 +87,9 @@ defmodule Giulia.Application do
       # Event broadcaster for SSE streaming
       Giulia.Inference.Events,
 
+      # Logic Monitor event buffer (Build 95)
+      Giulia.Monitor.Store,
+
       # Approval manager for interactive consent gate
       Giulia.Inference.Approval,
 
@@ -112,7 +115,15 @@ defmodule Giulia.Application do
       end
 
     opts = [strategy: :one_for_one, name: Giulia.Supervisor]
-    Supervisor.start_link(children, opts)
+    result = Supervisor.start_link(children, opts)
+
+    # Attach telemetry handlers after supervisor is up (Build 95)
+    case result do
+      {:ok, _pid} -> Giulia.Monitor.Telemetry.attach()
+      _ -> :ok
+    end
+
+    result
   end
 
   @doc """

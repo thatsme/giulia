@@ -6,6 +6,7 @@ defmodule Giulia.Daemon.Endpoint do
   across Docker boundaries without EPMD drama.
 
   Build 94: Routes split into domain sub-routers under Giulia.Daemon.Routers.
+  Build 98: Discovery router added (9 total sub-routers).
   This module retains only core routes (health, command, status) and forwards
   all domain-specific requests to sub-routers.
   """
@@ -13,6 +14,8 @@ defmodule Giulia.Daemon.Endpoint do
   use Plug.Router
   import Giulia.Daemon.Helpers
 
+  # Global Logic Tap — every HTTP request emits telemetry (Build 96)
+  plug Plug.Telemetry, event_prefix: [:giulia, :http]
   plug Plug.Logger
   plug :match
   plug :fetch_query_params
@@ -36,6 +39,8 @@ defmodule Giulia.Daemon.Endpoint do
   forward "/api/briefing",     to: Giulia.Daemon.Routers.Intelligence
   forward "/api/brief",        to: Giulia.Daemon.Routers.Intelligence
   forward "/api/plan",         to: Giulia.Daemon.Routers.Intelligence
+  forward "/api/monitor",      to: Giulia.Daemon.Routers.Monitor
+  forward "/api/discovery",    to: Giulia.Daemon.Routers.Discovery
 
   # ============================================================================
   # Core Routes (stay in Endpoint)

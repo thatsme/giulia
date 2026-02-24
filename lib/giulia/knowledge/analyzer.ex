@@ -855,10 +855,12 @@ defmodule Giulia.Knowledge.Analyzer do
 
   def change_risk(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
-
-    # Pre-compute coupling map: module -> max coupling to any single other module
     coupling_map = build_coupling_map(all_asts)
+    change_risk_with_coupling(graph, project_path, all_asts, coupling_map)
+  end
 
+  @doc false
+  def change_risk_with_coupling(graph, _project_path, all_asts, coupling_map) do
     # Build module -> file lookup
     module_files =
       all_asts
@@ -994,7 +996,11 @@ defmodule Giulia.Knowledge.Analyzer do
 
   def god_modules(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
+    god_modules_impl(graph, project_path, all_asts)
+  end
 
+  @doc false
+  def god_modules_impl(graph, _project_path, all_asts) do
     modules =
       all_asts
       |> Enum.flat_map(fn {path, data} ->
@@ -1460,7 +1466,11 @@ defmodule Giulia.Knowledge.Analyzer do
   def heatmap(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
     coupling_map = build_coupling_map(all_asts)
+    heatmap_with_coupling(graph, project_path, all_asts, coupling_map)
+  end
 
+  @doc false
+  def heatmap_with_coupling(graph, project_path, all_asts, coupling_map) do
     # Module -> file lookup
     module_files =
       all_asts
@@ -1769,5 +1779,27 @@ defmodule Giulia.Knowledge.Analyzer do
       |> Enum.sort_by(fn s -> -s.leak_count end)
 
     {:ok, %{structs: structs, count: length(structs)}}
+  end
+
+  # ============================================================================
+  # Cached Metric Computation (Build 97)
+  # ============================================================================
+
+  @doc """
+  Compute heatmap, change_risk, and god_modules in one pass.
+
+  Shares `build_coupling_map/1` across heatmap and change_risk (the heaviest
+  helper — parses every source file with Sourceror). Called by Knowledge.Store
+  in a background Task after graph rebuild, results cached for <10ms reads.
+  """
+  def compute_cached_metrics(graph, project_path) do
+    all_asts = Giulia.Context.Store.all_asts(project_path)
+    coupling_map = build_coupling_map(all_asts)
+
+    heatmap = heatmap_with_coupling(graph, project_path, all_asts, coupling_map)
+    change_risk = change_risk_with_coupling(graph, project_path, all_asts, coupling_map)
+    god_modules = god_modules_impl(graph, project_path, all_asts)
+
+    %{heatmap: heatmap, change_risk: change_risk, god_modules: god_modules}
   end
 end
