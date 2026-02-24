@@ -36,7 +36,17 @@ lib/
 │   │   └── path_mapper.ex       # Host/container path translation
 │   │
 │   ├── daemon/
-│   │   └── endpoint.ex          # Bandit HTTP API (Plug.Router on :4000)
+│   │   ├── endpoint.ex          # Bandit HTTP API — core routes + forwards (Build 94)
+│   │   ├── helpers.ex           # Shared helpers (send_json, resolve_project_path, etc.)
+│   │   ├── skill_router.ex      # `use SkillRouter` macro: Plug.Router + @skill accumulator
+│   │   └── routers/
+│   │       ├── approval.ex      # 2 routes: POST/GET /api/approval/:id
+│   │       ├── transaction.ex   # 3 routes: enable, staged, rollback
+│   │       ├── index.ex         # 6 routes: modules, functions, module_details, summary, status, scan
+│   │       ├── search.ex        # 3 routes: search, semantic, semantic/status
+│   │       ├── intelligence.ex  # 4 routes: briefing, preflight, architect, validate
+│   │       ├── runtime.ex       # 8 routes: pulse, top_processes, hot_spots, trace, history, trend, alerts, connect
+│   │       └── knowledge.ex     # 23 routes: all /api/knowledge/* endpoints
 │   │
 │   ├── inference/
 │   │   ├── orchestrator.ex      # OODA loop (THINK-VALIDATE-REFLECT-EXECUTE)
@@ -419,12 +429,15 @@ curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/MyApp
 - **Build 91**: Architect Brief — single-call session briefing (`/api/brief/architect`)
 - **Build 92**: Runtime Proprioception — BEAM introspection, Collector, 8 runtime endpoints, Distributed Erlang enabled
 - **Build 93**: Plan Validation Gate — graph-aware plan validation (`/api/plan/validate`)
+- **Build 94**: The Great Decoupling — Endpoint split into 7 domain sub-routers (1,331→266 lines, 80% reduction), `@skill` decorator pattern with `__skills__/0` introspection, `SkillRouter` macro, `Helpers` module. 49 routes self-describing. Zero breaking changes.
 
 ## Next Steps
 
-1. Verify Anthropic and Ollama providers work end-to-end
-2. Implement Owl TUI for live streaming responses
-3. Add constitution enforcement in reflection step
-4. Expand test coverage (currently minimal)
-5. Father-killing: Use Giulia to build Giulia's remaining features
-6. Clean up legacy `cli.ex` (RPC-based) once HTTP client is proven
+1. Build 95: Discovery Engine — runtime skill registry querying `__skills__/0` across all routers
+2. Build 96: SKILL.md pruning — replace static endpoint tables with discovery-based lookups
+3. Verify Anthropic and Ollama providers work end-to-end
+4. Implement Owl TUI for live streaming responses
+5. Add constitution enforcement in reflection step
+6. Expand test coverage (currently minimal)
+7. Father-killing: Use Giulia to build Giulia's remaining features
+8. Clean up legacy `cli.ex` (RPC-based) once HTTP client is proven

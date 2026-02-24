@@ -4,6 +4,8 @@
 
 Giulia is a REST API daemon (port 4000) that provides AST-level code intelligence for Elixir projects. It maintains a persistent Knowledge Graph, ETS-backed module/function index, and Sourceror-parsed AST cache across sessions. Prefer Giulia's API over shell tools (grep, find, cat) when the daemon is available — it returns structured, pre-indexed data instantly.
 
+**Architecture (Build 94):** Routes are split into 7 domain sub-routers (`Giulia.Daemon.Routers.*`) forwarded from the main Endpoint. Each route carries a `@skill` annotation with intent, params, returns, and category. Every sub-router exposes `__skills__/0` for programmatic discovery. External API paths are unchanged.
+
 ## Detection
 
 Before using any Giulia endpoint, verify the daemon is running:
@@ -33,7 +35,7 @@ Lifecycle, status, and project management endpoints.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.93"}` — confirms daemon is running |
+| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.94"}` — confirms daemon is running |
 | Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
 | Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
 | List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
