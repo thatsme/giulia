@@ -192,6 +192,15 @@ defmodule Giulia.Inference.ToolDispatch do
     # EXECUTE
     tool_opts = ContextBuilder.build_tool_opts(state)
 
+    :telemetry.execute(
+      [:giulia, :tool, :start],
+      %{system_time: System.system_time(:millisecond)},
+      %{tool: tool_name, params: ContextBuilder.sanitize_params_for_broadcast(params),
+        iteration: State.iteration(state), request_id: state.request_id}
+    )
+
+    t0 = System.monotonic_time(:millisecond)
+
     result =
       try do
         Registry.execute(tool_name, params, tool_opts)
@@ -204,6 +213,8 @@ defmodule Giulia.Inference.ToolDispatch do
           {:error, "Tool #{tool_name} crashed: #{Exception.message(e)}"}
       end
 
+    duration_ms = System.monotonic_time(:millisecond) - t0
+
     # Log result
     result_preview =
       case result do
@@ -215,6 +226,13 @@ defmodule Giulia.Inference.ToolDispatch do
 
     Logger.info("Result: #{result_preview}")
     Logger.info("=== END TOOL CALL ===")
+
+    :telemetry.execute(
+      [:giulia, :tool, :stop],
+      %{duration_ms: duration_ms, system_time: System.system_time(:millisecond)},
+      %{tool: tool_name, success: match?({:ok, _}, result),
+        preview: String.slice(result_preview, 0, 200), request_id: state.request_id}
+    )
 
     # AUTO READ-BACK
     result = maybe_inject_readback(tool_name, params, result, tool_opts)

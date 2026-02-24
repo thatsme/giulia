@@ -9,7 +9,7 @@ defmodule Giulia.Knowledge.Store do
   Uses libgraph (pure Elixir, no NIFs) for graph operations.
 
   All graph data is namespaced by project_path to support multi-project isolation.
-  State: %{graphs: %{project_path => graph}}
+  State: %{graphs: %{project_path => graph}, metric_caches: %{project_path => %{atom => term}}}
 
   Vertex types (via labels):
   - :module    — e.g. "Giulia.Tools.EditFile"
@@ -311,7 +311,7 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def init(_) do
-    {:ok, %{graphs: %{}}}
+    {:ok, %{graphs: %{}, metric_caches: %{}}}
   end
 
   # Helper to get graph for a project, defaulting to empty
@@ -321,6 +321,21 @@ defmodule Giulia.Knowledge.Store do
 
   defp put_graph(state, project_path, graph) do
     %{state | graphs: Map.put(state.graphs, project_path, graph)}
+  end
+
+  # Metric cache helpers (Build 97)
+  defp get_cached(state, project_path, metric) do
+    get_in(state, [:metric_caches, project_path, metric])
+  end
+
+  defp put_metrics(state, project_path, metrics) do
+    current = Map.get(state.metric_caches, project_path, %{})
+    merged = Map.merge(current, metrics)
+    %{state | metric_caches: Map.put(state.metric_caches, project_path, merged)}
+  end
+
+  defp clear_metrics(state, project_path) do
+    %{state | metric_caches: Map.delete(state.metric_caches, project_path)}
   end
 
   @impl true
@@ -344,14 +359,36 @@ defmodule Giulia.Knowledge.Store do
     edge_count = Graph.num_edges(graph)
     Logger.info("Knowledge graph rebuilt for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
 
-    {:noreply, put_graph(state, project_path, graph)}
+    state =
+      state
+      |> put_graph(project_path, graph)
+      |> clear_metrics(project_path)
+
+    # Eagerly compute heavy metrics in background (same Task pattern as graph build).
+    # Results arrive via {:metrics_ready, ...} cast — mailbox stays responsive.
+    store_pid = self()
+
+    Task.start(fn ->
+      metrics = Analyzer.compute_cached_metrics(graph, project_path)
+      GenServer.cast(store_pid, {:metrics_ready, project_path, metrics})
+    end)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:metrics_ready, project_path, metrics}, state) do
+    Logger.info("Metric cache warmed for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
+    {:noreply, put_metrics(state, project_path, metrics)}
   end
 
   @impl true
   def handle_call({:rebuild, project_path, ast_data}, _from, state) do
     # Synchronous rebuild for commit verification — caller chose to wait.
+    # Clear cache but don't eagerly recompute (caller is in commit pipeline, speed matters).
     graph = Builder.build_graph(ast_data)
-    {:reply, :ok, put_graph(state, project_path, graph)}
+    state = state |> put_graph(project_path, graph) |> clear_metrics(project_path)
+    {:reply, :ok, state}
   end
 
   @impl true
@@ -438,9 +475,15 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:find_god_modules, project_path}, _from, state) do
-    graph = get_graph(state, project_path)
-    result = Analyzer.god_modules(graph, project_path)
-    {:reply, result, state}
+    case get_cached(state, project_path, :god_modules) do
+      nil ->
+        graph = get_graph(state, project_path)
+        result = Analyzer.god_modules(graph, project_path)
+        {:reply, result, put_metrics(state, project_path, %{god_modules: result})}
+
+      cached ->
+        {:reply, cached, state}
+    end
   end
 
   @impl true
@@ -470,9 +513,15 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:change_risk_score, project_path}, _from, state) do
-    graph = get_graph(state, project_path)
-    result = Analyzer.change_risk(graph, project_path)
-    {:reply, result, state}
+    case get_cached(state, project_path, :change_risk) do
+      nil ->
+        graph = get_graph(state, project_path)
+        result = Analyzer.change_risk(graph, project_path)
+        {:reply, result, put_metrics(state, project_path, %{change_risk: result})}
+
+      cached ->
+        {:reply, cached, state}
+    end
   end
 
   @impl true
@@ -517,9 +566,15 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:heatmap, project_path}, _from, state) do
-    graph = get_graph(state, project_path)
-    result = Analyzer.heatmap(graph, project_path)
-    {:reply, result, state}
+    case get_cached(state, project_path, :heatmap) do
+      nil ->
+        graph = get_graph(state, project_path)
+        result = Analyzer.heatmap(graph, project_path)
+        {:reply, result, put_metrics(state, project_path, %{heatmap: result})}
+
+      cached ->
+        {:reply, cached, state}
+    end
   end
 
   @impl true

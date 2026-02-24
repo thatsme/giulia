@@ -66,7 +66,7 @@ defmodule Giulia.Inference.Engine do
     # Handle native commands (no LLM)
     if classification.provider == :elixir_native do
       result = handle_native_command(prompt, state)
-      {:done, result, state}
+      done_with_telemetry(result, state)
     else
       case resolve_provider(classification) do
         {:ok, final_provider, final_module} ->
@@ -108,10 +108,16 @@ defmodule Giulia.Inference.Engine do
             |> put_in([Access.key(:counters), :iteration], 0)
             |> Map.put(:action_history, [])
 
+          :telemetry.execute(
+            [:giulia, :ooda, :start],
+            %{system_time: System.system_time(:millisecond)},
+            %{prompt: String.slice(prompt, 0, 200), provider: final_provider, request_id: state.request_id}
+          )
+
           {:next, :step, state}
 
         :no_provider ->
-          {:done, {:error, :no_provider_available}, state}
+          done_with_telemetry({:error, :no_provider_available}, state)
       end
     end
   end
@@ -124,7 +130,7 @@ defmodule Giulia.Inference.Engine do
   def dispatch(:step, %{counters: %{iteration: iter, max_iterations: max}} = state)
       when iter >= max do
     Logger.warning("Max iterations reached (#{max})")
-    {:done, {:error, :max_iterations_exceeded}, state}
+    done_with_telemetry({:error, :max_iterations_exceeded}, state)
   end
 
   # ---------- STEP (max failures -> intervene) ----------
@@ -152,13 +158,37 @@ defmodule Giulia.Inference.Engine do
     state = state |> State.increment_iteration() |> State.set_status(:thinking)
     Logger.debug("OODA Loop iteration #{State.iteration(state)}")
 
+    :telemetry.execute(
+      [:giulia, :ooda, :step],
+      %{iteration: State.iteration(state), system_time: System.system_time(:millisecond)},
+      %{status: state.status, provider: state.provider.name, request_id: state.request_id}
+    )
+
     messages = ContextBuilder.inject_distilled_context(state.messages, state)
+
+    t0 = System.monotonic_time(:millisecond)
 
     case call_provider(State.set_messages(state, messages)) do
       {:ok, response} ->
+        duration_ms = System.monotonic_time(:millisecond) - t0
+
+        :telemetry.execute(
+          [:giulia, :llm, :call],
+          %{duration_ms: duration_ms, system_time: System.system_time(:millisecond)},
+          %{provider: state.provider.name, status: :ok, request_id: state.request_id}
+        )
+
         handle_model_response(response, state)
 
       {:error, reason} ->
+        duration_ms = System.monotonic_time(:millisecond) - t0
+
+        :telemetry.execute(
+          [:giulia, :llm, :call],
+          %{duration_ms: duration_ms, system_time: System.system_time(:millisecond)},
+          %{provider: state.provider.name, status: :error, request_id: state.request_id}
+        )
+
         Logger.error("Provider error: #{inspect(reason)}")
         state = state |> State.increment_failures() |> State.push_error(reason)
         {:next, :step, state}
@@ -711,7 +741,24 @@ defmodule Giulia.Inference.Engine do
   # ============================================================================
 
   defp handle_model_response(response, state) do
-    case ResponseParser.parse(response) do
+    parsed = ResponseParser.parse(response)
+
+    # Telemetry: emit parsed event with result type and think block extraction
+    {result_type, tool_name_for_telemetry} = classify_parsed(parsed)
+    think_block = extract_think_block(response)
+
+    :telemetry.execute(
+      [:giulia, :llm, :parsed],
+      %{system_time: System.system_time(:millisecond)},
+      %{
+        result_type: result_type,
+        tool: tool_name_for_telemetry,
+        think: think_block,
+        request_id: state.request_id
+      }
+    )
+
+    case parsed do
       {:tool_call, "respond", %{"message" => message}} ->
         handle_respond(message, state)
 
@@ -761,7 +808,7 @@ defmodule Giulia.Inference.Engine do
 
           Logger.info("=== TASK COMPLETE (staging-lock release) ===")
           state = State.set_transaction(state, Transaction.new())
-          {:done, {:ok, message}, state}
+          done_with_telemetry({:ok, message}, state)
         else
           staged_list =
             tx.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
@@ -820,7 +867,7 @@ defmodule Giulia.Inference.Engine do
 
           Logger.info("=== TASK COMPLETE (goal-tracker release) ===")
           state = State.reset_goal_blocks(state)
-          {:done, {:ok, message}, state}
+          done_with_telemetry({:ok, message}, state)
         else
           untouched =
             im.dependents
@@ -869,7 +916,7 @@ defmodule Giulia.Inference.Engine do
         Logger.info("=== TASK COMPLETE ===")
         Logger.info("Iterations: #{State.iteration(state)}")
         Logger.info("Response: #{String.slice(message, 0, 300)}")
-        {:done, {:ok, message}, state}
+        done_with_telemetry({:ok, message}, state)
     end
   end
 
@@ -911,11 +958,11 @@ defmodule Giulia.Inference.Engine do
             handle_model_response(%{response | content: json}, state)
 
           {:error, _} ->
-            {:done, {:ok, ResponseParser.clean_output(text)}, state}
+            done_with_telemetry({:ok, ResponseParser.clean_output(text)}, state)
         end
 
       {:error, _} ->
-        {:done, {:ok, ResponseParser.clean_output(text)}, state}
+        done_with_telemetry({:ok, ResponseParser.clean_output(text)}, state)
     end
   end
 
@@ -1239,5 +1286,42 @@ defmodule Giulia.Inference.Engine do
       |> State.reset_failures()
 
     {:next, :step, state}
+  end
+
+  # ============================================================================
+  # Telemetry Helpers (Build 95)
+  # ============================================================================
+
+  defp done_with_telemetry(result, state) do
+    result_type = case result do
+      {:ok, _} -> :ok
+      {:error, _} -> :error
+      _ -> :unknown
+    end
+
+    :telemetry.execute(
+      [:giulia, :ooda, :done],
+      %{total_iterations: State.iteration(state), system_time: System.system_time(:millisecond)},
+      %{result_type: result_type, request_id: state.request_id}
+    )
+
+    {:done, result, state}
+  end
+
+  defp classify_parsed(parsed) do
+    case parsed do
+      {:tool_call, name, _} -> {:tool_call, name}
+      {:multi_tool_call, name, _, _} -> {:multi_tool_call, name}
+      {:text, _} -> {:text, nil}
+      {:error, _} -> {:error, nil}
+    end
+  end
+
+  defp extract_think_block(response) do
+    content = response.content || ""
+    case Regex.run(~r/<think>([\s\S]*?)<\/think>/, content) do
+      [_, think] -> String.trim(think)
+      _ -> nil
+    end
   end
 end

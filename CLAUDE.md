@@ -46,7 +46,13 @@ lib/
 │   │       ├── search.ex        # 3 routes: search, semantic, semantic/status
 │   │       ├── intelligence.ex  # 4 routes: briefing, preflight, architect, validate
 │   │       ├── runtime.ex       # 8 routes: pulse, top_processes, hot_spots, trace, history, trend, alerts, connect
-│   │       └── knowledge.ex     # 23 routes: all /api/knowledge/* endpoints
+│   │       ├── knowledge.ex     # 23 routes: all /api/knowledge/* endpoints
+│   │       ├── monitor.ex       # 3 routes: dashboard, SSE stream, history (Build 95)
+│   │       └── discovery.ex     # 3 routes: skills, categories, search (Build 98)
+│   │
+│   ├── monitor/
+│   │   ├── store.ex             # Rolling buffer GenServer + SSE pub/sub (Build 95)
+│   │   └── telemetry.ex         # :telemetry handler attachment (Build 95)
 │   │
 │   ├── inference/
 │   │   ├── orchestrator.ex      # OODA loop (THINK-VALIDATE-REFLECT-EXECUTE)
@@ -430,12 +436,14 @@ curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/MyApp
 - **Build 92**: Runtime Proprioception — BEAM introspection, Collector, 8 runtime endpoints, Distributed Erlang enabled
 - **Build 93**: Plan Validation Gate — graph-aware plan validation (`/api/plan/validate`)
 - **Build 94**: The Great Decoupling — Endpoint split into 7 domain sub-routers (1,331→266 lines, 80% reduction), `@skill` decorator pattern with `__skills__/0` introspection, `SkillRouter` macro, `Helpers` module. 49 routes self-describing. Zero breaking changes.
+- **Build 95**: The Logic Monitor — Cognitive Flight Recording. 7 `:telemetry` events across OODA pipeline (start/step/done, llm call/parsed, tool start/stop). Rolling 50-event buffer with SSE pub/sub. Dark-themed dashboard at `/api/monitor`. Think Stream panel for real-time `<think>` block display. 3 new routes (52 total). Zero overhead when dashboard closed.
+- **Build 96**: The Global Logic Tap — `Plug.Telemetry` on Endpoint captures every HTTP request. Monitor now shows [API] calls with method, path, status, duration, and response body (truncated 5KB). Responses panel, filter buttons (API/OODA/LLM/TOOL), status-code coloring. Every REST call from Claude Code is now a visible "thought" in the dashboard.
+- **Build 97**: Metric Caching — heatmap/change_risk/god_modules cached in Knowledge.Store `metric_caches` map, warmed eagerly after graph rebuild via background Task (same pattern as graph build). Cache-first reads on handle_call, fallback to sync computation + cache on cold miss. Shared `build_coupling_map` across heatmap+change_risk via `compute_cached_metrics/2`. Target: <10ms warm reads (was 570-1166ms).
+- **Build 98**: Discovery Engine — 3 discovery endpoints (`/api/discovery/skills`, `/categories`, `/search`), `__skills__/0` activated at runtime across all 9 routers. SKILL.md 349→~75 lines (90% context reduction). 55 total self-describing routes.
 
 ## Next Steps
 
-1. Build 95: Discovery Engine — runtime skill registry querying `__skills__/0` across all routers
-2. Build 96: SKILL.md pruning — replace static endpoint tables with discovery-based lookups
-3. Verify Anthropic and Ollama providers work end-to-end
+1. Verify Anthropic and Ollama providers work end-to-end
 4. Implement Owl TUI for live streaming responses
 5. Add constitution enforcement in reflection step
 6. Expand test coverage (currently minimal)
