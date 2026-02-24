@@ -496,65 +496,7 @@ defmodule Giulia.Knowledge.Analyzer do
 
   def dead_code(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
-
-    # Step 1: Get all defined functions
-    all_functions = Giulia.Context.Store.list_functions(project_path, nil)
-
-    # Step 2: Build set of behaviour callback signatures per implementer module
-    impl_callbacks = collect_behaviour_callbacks(graph, project_path)
-
-    # Step 3: Walk all ASTs to find every function call
-    called_functions = collect_all_calls(all_asts)
-
-    # Step 4: Build set of modules that have @dead_code_ignore true
-    ignored_modules =
-      all_asts
-      |> Enum.flat_map(fn {path, data} ->
-        source = case File.read(path) do
-          {:ok, content} -> content
-          _ -> ""
-        end
-
-        if String.contains?(source, "@dead_code_ignore") do
-          (data[:modules] || []) |> Enum.map(fn mod -> mod.name end)
-        else
-          []
-        end
-      end)
-      |> MapSet.new()
-
-    # Step 5: Find dead functions
-    dead =
-      all_functions
-      |> Enum.reject(fn func ->
-        name_arity = {to_string(func.name), func.arity}
-
-        # Skip modules annotated with @dead_code_ignore
-        MapSet.member?(ignored_modules, func.module) or
-          # Skip implicit OTP/framework callbacks
-          MapSet.member?(@implicit_functions, name_arity) or
-          # Skip behaviour callback implementations
-          MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
-          # Skip if called remotely: Module.func/arity
-          MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
-          # Skip if called locally within the same module: func/arity
-          MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
-          # Skip if called with any arity (for functions with defaults)
-          called_with_any_arity?(called_functions, func)
-      end)
-      |> Enum.map(fn func ->
-        %{
-          module: func.module,
-          name: to_string(func.name),
-          arity: func.arity,
-          type: func.type,
-          file: func.file,
-          line: func.line
-        }
-      end)
-      |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
-
-    {:ok, %{dead: dead, count: length(dead), total: length(all_functions)}}
+    dead_code_with_asts(graph, project_path, all_asts)
   end
 
   # --- Dead code helpers (private) ---
@@ -1782,24 +1724,190 @@ defmodule Giulia.Knowledge.Analyzer do
   end
 
   # ============================================================================
-  # Cached Metric Computation (Build 97)
+  # Cached Metric Computation (Build 97, expanded Build 99)
   # ============================================================================
 
   @doc """
-  Compute heatmap, change_risk, and god_modules in one pass.
+  Compute all heavy metrics in one pass: heatmap, change_risk, god_modules,
+  dead_code, and coupling.
 
-  Shares `build_coupling_map/1` across heatmap and change_risk (the heaviest
-  helper — parses every source file with Sourceror). Called by Knowledge.Store
-  in a background Task after graph rebuild, results cached for <10ms reads.
+  Single Sourceror pass via `collect_remote_calls/1` feeds both coupling and
+  coupling_map (was two separate parses before Build 99). Called by
+  Knowledge.Store in a background Task after graph rebuild, results cached
+  for <10ms reads.
   """
   def compute_cached_metrics(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
-    coupling_map = build_coupling_map(all_asts)
+
+    # Single Sourceror pass for all coupling-derived metrics
+    call_triples = collect_remote_calls(all_asts)
+    coupling_map = build_coupling_map_from_calls(call_triples)
 
     heatmap = heatmap_with_coupling(graph, project_path, all_asts, coupling_map)
     change_risk = change_risk_with_coupling(graph, project_path, all_asts, coupling_map)
     god_modules = god_modules_impl(graph, project_path, all_asts)
+    dead_code = dead_code_with_asts(graph, project_path, all_asts)
+    coupling = coupling_from_calls(call_triples)
 
-    %{heatmap: heatmap, change_risk: change_risk, god_modules: god_modules}
+    %{
+      heatmap: heatmap,
+      change_risk: change_risk,
+      god_modules: god_modules,
+      dead_code: dead_code,
+      coupling: coupling
+    }
+  end
+
+  # ============================================================================
+  # Shared Call Collection (Build 99)
+  # ============================================================================
+
+  @doc """
+  Single Sourceror pass over all ASTs — collects `{caller, callee, func_name}`
+  triples for every remote call. Both `coupling_from_calls/1` and
+  `build_coupling_map_from_calls/1` derive their output from these triples,
+  eliminating the double-parse that existed before Build 99.
+  """
+  def collect_remote_calls(all_asts) do
+    Enum.reduce(all_asts, [], fn {path, data}, acc ->
+      modules = data[:modules] || []
+      caller_module = List.first(modules)[:name]
+
+      if caller_module do
+        source = case File.read(path) do
+          {:ok, content} -> content
+          _ -> ""
+        end
+
+        case Sourceror.parse_string(source) do
+          {:ok, ast} ->
+            {_ast, calls} =
+              Macro.prewalk(ast, acc, fn
+                {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
+                when is_atom(func_name) and is_list(args) ->
+                  callee = Enum.map_join(parts, ".", &to_string/1)
+                  if callee != caller_module do
+                    {node, [{caller_module, callee, to_string(func_name)} | list]}
+                  else
+                    {node, list}
+                  end
+
+                node, list ->
+                  {node, list}
+              end)
+
+            calls
+
+          _ ->
+            acc
+        end
+      else
+        acc
+      end
+    end)
+  end
+
+  @doc """
+  Derive coupling pairs from pre-collected call triples.
+  Same output as `coupling/1` but without re-parsing source files.
+  """
+  def coupling_from_calls(call_triples) do
+    pairs =
+      call_triples
+      |> Enum.group_by(fn {caller, callee, _func} -> {caller, callee} end)
+      |> Enum.map(fn {{caller, callee}, calls} ->
+        functions = calls |> Enum.map(fn {_, _, f} -> f end) |> Enum.uniq() |> Enum.sort()
+
+        %{
+          caller: caller,
+          callee: callee,
+          call_count: length(calls),
+          functions: functions,
+          distinct_functions: length(functions)
+        }
+      end)
+      |> Enum.sort_by(fn p -> -p.call_count end)
+      |> Enum.take(50)
+
+    {:ok, %{pairs: pairs, count: length(pairs)}}
+  end
+
+  @doc """
+  Derive coupling map from pre-collected call triples.
+  Same output as `build_coupling_map/1` but without re-parsing source files.
+  """
+  def build_coupling_map_from_calls(call_triples) do
+    call_triples
+    |> Enum.group_by(fn {caller, _callee, _func} -> caller end)
+    |> Enum.map(fn {caller, triples} ->
+      max_to_one =
+        triples
+        |> Enum.frequencies_by(fn {_caller, callee, _func} -> callee end)
+        |> Map.values()
+        |> Enum.max(fn -> 0 end)
+
+      {caller, max_to_one}
+    end)
+    |> Map.new()
+  end
+
+  @doc """
+  Dead code detection using pre-fetched ASTs.
+  Same as `dead_code/2` but avoids a redundant `all_asts` fetch when called
+  from `compute_cached_metrics/2`.
+  """
+  def dead_code_with_asts(graph, project_path, all_asts) do
+    # Step 1: Get all defined functions
+    all_functions = Giulia.Context.Store.list_functions(project_path, nil)
+
+    # Step 2: Build set of behaviour callback signatures per implementer module
+    impl_callbacks = collect_behaviour_callbacks(graph, project_path)
+
+    # Step 3: Walk all ASTs to find every function call
+    called_functions = collect_all_calls(all_asts)
+
+    # Step 4: Build set of modules that have @dead_code_ignore true
+    ignored_modules =
+      all_asts
+      |> Enum.flat_map(fn {path, data} ->
+        source = case File.read(path) do
+          {:ok, content} -> content
+          _ -> ""
+        end
+
+        if String.contains?(source, "@dead_code_ignore") do
+          (data[:modules] || []) |> Enum.map(fn mod -> mod.name end)
+        else
+          []
+        end
+      end)
+      |> MapSet.new()
+
+    # Step 5: Find dead functions
+    dead =
+      all_functions
+      |> Enum.reject(fn func ->
+        name_arity = {to_string(func.name), func.arity}
+
+        MapSet.member?(ignored_modules, func.module) or
+          MapSet.member?(@implicit_functions, name_arity) or
+          MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
+          MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
+          MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
+          called_with_any_arity?(called_functions, func)
+      end)
+      |> Enum.map(fn func ->
+        %{
+          module: func.module,
+          name: to_string(func.name),
+          arity: func.arity,
+          type: func.type,
+          file: func.file,
+          line: func.line
+        }
+      end)
+      |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
+
+    {:ok, %{dead: dead, count: length(dead), total: length(all_functions)}}
   end
 end

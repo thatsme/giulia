@@ -461,9 +461,15 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:find_dead_code, project_path}, _from, state) do
-    graph = get_graph(state, project_path)
-    result = Analyzer.dead_code(graph, project_path)
-    {:reply, result, state}
+    case get_cached(state, project_path, :dead_code) do
+      nil ->
+        graph = get_graph(state, project_path)
+        result = Analyzer.dead_code(graph, project_path)
+        {:reply, result, put_metrics(state, project_path, %{dead_code: result})}
+
+      cached ->
+        {:reply, cached, state}
+    end
   end
 
   @impl true
@@ -501,8 +507,14 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:find_coupling, project_path}, _from, state) do
-    result = Analyzer.coupling(project_path)
-    {:reply, result, state}
+    case get_cached(state, project_path, :coupling) do
+      nil ->
+        result = Analyzer.coupling(project_path)
+        {:reply, result, put_metrics(state, project_path, %{coupling: result})}
+
+      cached ->
+        {:reply, cached, state}
+    end
   end
 
   @impl true

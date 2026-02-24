@@ -47,13 +47,17 @@ defmodule Giulia.Intelligence.Preflight do
     # Step 4: Summarize
     summary = build_summary(enriched)
 
+    # Step 5: Suggest relevant API tools (Build 100)
+    suggested_tools = suggest_tools(query_vector)
+
     {:ok, %{
       prompt: prompt,
       project_path: project_path,
       timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
       semantic_available: semantic_available,
       modules: enriched,
-      summary: summary
+      summary: summary,
+      suggested_tools: suggested_tools
     }}
   rescue
     e ->
@@ -521,5 +525,18 @@ defmodule Giulia.Intelligence.Preflight do
       integrity_status: integrity_status,
       semantic_drift_count: semantic_drift_count
     }
+  end
+
+  # ============================================================================
+  # Stage 5: Suggest Tools (Build 100)
+  # ============================================================================
+
+  defp suggest_tools(nil), do: []
+
+  defp suggest_tools(query_vector) do
+    case SemanticIndex.search_skills(query_vector, 5) do
+      {:ok, skills} -> skills
+      {:error, _} -> []
+    end
   end
 end
