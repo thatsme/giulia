@@ -20,6 +20,18 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
   @embedding_dims 384
 
+  @skill_routers [
+    Giulia.Daemon.Routers.Discovery,
+    Giulia.Daemon.Routers.Approval,
+    Giulia.Daemon.Routers.Transaction,
+    Giulia.Daemon.Routers.Index,
+    Giulia.Daemon.Routers.Search,
+    Giulia.Daemon.Routers.Intelligence,
+    Giulia.Daemon.Routers.Runtime,
+    Giulia.Daemon.Routers.Knowledge,
+    Giulia.Daemon.Routers.Monitor
+  ]
+
   # Client API
 
   def start_link(_opts) do
@@ -42,6 +54,23 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   @doc """
+  Embed all skill intents from the 9 domain routers.
+  No-op if already embedded or EmbeddingServing unavailable.
+  """
+  def embed_skills do
+    GenServer.call(__MODULE__, :embed_skills, 30_000)
+  end
+
+  @doc """
+  Search skills by semantic similarity to a query vector.
+  Returns top_k skills ranked by cosine similarity.
+  Lazy-inits skill vectors on first call if needed.
+  """
+  def search_skills(query_vector, top_k \\ 5) do
+    GenServer.call(__MODULE__, {:search_skills, query_vector, top_k}, 30_000)
+  end
+
+  @doc """
   Check if semantic search is available.
   """
   def available? do
@@ -59,7 +88,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
   @impl true
   def init(_) do
-    {:ok, %{embedding_in_progress: MapSet.new()}}
+    {:ok, %{embedding_in_progress: MapSet.new(), skill_vectors: nil}}
   end
 
   @impl true
@@ -116,6 +145,48 @@ defmodule Giulia.Intelligence.SemanticIndex do
     }
 
     {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:embed_skills, _from, %{skill_vectors: sv} = state) when sv != nil do
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call(:embed_skills, _from, state) do
+    case do_embed_skills() do
+      {:ok, vectors} ->
+        {:reply, :ok, %{state | skill_vectors: vectors}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  @impl true
+  def handle_call({:search_skills, query_vector, top_k}, _from, state) do
+    # Lazy-init skill vectors if needed
+    state =
+      if state.skill_vectors == nil do
+        case do_embed_skills() do
+          {:ok, vectors} -> %{state | skill_vectors: vectors}
+          {:error, _} -> state
+        end
+      else
+        state
+      end
+
+    case state.skill_vectors do
+      nil ->
+        {:reply, {:error, "Skill embedding unavailable"}, state}
+
+      [] ->
+        {:reply, {:ok, []}, state}
+
+      skill_data ->
+        result = compute_skill_ranking(skill_data, query_vector, top_k)
+        {:reply, {:ok, result}, state}
+    end
   end
 
   # ============================================================================
@@ -498,5 +569,68 @@ defmodule Giulia.Intelligence.SemanticIndex do
     new_visited = Enum.reduce(next_queue, visited, &MapSet.put(&2, &1))
 
     do_bfs(adjacency, next_queue, new_component, new_visited)
+  end
+
+  # ============================================================================
+  # Skill Embedding (Build 100)
+  # ============================================================================
+
+  defp do_embed_skills do
+    unless EmbeddingServing.available?() do
+      {:error, "EmbeddingServing not available"}
+    else
+      skills = Enum.flat_map(@skill_routers, fn router ->
+        try do
+          router.__skills__()
+        rescue
+          _ -> []
+        end
+      end)
+
+      if skills == [] do
+        {:ok, []}
+      else
+        texts = Enum.map(skills, fn skill ->
+          "#{skill.intent} — #{skill.endpoint}"
+        end)
+
+        vectors = embed_batch(texts)
+
+        skill_data =
+          Enum.zip(skills, vectors)
+          |> Enum.map(fn {skill, vector} ->
+            %{skill: skill, vector: vector}
+          end)
+
+        Logger.info("SemanticIndex: Embedded #{length(skill_data)} skill intents")
+        {:ok, skill_data}
+      end
+    end
+  end
+
+  defp compute_skill_ranking(skill_data, query_vector, top_k) do
+    vectors =
+      skill_data
+      |> Enum.map(fn %{vector: vec} ->
+        Nx.from_binary(vec, :f32) |> Nx.reshape({@embedding_dims})
+      end)
+      |> Nx.stack()
+
+    # Both L2-normalized by EmbeddingServing → cosine = dot product
+    scores = Nx.dot(vectors, query_vector)
+
+    k = min(top_k, length(skill_data))
+    {top_values, top_indices} = Nx.top_k(scores, k: k)
+
+    top_values_list = Nx.to_flat_list(top_values)
+    top_indices_list = Nx.to_flat_list(top_indices)
+
+    Enum.zip(top_indices_list, top_values_list)
+    |> Enum.map(fn {idx, score} ->
+      %{skill: skill} = Enum.at(skill_data, trunc(idx))
+
+      skill
+      |> Map.put(:relevance, Float.round(score, 4))
+    end)
   end
 end

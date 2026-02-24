@@ -44,7 +44,7 @@ Returns: project stats, topology, health (heatmap, red zones, unprotected hubs),
 
 When entering plan mode for Elixir code modification:
 
-1. **Preflight** — single call returns 6 contract sections per relevant module:
+1. **Preflight** — single call returns 6 contract sections per relevant module + `suggested_tools` (Build 100: top 5 API skills ranked by semantic similarity to your prompt):
 ```bash
 curl -X POST http://localhost:4000/api/briefing/preflight \
   -H "Content-Type: application/json" \
