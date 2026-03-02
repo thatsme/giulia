@@ -227,6 +227,37 @@
     font-size: 13px;
   }
   .empty-msg .hint { font-size: 11px; margin-top: 6px; color: #2a2a3e; }
+
+  /* Health panels */
+  .health-grid { display: grid; grid-template-columns: 90px 1fr; gap: 4px 12px; margin-bottom: 12px; }
+  .health-label { color: #555; font-size: 10px; text-transform: uppercase; line-height: 22px; }
+  .health-val { color: #e0e0e0; font-size: 13px; font-weight: 600; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .health-val.warm { color: #53d769; }
+  .health-val.cold { color: #e94560; }
+
+  .health-section { margin-bottom: 16px; }
+  .health-title { color: #ffa726; font-size: 11px; font-weight: 700; margin-bottom: 6px; border-bottom: 1px solid #0f3460; padding-bottom: 4px; }
+
+  .hub-row { display: flex; justify-content: space-between; padding: 2px 0; color: #8b949e; font-size: 11px; }
+  .hub-name { color: #bb86fc; }
+  .hub-degree { color: #555; }
+
+  .god-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 11px; }
+  .god-name { color: #e94560; }
+  .god-score { color: #555; }
+
+  .scan-entry { padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .scan-head { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+  .scan-badge { font-size: 9px; padding: 1px 5px; border-radius: 2px; font-weight: 700; }
+  .scan-warm { background: rgba(83,215,105,0.2); color: #53d769; }
+  .scan-cold { background: rgba(233,69,96,0.2); color: #e94560; }
+  .scan-inc { background: rgba(255,167,38,0.2); color: #ffa726; }
+  .scan-detail { color: #555; font-size: 10px; margin-top: 2px; }
+
+  .action-bar { display: flex; gap: 6px; margin-top: 8px; }
+  .action-btn { background: #0f3460; color: #e0e0e0; border: 1px solid #1a4a8a; padding: 4px 12px; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 10px; }
+  .action-btn:hover { background: #1a4a8a; }
+  .action-result { margin-top: 8px; font-size: 11px; color: #8b949e; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -234,7 +265,7 @@
 <div class="header">
   <div style="display:flex;align-items:center">
     <h1>Giulia Logic Monitor</h1>
-    <span class="subtitle">Build 96</span>
+    <span class="subtitle">Build 105</span>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -276,6 +307,9 @@
     <div class="panel-header">
       <span class="panel-tab active" data-panel="responses">Responses</span>
       <span class="panel-tab" data-panel="think">Think Stream</span>
+      <span class="panel-tab" data-panel="cache">Cache</span>
+      <span class="panel-tab" data-panel="graph">Graph</span>
+      <span class="panel-tab" data-panel="scans">Scans</span>
     </div>
     <div class="panel-content">
       <div class="panel-section active" id="p-resp">
@@ -287,6 +321,46 @@
         <div style="color:#333;text-align:center;margin-top:40px">
           LLM &lt;think&gt; blocks appear here during inference.
         </div>
+      </div>
+      <div class="panel-section" id="p-cache">
+        <div class="health-grid">
+          <span class="health-label">Status</span>
+          <span class="health-val" id="cache-status">--</span>
+          <span class="health-label">Merkle</span>
+          <span class="health-val" id="cache-merkle" title="">--</span>
+          <span class="health-label">Files</span>
+          <span class="health-val" id="cache-files">--</span>
+          <span class="health-label">Last Scan</span>
+          <span class="health-val" id="cache-lastscan">--</span>
+          <span class="health-label">Project</span>
+          <span class="health-val" id="cache-project">--</span>
+        </div>
+        <div class="action-bar">
+          <button class="action-btn" id="btn-verify">Verify</button>
+          <button class="action-btn" id="btn-compact">Compact</button>
+        </div>
+        <div class="action-result" id="cache-result"></div>
+      </div>
+      <div class="panel-section" id="p-graph">
+        <div class="health-grid">
+          <span class="health-label">Vertices</span>
+          <span class="health-val" id="graph-vertices">--</span>
+          <span class="health-label">Edges</span>
+          <span class="health-val" id="graph-edges">--</span>
+          <span class="health-label">Components</span>
+          <span class="health-val" id="graph-components">--</span>
+        </div>
+        <div class="health-section">
+          <div class="health-title">Top Hubs</div>
+          <div id="graph-hubs"><span style="color:#333">No data yet</span></div>
+        </div>
+        <div class="health-section">
+          <div class="health-title">God Modules</div>
+          <div id="graph-gods"><span style="color:#333">No data yet</span></div>
+        </div>
+      </div>
+      <div class="panel-section" id="p-scans">
+        <div id="scan-list"><span style="color:#333">No scans recorded yet. Trigger a scan or wait for SSE events.</span></div>
       </div>
     </div>
   </div>
@@ -667,8 +741,161 @@
     autoScroll = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   });
 
+  // --- Health cockpit (Build 105) ---
+  var projectPath = null;
+  var pCache = document.getElementById('p-cache');
+  var pGraph = document.getElementById('p-graph');
+  var pScans = document.getElementById('p-scans');
+  var scanList = document.getElementById('scan-list');
+  var scanEntries = [];
+
+  function loadCacheStatus() {
+    fetch('/api/index/status')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var cs = d.cache_status || {};
+        var isWarm = cs.status === 'warm' || d.status === 'idle';
+        var statusEl = document.getElementById('cache-status');
+        statusEl.textContent = cs.status || d.status || 'unknown';
+        statusEl.className = 'health-val ' + (isWarm ? 'warm' : 'cold');
+
+        var merkleEl = document.getElementById('cache-merkle');
+        var root = cs.merkle_root || d.merkle_root || '--';
+        merkleEl.textContent = root.length > 16 ? root.substring(0, 16) + '...' : root;
+        merkleEl.title = root;
+
+        document.getElementById('cache-files').textContent = d.file_count || d.files || '--';
+        document.getElementById('cache-lastscan').textContent = d.last_scan ? fmtTime(d.last_scan) : '--';
+
+        // Discover project path
+        var pp = d.project_path || cs.project_path || d.path || null;
+        if (pp) {
+          projectPath = pp;
+          document.getElementById('cache-project').textContent = pp;
+          loadGraphStats();
+        } else {
+          document.getElementById('cache-project').textContent = 'no_project';
+        }
+      }).catch(function() {});
+  }
+
+  function loadGraphStats() {
+    if (!projectPath) return;
+    var qs = '?path=' + encodeURIComponent(projectPath);
+
+    fetch('/api/knowledge/stats' + qs)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        document.getElementById('graph-vertices').textContent = d.vertices || d.vertex_count || '--';
+        document.getElementById('graph-edges').textContent = d.edges || d.edge_count || '--';
+        document.getElementById('graph-components').textContent = d.components || d.component_count || '--';
+
+        var hubsEl = document.getElementById('graph-hubs');
+        var hubs = d.hubs || d.top_hubs || [];
+        if (hubs.length) {
+          hubsEl.innerHTML = '';
+          hubs.slice(0, 10).forEach(function(h) {
+            var row = document.createElement('div');
+            row.className = 'hub-row';
+            var name = h.module || h.name || h;
+            var degree = h.degree || h.in_degree || '';
+            row.innerHTML = '<span class="hub-name">' + esc(String(name)) + '</span><span class="hub-degree">' + degree + '</span>';
+            hubsEl.appendChild(row);
+          });
+        }
+      }).catch(function() {});
+
+    fetch('/api/knowledge/god_modules' + qs)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var godsEl = document.getElementById('graph-gods');
+        var mods = d.modules || d.god_modules || [];
+        if (mods.length) {
+          godsEl.innerHTML = '';
+          mods.slice(0, 5).forEach(function(m) {
+            var row = document.createElement('div');
+            row.className = 'god-row';
+            var name = m.module || m.name || m;
+            var score = m.score != null ? m.score : '';
+            row.innerHTML = '<span class="god-name">' + esc(String(name)) + '</span><span class="god-score">' + score + '</span>';
+            godsEl.appendChild(row);
+          });
+        }
+      }).catch(function() {});
+  }
+
+  function addScanEvent(ev) {
+    var meta = ev.metadata || {};
+    var meas = ev.measurements || {};
+    var body = null;
+    if (meta.resp_body) {
+      try { body = JSON.parse(meta.resp_body); } catch(e) {}
+    }
+    if (!body) return;
+
+    var entry = document.createElement('div');
+    entry.className = 'scan-entry';
+
+    var cs = body.cache_status || {};
+    var isWarm = cs.status === 'warm';
+    var isCold = cs.status === 'cold';
+    var stale = cs.stale_count || body.stale_count || 0;
+    var badgeClass = isWarm ? 'scan-warm' : (isCold ? 'scan-cold' : 'scan-inc');
+    var badgeText = isWarm ? 'WARM' : (isCold ? 'COLD' : (stale > 0 ? 'INC' : 'SCAN'));
+    var files = body.file_count || body.files || '--';
+    var dur = meas.duration_ms;
+
+    entry.innerHTML =
+      '<div class="scan-head">' +
+        '<span style="color:#444">' + fmtTime(ev.timestamp) + '</span>' +
+        '<span class="scan-badge ' + badgeClass + '">' + badgeText + '</span>' +
+        '<span style="color:#ccc">' + files + ' files</span>' +
+        (dur !== undefined ? '<span style="color:#555">' + dur + 'ms</span>' : '') +
+      '</div>' +
+      (stale > 0 ? '<div class="scan-detail">' + stale + ' stale files re-scanned</div>' : '');
+
+    // Clear placeholder on first entry
+    if (!scanEntries.length) scanList.innerHTML = '';
+    scanEntries.push(entry);
+    scanList.insertBefore(entry, scanList.firstChild);
+  }
+
+  document.getElementById('btn-verify').onclick = function() {
+    var resultEl = document.getElementById('cache-result');
+    resultEl.textContent = 'Verifying...';
+    var body = projectPath ? JSON.stringify({ path: projectPath }) : '{}';
+    fetch('/api/index/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { resultEl.textContent = JSON.stringify(d, null, 2); })
+      .catch(function(e) { resultEl.textContent = 'Error: ' + e.message; });
+  };
+
+  document.getElementById('btn-compact').onclick = function() {
+    var resultEl = document.getElementById('cache-result');
+    resultEl.textContent = 'Compacting...';
+    var body = projectPath ? JSON.stringify({ path: projectPath }) : '{}';
+    fetch('/api/index/compact', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body })
+      .then(function(r) { return r.json(); })
+      .then(function(d) { resultEl.textContent = JSON.stringify(d, null, 2); })
+      .catch(function(e) { resultEl.textContent = 'Error: ' + e.message; });
+  };
+
+  // Patch renderHttp to detect scan events for Scans tab + auto-refresh
+  var _origRenderHttp = renderHttp;
+  renderHttp = function(ev, cat, meta, meas) {
+    _origRenderHttp(ev, cat, meta, meas);
+    var evPath = (meta || {}).path || '';
+    if (evPath.indexOf('/api/index/scan') !== -1 || evPath.indexOf('/api/index/status') !== -1) {
+      addScanEvent(ev);
+    }
+    if (evPath.indexOf('/api/index/scan') !== -1) {
+      setTimeout(function() { loadCacheStatus(); loadGraphStats(); }, 5000);
+    }
+  };
+
   // Init
   loadHistory();
+  loadCacheStatus();
   connect();
 })();
 </script>
