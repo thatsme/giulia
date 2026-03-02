@@ -42,7 +42,7 @@ services:
       # Path mapping: The Translation Shim
       # GIULIA_HOST_PROJECTS_PATH = Windows path prefix (e.g., C:/Development/GitHub)
       # Maps to /projects inside container
-      - GIULIA_HOST_PROJECTS_PATH=${GIULIA_HOST_PROJECTS_PATH:-C:/Development/GitHub}
+      - GIULIA_HOST_PROJECTS_PATH=${GIULIA_HOST_PROJECTS_PATH:-D:/Development/GitHub}
       - GIULIA_PATH_MAPPING=${GIULIA_PATH_MAPPING:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       # Groq API Key - for hybrid escalation (Llama 3.3 70B)
@@ -57,7 +57,7 @@ services:
       - giulia_build:/tmp/giulia_build
       - giulia_deps:/tmp/giulia_deps
       - giulia_models:/root/.cache
-      - ${GIULIA_PROJECTS_PATH:-./test_projects}:/projects:rw
+      - ${GIULIA_PROJECTS_PATH:-D:/Development/GitHub}:/projects:rw
       - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
 
     # HTTP API + Distributed Erlang ports

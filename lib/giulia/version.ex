@@ -13,10 +13,6 @@ defmodule Giulia.Version do
   def version, do: @version
   def build, do: @build
 
-  def full_version do
-    "v#{@version} build #{@build}"
-  end
-
   def short_version do
     "v#{@version}.#{@build}"
   end

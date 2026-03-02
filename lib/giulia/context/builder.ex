@@ -48,20 +48,6 @@ defmodule Giulia.Context.Builder do
   end
 
   @doc """
-  Build the tools list for the LLM API call.
-  """
-  def build_tools_list do
-    Registry.list_tools()
-    |> Enum.map(fn tool ->
-      %{
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters
-      }
-    end)
-  end
-
-  @doc """
   Build a correction message when a tool call fails validation.
   """
   def build_correction_message(tool_name, errors, valid_options \\ nil) do

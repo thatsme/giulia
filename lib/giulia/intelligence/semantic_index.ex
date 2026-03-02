@@ -54,14 +54,6 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   @doc """
-  Embed all skill intents from the 9 domain routers.
-  No-op if already embedded or EmbeddingServing unavailable.
-  """
-  def embed_skills do
-    GenServer.call(__MODULE__, :embed_skills, 30_000)
-  end
-
-  @doc """
   Search skills by semantic similarity to a query vector.
   Returns top_k skills ranked by cosine similarity.
   Lazy-inits skill vectors on first call if needed.
@@ -145,22 +137,6 @@ defmodule Giulia.Intelligence.SemanticIndex do
     }
 
     {:reply, result, state}
-  end
-
-  @impl true
-  def handle_call(:embed_skills, _from, %{skill_vectors: sv} = state) when sv != nil do
-    {:reply, :ok, state}
-  end
-
-  @impl true
-  def handle_call(:embed_skills, _from, state) do
-    case do_embed_skills() do
-      {:ok, vectors} ->
-        {:reply, :ok, %{state | skill_vectors: vectors}}
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
-    end
   end
 
   @impl true
@@ -473,7 +449,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     end
   end
 
-  defp extract_similar_pairs(similarity_matrix, entries, n, threshold) do
+  defp extract_similar_pairs(similarity_matrix, _entries, n, threshold) do
     for i <- 0..(n - 2),
         j <- (i + 1)..(n - 1),
         reduce: [] do

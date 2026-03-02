@@ -44,10 +44,4 @@ defmodule Giulia do
     :ok
   end
 
-  @doc """
-  Get the version of Giulia.
-  """
-  def version do
-    Application.spec(:giulia, :vsn) |> to_string()
-  end
 end

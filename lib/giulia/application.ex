@@ -126,27 +126,4 @@ defmodule Giulia.Application do
     result
   end
 
-  @doc """
-  Start the daemon-specific services.
-  Called by Giulia.Daemon.start/0 when running as system daemon.
-  """
-  def start_daemon_services do
-    port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
-
-    children = [
-      # Dynamic supervisor for per-project contexts
-      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
-
-      # Context manager - routes requests to correct ProjectContext
-      Giulia.Core.ContextManager,
-
-      # HTTP API endpoint (replaces Erlang distribution)
-      {Bandit, plug: Giulia.Daemon.Endpoint, port: port}
-    ]
-
-    Supervisor.start_link(children,
-      strategy: :one_for_one,
-      name: Giulia.Core.Supervisor
-    )
-  end
 end

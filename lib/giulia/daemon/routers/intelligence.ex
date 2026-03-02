@@ -113,10 +113,8 @@ defmodule Giulia.Daemon.Routers.Intelligence do
     if path && plan do
       resolved_path = Giulia.Core.PathMapper.resolve_path(path)
 
-      case Giulia.Intelligence.PlanValidator.validate(plan, resolved_path) do
-        {:ok, result} -> send_json(conn, 200, result)
-        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
-      end
+      {:ok, result} = Giulia.Intelligence.PlanValidator.validate(plan, resolved_path)
+      send_json(conn, 200, result)
     else
       send_json(conn, 400, %{error: "Missing required fields: path and plan"})
     end
