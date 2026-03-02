@@ -198,6 +198,20 @@ defmodule Giulia.Daemon.Endpoint do
     send_json(conn, 200, %{pending: pending, count: length(pending)})
   end
 
+  # Suppress browser favicon 404s
+  get "/favicon.ico" do
+    # Minimal 1x1 transparent ICO (62 bytes)
+    ico = <<0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0, 40, 0, 0, 0, 22, 0, 0, 0,
+            40, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 8, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0>>
+
+    conn
+    |> put_resp_content_type("image/x-icon")
+    |> put_resp_header("cache-control", "public, max-age=604800")
+    |> send_resp(200, ico)
+  end
+
   match _ do
     send_resp(conn, 404, Jason.encode!(%{error: "not found"}))
   end

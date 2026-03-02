@@ -157,10 +157,9 @@ defmodule Giulia.Prompt.BuilderTest do
   # ============================================================================
 
   describe "transaction section patterns" do
-    test "transaction mode true with staged files includes file list" do
-      # We test the pattern that build_transaction_section produces
-      # by calling build_system_prompt with transaction_mode opts
-      # Since it needs Registry, we just verify the function exists
+    test "build_system_prompt/1 is exported" do
+      # Ensure module is loaded before checking exports
+      Code.ensure_loaded!(Builder)
       assert function_exported?(Builder, :build_system_prompt, 1)
     end
   end
