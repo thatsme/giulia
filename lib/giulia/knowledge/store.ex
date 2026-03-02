@@ -307,6 +307,24 @@ defmodule Giulia.Knowledge.Store do
     GenServer.call(__MODULE__, {:struct_lifecycle, project_path, struct_module}, 30_000)
   end
 
+  @doc """
+  Restore a previously persisted knowledge graph into the GenServer state.
+  Called by Loader during warm start.
+  """
+  @spec restore_graph(project_path(), term()) :: :ok
+  def restore_graph(project_path, graph) do
+    GenServer.cast(__MODULE__, {:restore_graph, project_path, graph})
+  end
+
+  @doc """
+  Restore previously persisted metric caches into the GenServer state.
+  Called by Loader during warm start.
+  """
+  @spec restore_metrics(project_path(), map()) :: :ok
+  def restore_metrics(project_path, metrics) do
+    GenServer.cast(__MODULE__, {:restore_metrics, project_path, metrics})
+  end
+
   # Server Callbacks
 
   @impl true
@@ -354,6 +372,20 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @impl true
+  def handle_cast({:restore_graph, project_path, graph}, state) do
+    vertex_count = Graph.num_vertices(graph)
+    edge_count = Graph.num_edges(graph)
+    Logger.info("Knowledge graph restored from cache for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
+    {:noreply, put_graph(state, project_path, graph)}
+  end
+
+  @impl true
+  def handle_cast({:restore_metrics, project_path, metrics}, state) do
+    Logger.info("Metric cache restored from disk for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
+    {:noreply, put_metrics(state, project_path, metrics)}
+  end
+
+  @impl true
   def handle_cast({:graph_ready, project_path, graph}, state) do
     vertex_count = Graph.num_vertices(graph)
     edge_count = Graph.num_edges(graph)
@@ -363,6 +395,9 @@ defmodule Giulia.Knowledge.Store do
       state
       |> put_graph(project_path, graph)
       |> clear_metrics(project_path)
+
+    # Persist graph to CubDB (Build 102-104)
+    Giulia.Persistence.Writer.persist_graph(project_path, graph)
 
     # Eagerly compute heavy metrics in background (same Task pattern as graph build).
     # Results arrive via {:metrics_ready, ...} cast — mailbox stays responsive.
@@ -379,6 +414,10 @@ defmodule Giulia.Knowledge.Store do
   @impl true
   def handle_cast({:metrics_ready, project_path, metrics}, state) do
     Logger.info("Metric cache warmed for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
+
+    # Persist metrics to CubDB (Build 102-104)
+    Giulia.Persistence.Writer.persist_metrics(project_path, metrics)
+
     {:noreply, put_metrics(state, project_path, metrics)}
   end
 

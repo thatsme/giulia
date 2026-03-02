@@ -70,6 +70,12 @@ lib/
 │   │   ├── indexer.ex           # Background AST scanner (Task.async_stream)
 │   │   └── builder.ex           # Dynamic system prompt construction
 │   │
+│   ├── persistence/
+│   │   ├── store.ex             # CubDB lifecycle (lazy open per project)
+│   │   ├── writer.ex            # Async write-behind (100ms debounce batching)
+│   │   ├── loader.ex            # Startup recovery (CubDB → ETS warm start)
+│   │   └── merkle.ex            # Merkle tree (build/update/verify/diff)
+│   │
 │   ├── prompt/
 │   │   └── builder.ex           # Constitution + context building for LLM
 │   │
@@ -442,6 +448,7 @@ curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/MyApp
 - **Build 98**: Discovery Engine — 3 discovery endpoints (`/api/discovery/skills`, `/categories`, `/search`), `__skills__/0` activated at runtime across all 9 routers. SKILL.md 349→~75 lines (90% context reduction). 55 total self-describing routes.
 - **Build 99**: Complete Metric Caching — `dead_code` and `coupling` added to `compute_cached_metrics/2` with cache-first reads in Store. Single Sourceror pass via `collect_remote_calls/1` eliminates double-parse (coupling + coupling_map). New `dead_code_with_asts/3`, `coupling_from_calls/1`, `build_coupling_map_from_calls/1`. All 5 heavy metrics now sub-10ms on warm reads. Dashboard 100% green.
 - **Build 100**: Semantic Tool Injection — Preflight now returns `suggested_tools` ranked by cosine similarity to prompt. SemanticIndex embeds all 55 skill intents from 9 routers, lazy-inits on first search. `search_skills/2` uses Nx.dot + Nx.top_k for ranking. Graceful degradation: returns `[]` if EmbeddingServing unavailable. Zero breaking changes to Preflight API.
+- **Build 102-104**: AST Persistence + Merkle Tree — CubDB-backed persistence layer eliminates cold restarts. 4 new modules in `lib/giulia/persistence/`: `Store` (CubDB lifecycle per project), `Writer` (async write-behind with 100ms debounce batching), `Loader` (startup recovery with content-hash staleness detection), `Merkle` (SHA-256 Merkle tree for integrity verification). Warm start restores 93 AST entries + knowledge graph (1243 vertices, 1544 edges) + metric caches + embeddings (93 module + 626 function vectors) from disk — zero re-scanning. Cache stored at `{project}/.giulia/cache/cubdb/`. 2 new endpoints: `POST /api/index/verify` (Merkle integrity check), `POST /api/index/compact` (CubDB compaction). `/api/index/status` enriched with `cache_status` and `merkle_root`. Invalidation: build mismatch → cold start, file hash mismatch → incremental re-scan. 57 total routes.
 
 ## Next Steps
 

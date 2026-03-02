@@ -63,6 +63,12 @@ defmodule Giulia.Application do
       # ETS-backed context store for project state
       Giulia.Context.Store,
 
+      # Persistent key-value store (CubDB lifecycle per project)
+      Giulia.Persistence.Store,
+
+      # Async write-behind for CubDB (100ms debounce batching)
+      Giulia.Persistence.Writer,
+
       # Tool registry (auto-discovers tools on boot)
       Giulia.Tools.Registry,
 

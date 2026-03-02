@@ -3,7 +3,7 @@ defmodule Giulia.MixProject do
 
   @version "0.1.0"
   # Build number - increment on each release
-  @build 101
+  @build 104
 
   def project do
     [
@@ -94,6 +94,9 @@ defmodule Giulia.MixProject do
       {:exla, "~> 0.10"},
       {:bumblebee, "~> 0.6"},
       {:axon, "~> 0.6"},
+
+      # Persistent key-value store (pure Elixir, crash-safe)
+      {:cubdb, "~> 2.0"},
 
       # Binary compilation (client only)
       {:burrito, "~> 1.0", runtime: false}
