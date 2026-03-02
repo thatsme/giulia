@@ -125,15 +125,41 @@ defmodule Giulia.Context.Indexer do
   def handle_cast({:scan, project_path}, state) do
     if valid_project_root?(project_path) do
       Logger.info("Starting project scan: #{project_path}")
-
       new_state = %{state | project_path: project_path, status: :scanning}
 
-      Task.start(fn ->
-        do_scan(project_path)
-        GenServer.cast(__MODULE__, :scan_complete)
-      end)
+      case Giulia.Persistence.Loader.load_project(project_path) do
+        {:ok, []} ->
+          # All cached, skip scan entirely
+          Logger.info("Warm start: all files cached, skipping scan for #{project_path}")
 
-      {:noreply, new_state}
+          # Restore graph + metrics + embeddings from cache
+          Giulia.Persistence.Loader.restore_graph(project_path)
+          Giulia.Persistence.Loader.restore_metrics(project_path)
+          Giulia.Persistence.Loader.restore_embeddings(project_path)
+
+          GenServer.cast(__MODULE__, :scan_complete)
+          {:noreply, new_state}
+
+        {:ok, stale_files} ->
+          # Incremental scan of stale files only
+          Logger.info("Warm start: #{length(stale_files)} stale files to re-scan for #{project_path}")
+
+          Task.start(fn ->
+            do_incremental_scan(project_path, stale_files)
+            GenServer.cast(__MODULE__, :scan_complete)
+          end)
+
+          {:noreply, new_state}
+
+        {:cold_start, :no_cache} ->
+          # Full scan (original behavior)
+          Task.start(fn ->
+            do_scan(project_path)
+            GenServer.cast(__MODULE__, :scan_complete)
+          end)
+
+          {:noreply, new_state}
+      end
     else
       Logger.error("SCAN REFUSED: No project root marker found at #{project_path}. " <>
         "Expected one of: #{Enum.join(@project_markers, ", ")}")
@@ -207,6 +233,32 @@ defmodule Giulia.Context.Indexer do
   end
 
   # Private
+
+  defp do_incremental_scan(project_path, stale_files) do
+    Logger.info("Incremental scan: re-indexing #{length(stale_files)} files")
+
+    stale_files
+    |> Task.async_stream(
+      fn file -> {file, process_file(file)} end,
+      max_concurrency: System.schedulers_online(),
+      timeout: 30_000
+    )
+    |> Enum.each(fn
+      {:ok, {file, {:ok, ast_data}}} ->
+        Giulia.Context.Store.put_ast(project_path, file, ast_data)
+
+      {:ok, {file, {:error, reason}}} ->
+        Logger.warning("Failed to index #{file}: #{inspect(reason)}")
+
+      {:exit, reason} ->
+        Logger.error("Task crashed: #{inspect(reason)}")
+    end)
+
+    # Update project files list (merge cached + stale)
+    all_files = find_elixir_files(Path.join(project_path, "lib"))
+    Giulia.Context.Store.put_project_files(project_path, all_files)
+    Logger.info("Incremental scan complete: #{length(stale_files)} files re-indexed")
+  end
 
   defp do_scan(project_path) do
     lib_path = Path.join(project_path, "lib")

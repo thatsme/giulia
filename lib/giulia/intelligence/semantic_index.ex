@@ -105,6 +105,16 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
   @impl true
   def handle_cast({:embed_complete, project_path}, state) do
+    # Persist embeddings to CubDB (Build 102-104)
+    for type <- [:module, :function] do
+      case Store.get_embeddings(project_path, type) do
+        {:ok, entries} ->
+          Giulia.Persistence.Writer.persist_embeddings(project_path, type, entries)
+        :error ->
+          :ok
+      end
+    end
+
     {:noreply, %{state | embedding_in_progress: MapSet.delete(state.embedding_in_progress, project_path)}}
   end
 

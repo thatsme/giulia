@@ -35,6 +35,7 @@ defmodule Giulia.Context.Store do
   @spec put_ast(project_path(), file_path(), ast_data()) :: :ok
   def put_ast(project_path, path, ast_data) do
     :ets.insert(@table, {{:ast, project_path, path}, ast_data})
+    Giulia.Persistence.Writer.persist_ast(project_path, path, ast_data)
     :ok
   end
 
@@ -66,6 +67,7 @@ defmodule Giulia.Context.Store do
   @spec put_project_files(project_path(), [file_path()]) :: :ok
   def put_project_files(project_path, file_list) do
     :ets.insert(@table, {{:project_files, project_path}, file_list})
+    Giulia.Persistence.Writer.persist_project_files(project_path, file_list)
     :ok
   end
 
@@ -148,6 +150,7 @@ defmodule Giulia.Context.Store do
   @spec clear_asts(project_path()) :: :ok
   def clear_asts(project_path) do
     :ets.match_delete(@table, {{:ast, project_path, :_}, :_})
+    Giulia.Persistence.Writer.clear_project(project_path)
     :ok
   end
 

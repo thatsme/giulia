@@ -102,7 +102,27 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/status" do
     status = Giulia.Context.Indexer.status()
-    send_json(conn, 200, status)
+
+    # Enrich with cache status
+    cache_status =
+      case status.project_path do
+        nil ->
+          %{cache_status: "no_project"}
+
+        project_path ->
+          merkle_root =
+            case Giulia.Persistence.Loader.cached_merkle_root(project_path) do
+              {:ok, hash} -> Base.encode16(hash, case: :lower) |> String.slice(0, 12)
+              :not_cached -> nil
+            end
+
+          %{
+            cache_status: if(merkle_root, do: "warm", else: "cold"),
+            merkle_root: merkle_root
+          }
+      end
+
+    send_json(conn, 200, Map.merge(status, cache_status))
   end
 
   # -------------------------------------------------------------------
@@ -121,6 +141,66 @@ defmodule Giulia.Daemon.Routers.Index do
 
     Giulia.Context.Indexer.scan(resolved_path)
     send_json(conn, 200, %{status: "scanning", path: resolved_path})
+  end
+
+  # -------------------------------------------------------------------
+  # POST /api/index/verify — Full Merkle verification
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Verify AST cache integrity via Merkle tree recomputation",
+    endpoint: "POST /api/index/verify",
+    params: %{path: :required},
+    returns: "JSON verification result (ok or corrupted)",
+    category: "index"
+  }
+  post "/verify" do
+    path = conn.body_params["path"]
+    resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+    case Giulia.Persistence.Store.get_db(resolved_path) do
+      {:ok, db} ->
+        case CubDB.get(db, {:merkle, :tree}) do
+          nil ->
+            send_json(conn, 200, %{status: "no_cache", verified: false})
+
+          tree ->
+            case Giulia.Persistence.Merkle.verify(tree) do
+              :ok ->
+                send_json(conn, 200, %{
+                  status: "ok",
+                  verified: true,
+                  root: Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower) |> String.slice(0, 12),
+                  leaf_count: tree.leaf_count
+                })
+
+              {:error, :corrupted} ->
+                send_json(conn, 200, %{status: "corrupted", verified: false, leaf_count: tree.leaf_count})
+            end
+        end
+
+      {:error, _reason} ->
+        send_json(conn, 200, %{status: "no_cache", verified: false})
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # POST /api/index/compact — Trigger CubDB compaction
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Trigger CubDB compaction to reclaim disk space",
+    endpoint: "POST /api/index/compact",
+    params: %{path: :required},
+    returns: "JSON confirmation of compaction trigger",
+    category: "index"
+  }
+  post "/compact" do
+    path = conn.body_params["path"]
+    resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+
+    case Giulia.Persistence.Store.compact(resolved_path) do
+      :ok -> send_json(conn, 200, %{status: "compacting", path: resolved_path})
+      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+    end
   end
 
   match _ do
