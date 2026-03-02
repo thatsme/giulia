@@ -78,9 +78,35 @@ Verdicts: `approved` (proceed), `warning` (acknowledge + justify), `rejected` (r
 
 All index and knowledge endpoints require `?path=P` (host path, e.g. `C:/Development/GitHub/Giulia`). The daemon translates to container paths via PathMapper. POST endpoints take `path` in the JSON body.
 
+## AST Cache + Warm Starts (Build 102-104)
+
+Giulia persists all AST data, the Knowledge Graph, metric caches, and embeddings to disk via CubDB at `{project}/.giulia/cache/cubdb/`. On restart, the daemon restores from cache instead of re-scanning — **zero cold starts** for unchanged files.
+
+**Check cache status before triggering a scan:**
+```bash
+curl -s "http://localhost:4000/api/index/status"
+```
+
+Response includes `cache_status` (`"warm"`, `"cold"`, or `"no_project"`) and `merkle_root` (truncated SHA-256). If `cache_status` is `"warm"`, a scan will only re-index files that changed on disk — no need to avoid scanning for performance reasons.
+
+**Cache management endpoints:**
+
+| Intent | Endpoint | Returns |
+|--------|----------|---------|
+| Verify cache integrity | `POST /api/index/verify` | Merkle tree recomputation: `verified: true/false`, leaf count, root hash |
+| Trigger compaction | `POST /api/index/compact` | Reclaim CubDB disk space (body: `{"path":"<CWD>"}`) |
+
+**Invalidation rules:**
+- File content changed on disk → only that file is re-scanned (incremental)
+- File deleted → removed from cache automatically
+- Build number mismatch (daemon upgraded) → full cold start (AST shape may have changed)
+- Cache absent or corrupted → full cold start
+
+**Key point:** You do NOT need to avoid `POST /api/index/scan` for performance. The Loader detects stale files via SHA-256 content hashes and only re-indexes what changed. A warm scan of an unchanged project completes in milliseconds.
+
 ## Re-index After Direct Edits
 
-If you edit Elixir files directly, call `POST /api/index/scan` with `{"path":"<CWD>"}` before subsequent analysis queries.
+If you edit Elixir files directly, call `POST /api/index/scan` with `{"path":"<CWD>"}` before subsequent analysis queries. The cache layer ensures only modified files are re-scanned.
 
 ## Report Output Convention (MANDATORY)
 

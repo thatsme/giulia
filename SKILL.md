@@ -227,7 +227,9 @@ Send natural language commands through Giulia's OODA orchestrator. Two endpoints
 
 | Intent | Method |
 |--------|--------|
-| Re-index after file changes | `POST /api/index/scan` with `{"path": "/projects/Giulia"}` |
+| Re-index after file changes | `POST /api/index/scan` with `{"path": "/projects/Giulia"}` — cache-aware: only re-scans changed files |
+| Verify cache integrity | `POST /api/index/verify` with `{"path":"P"}` — Merkle tree recomputation |
+| Compact cache | `POST /api/index/compact` with `{"path":"P"}` — reclaim CubDB disk space |
 | Check behaviour contracts | `GET /api/knowledge/integrity` |
 | View transaction state | `GET /api/transaction/staged?path=P` |
 | Toggle transaction mode | `POST /api/transaction/enable` with `{"path":"P"}` — toggles on/off, returns new state |
@@ -284,9 +286,28 @@ When formulating a multi-file refactor or any modification touching 2+ modules:
 5. **Re-index** — `POST /api/index/scan` so the index reflects your changes
 6. **Verify integrity** — `GET /api/knowledge/integrity` to catch behaviour-implementer fractures early
 
+### AST Cache + Warm Starts (Build 102-104)
+
+Giulia persists all AST data, the Knowledge Graph, metric caches, and embeddings to disk via CubDB at `{project}/.giulia/cache/cubdb/`. On restart, the daemon restores from cache instead of re-scanning — **zero cold starts** for unchanged files. The cache lives on the bind-mounted volume, so it survives Docker image rebuilds.
+
+**Check cache status before triggering a scan:**
+```bash
+curl -s "http://localhost:4000/api/index/status"
+```
+
+Response includes `cache_status` (`"warm"`, `"cold"`, or `"no_project"`) and `merkle_root` (truncated SHA-256). If `cache_status` is `"warm"`, a scan will only re-index files that changed on disk.
+
+**Invalidation rules:**
+- File content changed on disk → only that file is re-scanned (incremental, via SHA-256 content hash)
+- File deleted → removed from cache automatically
+- Build number mismatch (daemon upgraded) → full cold start (AST data shape may have changed)
+- Cache absent or corrupted → full cold start
+
+**Key point:** You do NOT need to avoid `POST /api/index/scan` for performance. The Loader detects stale files via SHA-256 content hashes and only re-indexes what changed. A warm scan of an unchanged project completes in milliseconds.
+
 ### Critical Rule: Re-index After Direct Edits
 
-If you edit Elixir files directly (using file write/edit tools instead of Giulia's command/stream), the ETS index and Knowledge Graph become stale. **Always call `POST /api/index/scan` after direct file modifications.** Without this, subsequent calls to `/api/index/*` and `/api/knowledge/*` will return outdated information. The scan takes ~2-5 seconds and rebuilds everything.
+If you edit Elixir files directly (using file write/edit tools instead of Giulia's command/stream), the ETS index and Knowledge Graph become stale. **Always call `POST /api/index/scan` after direct file modifications.** Without this, subsequent calls to `/api/index/*` and `/api/knowledge/*` will return outdated information. The cache layer ensures only modified files are actually re-scanned.
 
 ### Choosing Giulia vs Shell Tools
 
