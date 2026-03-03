@@ -1,7 +1,7 @@
 defmodule Giulia.Client.Renderer do
   @moduledoc """
   SSE streaming renderer — parses server-sent events and prints
-  colorized OODA loop output to the terminal.
+  colorized inference loop output to the terminal.
   """
 
   alias Giulia.Client.HTTP
@@ -9,12 +9,12 @@ defmodule Giulia.Client.Renderer do
   alias Giulia.Client.Approval
 
   def execute_input(input, host_path) do
-    IO.puts("\n\e[36m┌─ OODA Loop ─────────────────────────────────┐\e[0m")
+    IO.puts("\n\e[36m┌─ Inference Loop ────────────────────────────┐\e[0m")
 
     url = HTTP.daemon_url() <> "/api/command/stream"
 
     # Initialize state in process dictionary
-    Process.put(:ooda_state, %{steps: [], current: nil, response: nil, status: :starting})
+    Process.put(:inference_state, %{steps: [], current: nil, response: nil, status: :starting})
 
     try do
       _resp = Req.post!(url,
@@ -28,7 +28,7 @@ defmodule Giulia.Client.Renderer do
 
       IO.puts("\e[36m└─────────────────────────────────────────────┘\e[0m")
 
-      final_state = Process.get(:ooda_state)
+      final_state = Process.get(:inference_state)
       if final_state.response do
         IO.puts("\n#{final_state.response}\n")
       end
@@ -109,7 +109,7 @@ defmodule Giulia.Client.Renderer do
   end
 
   defp render_event_line(%{"type" => "complete", "response" => response}) do
-    Process.put(:ooda_state, %{response: response})
+    Process.put(:inference_state, %{response: response})
     IO.puts("\e[90m#{ts()}\e[0m \e[32m│ ✓ Complete\e[0m")
   end
 

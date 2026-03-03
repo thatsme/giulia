@@ -7,7 +7,7 @@ defmodule Giulia.Client do
   - `Client.Daemon`    — Docker lifecycle (start/stop/health)
   - `Client.Commands`  — Slash command dispatch
   - `Client.REPL`      — Interactive mode + multiline input
-  - `Client.Renderer`  — SSE streaming + OODA output
+  - `Client.Renderer`  — SSE streaming + inference output
   - `Client.Approval`  — Tool execution approval gates
   - `Client.Output`    — Terminal formatting + colored messages
   """

@@ -2,12 +2,12 @@ defmodule Giulia.Inference.EngineTest do
   @moduledoc """
   THE SOVEREIGN PROOF
 
-  The Engine is the "Brain" of Giulia's OODA loop. These tests prove that
+  The Engine is the "Brain" of Giulia's inference loop. These tests prove that
   its decision-making is deterministic: given the same state, it ALWAYS
   produces the same directive.
 
   Directive types:
-    {:next, action, state}  — continue to next OODA step
+    {:next, action, state}  — continue to next inference step
     {:done, result, state}  — task complete, reply to caller
     {:halt, state}          — wait (paused, approval pending)
 

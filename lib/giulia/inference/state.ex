@@ -4,14 +4,17 @@ defmodule Giulia.Inference.State do
 
   Provides:
   - `@type t` with grouped sub-types (counters, provider, verification, goal)
-  - ~30 pure functions that take `%State{}` and return `%State{}`
-  - Zero GenServer coupling — all functions are deterministic
+  - Struct lifecycle (`new/1`, `reset/1`)
+  - History, approval, transaction, and flat field setters (local impl)
+  - Counter operations (delegated to `State.Counters`)
+  - Provider/verification/goal tracking (delegated to `State.Tracking`)
 
-  Extracted from Orchestrator (build 83) to establish a typed contract
-  and eliminate 55 inline `%{state | ...}` mutations.
+  Extracted from Orchestrator (build 83). Split into facade + sub-modules (Build 110).
   """
 
   alias Giulia.Inference.Transaction
+  alias Giulia.Inference.State.Counters
+  alias Giulia.Inference.State.Tracking
 
   # ============================================================================
   # Sub-Type Definitions
@@ -175,79 +178,6 @@ defmodule Giulia.Inference.State do
   end
 
   # ============================================================================
-  # Counter Operations
-  # ============================================================================
-
-  @spec increment_iteration(t()) :: t()
-  def increment_iteration(state) do
-    put_in(state.counters.iteration, state.counters.iteration + 1)
-  end
-
-  @spec increment_failures(t()) :: t()
-  def increment_failures(state) do
-    put_in(state.counters.consecutive_failures, state.counters.consecutive_failures + 1)
-  end
-
-  @spec reset_failures(t()) :: t()
-  def reset_failures(state) do
-    put_in(state.counters.consecutive_failures, 0)
-  end
-
-  @spec increment_syntax_failures(t()) :: t()
-  def increment_syntax_failures(state) do
-    put_in(state.counters.syntax_failures, state.counters.syntax_failures + 1)
-  end
-
-  @spec increment_repeat(t()) :: t()
-  def increment_repeat(state) do
-    put_in(state.counters.repeat_count, state.counters.repeat_count + 1)
-  end
-
-  @spec reset_repeat(t()) :: t()
-  def reset_repeat(state) do
-    put_in(state.counters.repeat_count, 0)
-  end
-
-  @spec increment_goal_blocks(t()) :: t()
-  def increment_goal_blocks(state) do
-    put_in(state.counters.goal_tracker_blocks, state.counters.goal_tracker_blocks + 1)
-  end
-
-  @spec reset_goal_blocks(t()) :: t()
-  def reset_goal_blocks(state) do
-    put_in(state.counters.goal_tracker_blocks, 0)
-  end
-
-  @spec set_max_iterations(t(), pos_integer()) :: t()
-  def set_max_iterations(state, n) do
-    put_in(state.counters.max_iterations, n)
-  end
-
-  @spec bump_max_iterations(t(), pos_integer()) :: t()
-  def bump_max_iterations(state, bonus) do
-    put_in(state.counters.max_iterations, state.counters.max_iterations + bonus)
-  end
-
-  @spec set_syntax_failures(t(), non_neg_integer()) :: t()
-  def set_syntax_failures(state, n) do
-    put_in(state.counters.syntax_failures, n)
-  end
-
-  # ============================================================================
-  # Counter Predicates
-  # ============================================================================
-
-  @spec max_iterations?(t()) :: boolean()
-  def max_iterations?(state) do
-    state.counters.iteration >= state.counters.max_iterations
-  end
-
-  @spec max_failures?(t()) :: boolean()
-  def max_failures?(state) do
-    state.counters.consecutive_failures >= state.counters.max_failures
-  end
-
-  # ============================================================================
   # History Operations
   # ============================================================================
 
@@ -288,97 +218,6 @@ defmodule Giulia.Inference.State do
   @spec clear_messages(t()) :: t()
   def clear_messages(state) do
     %{state | messages: []}
-  end
-
-  # ============================================================================
-  # Repeat Detection
-  # ============================================================================
-
-  @spec repeating?(t(), {String.t(), map()}) :: boolean()
-  def repeating?(state, action) do
-    state.last_action == action
-  end
-
-  @spec stuck_in_loop?(t(), non_neg_integer()) :: boolean()
-  def stuck_in_loop?(state, threshold \\ 3) do
-    state.counters.repeat_count >= threshold
-  end
-
-  # ============================================================================
-  # Provider Management
-  # ============================================================================
-
-  @spec set_provider(t(), atom() | String.t(), module()) :: t()
-  def set_provider(state, name, module) do
-    %{state | provider: %{state.provider | name: name, module: module}}
-  end
-
-  @spec escalate_provider(t(), atom() | String.t(), module()) :: t()
-  def escalate_provider(state, name, module) do
-    %{
-      state
-      | provider: %{
-          state.provider
-          | name: name,
-            module: module,
-            escalated: true,
-            original: state.provider.name
-        }
-    }
-  end
-
-  @spec mark_escalated(t()) :: t()
-  def mark_escalated(state) do
-    put_in(state.provider.escalated, true)
-  end
-
-  @spec set_last_compile_error(t(), String.t() | nil) :: t()
-  def set_last_compile_error(state, error) do
-    put_in(state.provider.last_compile_error, error)
-  end
-
-  # ============================================================================
-  # Verification State
-  # ============================================================================
-
-  @spec set_pending_verification(t(), boolean()) :: t()
-  def set_pending_verification(state, bool) do
-    put_in(state.verification.pending, bool)
-  end
-
-  @spec set_test_status(t(), :untested | :red | :green) :: t()
-  def set_test_status(state, status) do
-    put_in(state.verification.test_status, status)
-  end
-
-  @spec set_baseline(t(), :clean | :dirty | :unknown) :: t()
-  def set_baseline(state, status) do
-    put_in(state.verification.baseline, status)
-  end
-
-  # ============================================================================
-  # Goal Tracker
-  # ============================================================================
-
-  @spec set_impact_map(t(), map()) :: t()
-  def set_impact_map(state, map) do
-    put_in(state.goal.last_impact_map, map)
-  end
-
-  @spec track_modified_file(t(), String.t()) :: t()
-  def track_modified_file(state, path) do
-    put_in(state.goal.modified_files, MapSet.put(state.goal.modified_files, path))
-  end
-
-  @spec goal_coverage(t()) :: float()
-  def goal_coverage(state) do
-    case state.goal.last_impact_map do
-      %{count: count} when count > 0 ->
-        MapSet.size(state.goal.modified_files) / count
-
-      _ ->
-        0.0
-    end
   end
 
   # ============================================================================
@@ -435,45 +274,52 @@ defmodule Giulia.Inference.State do
   end
 
   # ============================================================================
-  # Accessor Helpers (for Trace and Orchestrator reads)
+  # Delegated: Counter Operations (State.Counters)
   # ============================================================================
 
-  @spec iteration(t()) :: non_neg_integer()
-  def iteration(state), do: state.counters.iteration
+  defdelegate increment_iteration(state), to: Counters
+  defdelegate increment_failures(state), to: Counters
+  defdelegate reset_failures(state), to: Counters
+  defdelegate increment_syntax_failures(state), to: Counters
+  defdelegate set_syntax_failures(state, n), to: Counters
+  defdelegate increment_repeat(state), to: Counters
+  defdelegate reset_repeat(state), to: Counters
+  defdelegate increment_goal_blocks(state), to: Counters
+  defdelegate reset_goal_blocks(state), to: Counters
+  defdelegate set_max_iterations(state, n), to: Counters
+  defdelegate bump_max_iterations(state, bonus), to: Counters
+  defdelegate max_iterations?(state), to: Counters
+  defdelegate max_failures?(state), to: Counters
+  defdelegate iteration(state), to: Counters
+  defdelegate max_iterations(state), to: Counters
+  defdelegate consecutive_failures(state), to: Counters
+  defdelegate max_failures(state), to: Counters
+  defdelegate repeat_count(state), to: Counters
+  defdelegate syntax_failures(state), to: Counters
+  defdelegate goal_tracker_blocks(state), to: Counters
 
-  @spec max_iterations(t()) :: pos_integer()
-  def max_iterations(state), do: state.counters.max_iterations
+  # ============================================================================
+  # Delegated: Tracking (State.Tracking)
+  # ============================================================================
 
-  @spec consecutive_failures(t()) :: non_neg_integer()
-  def consecutive_failures(state), do: state.counters.consecutive_failures
+  defdelegate set_provider(state, name, module), to: Tracking
+  defdelegate escalate_provider(state, name, module), to: Tracking
+  defdelegate mark_escalated(state), to: Tracking
+  defdelegate set_last_compile_error(state, error), to: Tracking
+  defdelegate provider_name(state), to: Tracking
+  defdelegate provider_module(state), to: Tracking
+  defdelegate escalated?(state), to: Tracking
+  defdelegate set_pending_verification(state, bool), to: Tracking
+  defdelegate set_test_status(state, status), to: Tracking
+  defdelegate set_baseline(state, status), to: Tracking
+  defdelegate pending_verification?(state), to: Tracking
+  defdelegate test_status(state), to: Tracking
+  defdelegate baseline_status(state), to: Tracking
+  defdelegate set_impact_map(state, map), to: Tracking
+  defdelegate track_modified_file(state, path), to: Tracking
+  defdelegate goal_coverage(state), to: Tracking
+  defdelegate repeating?(state, action), to: Tracking
 
-  @spec max_failures(t()) :: pos_integer()
-  def max_failures(state), do: state.counters.max_failures
-
-  @spec repeat_count(t()) :: non_neg_integer()
-  def repeat_count(state), do: state.counters.repeat_count
-
-  @spec syntax_failures(t()) :: non_neg_integer()
-  def syntax_failures(state), do: state.counters.syntax_failures
-
-  @spec goal_tracker_blocks(t()) :: non_neg_integer()
-  def goal_tracker_blocks(state), do: state.counters.goal_tracker_blocks
-
-  @spec provider_name(t()) :: atom() | String.t() | nil
-  def provider_name(state), do: state.provider.name
-
-  @spec provider_module(t()) :: module() | nil
-  def provider_module(state), do: state.provider.module
-
-  @spec escalated?(t()) :: boolean()
-  def escalated?(state), do: state.provider.escalated
-
-  @spec pending_verification?(t()) :: boolean()
-  def pending_verification?(state), do: state.verification.pending
-
-  @spec test_status(t()) :: :untested | :red | :green
-  def test_status(state), do: state.verification.test_status
-
-  @spec baseline_status(t()) :: :clean | :dirty | :unknown
-  def baseline_status(state), do: state.verification.baseline
+  @spec stuck_in_loop?(t(), non_neg_integer()) :: boolean()
+  def stuck_in_loop?(state, threshold \\ 3), do: Tracking.stuck_in_loop?(state, threshold)
 end

@@ -3,7 +3,7 @@ defmodule Giulia.Inference.Verification do
   Compilation verification and result parsing.
 
   Parses mix compile output to classify results as success, warnings,
-  or errors. Builds BUILD GREEN observations for the OODA loop.
+  or errors. Builds BUILD GREEN observations for the inference loop.
   Checks baseline project compilation state.
 
   Pure-functional module — no GenServer coupling.

@@ -55,7 +55,7 @@ defmodule Giulia.Daemon.Endpoint do
     }))
   end
 
-  # Streaming command endpoint (SSE for real-time OODA steps)
+  # Streaming command endpoint (SSE for real-time inference steps)
   post "/api/command/stream" do
     case conn.body_params do
       %{"message" => message, "path" => path} ->
@@ -335,13 +335,13 @@ defmodule Giulia.Daemon.Endpoint do
 
   defp stream_events(conn, request_id) do
     receive do
-      {:ooda_event, %{type: :complete, response: response}} ->
+      {:inference_event, %{type: :complete, response: response}} ->
         data = Jason.encode!(%{type: "complete", response: response})
         {:ok, conn} = chunk(conn, "event: complete\ndata: #{data}\n\n")
         Giulia.Inference.Events.unsubscribe(request_id)
         conn
 
-      {:ooda_event, event} ->
+      {:inference_event, event} ->
         data = Jason.encode!(event)
         case chunk(conn, "event: step\ndata: #{data}\n\n") do
           {:ok, conn} -> stream_events(conn, request_id)

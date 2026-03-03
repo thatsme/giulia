@@ -15,7 +15,7 @@ defmodule Giulia.Daemon.Routers.Monitor do
   # GET /api/monitor — Serve the dashboard HTML
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Open the Logic Monitor dashboard (real-time OODA telemetry)",
+    intent: "Open the Logic Monitor dashboard (real-time inference telemetry)",
     endpoint: "GET /api/monitor",
     params: %{},
     returns: "HTML dashboard page",

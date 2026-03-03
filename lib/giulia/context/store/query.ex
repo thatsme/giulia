@@ -1,0 +1,307 @@
+defmodule Giulia.Context.Store.Query do
+  @moduledoc """
+  Query layer over ETS-backed AST data.
+
+  All read-only queries over indexed AST entries: module lookups,
+  function searches, type/spec/callback/struct/doc enumeration.
+
+  Extracted from `Context.Store` (Build 111).
+  """
+
+  alias Giulia.Context.Store
+
+  @type project_path :: Store.project_path()
+  @type file_path :: Store.file_path()
+  @type module_name :: Store.module_name()
+  @type module_entry :: Store.module_entry()
+  @type function_entry :: Store.function_entry()
+
+  # ============================================================================
+  # Module Queries
+  # ============================================================================
+
+  @doc """
+  List all modules in the indexed project.
+  Returns a list of module names with their file paths.
+  """
+  @spec list_modules(project_path()) :: [module_entry()]
+  def list_modules(project_path) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      modules = ast_data[:modules] || []
+      Enum.map(modules, fn mod ->
+        %{
+          name: mod.name,
+          file: path,
+          line: mod.line
+        }
+      end)
+    end)
+    |> Enum.sort_by(& &1.name)
+  end
+
+  @doc """
+  Find a specific module by name within a project.
+  Returns {:ok, %{file: path, ast_data: data}} or :not_found.
+  """
+  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: Store.ast_data()}} | :not_found
+  def find_module(project_path, module_name) do
+    Store.all_asts(project_path)
+    |> Enum.find_value(:not_found, fn {path, ast_data} ->
+      modules = ast_data[:modules] || []
+      if Enum.any?(modules, &(&1.name == module_name)) do
+        {:ok, %{file: path, ast_data: ast_data}}
+      else
+        nil
+      end
+    end)
+  end
+
+  @doc """
+  Find the primary module defined in a file path within a project.
+  Returns {:ok, %{name: module_name}} or :not_found.
+  """
+  @spec find_module_by_file(project_path(), file_path()) :: {:ok, %{name: module_name()}} | :not_found
+  def find_module_by_file(project_path, file_path) do
+    # Normalize path separators for matching
+    normalized = String.replace(file_path, "\\", "/")
+
+    Store.all_asts(project_path)
+    |> Enum.find_value(:not_found, fn {path, ast_data} ->
+      path_normalized = String.replace(path, "\\", "/")
+      if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
+        modules = ast_data[:modules] || []
+        case modules do
+          [first | _] -> {:ok, %{name: first.name}}
+          _ -> nil
+        end
+      else
+        nil
+      end
+    end)
+  end
+
+  # ============================================================================
+  # Function Queries
+  # ============================================================================
+
+  @doc """
+  List all functions in the indexed project, optionally filtered by module.
+
+  ## Examples
+
+      list_functions(project_path, nil)                          # All functions
+      list_functions(project_path, "Giulia.StructuredOutput")    # Single module
+  """
+  @spec list_functions(project_path(), module_name() | nil) :: [function_entry()]
+  def list_functions(project_path, module_filter) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      functions = ast_data[:functions] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(functions, fn func ->
+          %{
+            module: module_name,
+            name: func.name,
+            arity: func.arity,
+            type: func.type,
+            file: path,
+            line: func.line
+          }
+        end)
+      else
+        []
+      end
+    end)
+    |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
+  end
+
+  @doc """
+  Find a specific function by name (optionally with arity) within a project.
+  Returns a list of matches across all modules.
+  """
+  @spec find_function(project_path(), atom() | String.t(), non_neg_integer() | nil) :: [function_entry()]
+  def find_function(project_path, function_name, arity) do
+    list_functions(project_path, nil)
+    |> Enum.filter(fn func ->
+      name_match = to_string(func.name) == to_string(function_name)
+      arity_match = arity == nil or func.arity == arity
+      name_match and arity_match
+    end)
+  end
+
+  # ============================================================================
+  # Type / Spec Queries
+  # ============================================================================
+
+  @doc """
+  List all types defined in the project.
+  """
+  @spec list_types(project_path(), module_name() | nil) :: [map()]
+  def list_types(project_path, module_filter) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      types = ast_data[:types] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(types, fn type ->
+          Map.merge(type, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  List all specs defined in the project.
+  """
+  @spec list_specs(project_path(), module_name() | nil) :: [map()]
+  def list_specs(project_path, module_filter) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      specs = ast_data[:specs] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(specs, fn spec ->
+          Map.merge(spec, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  Get spec for a specific function.
+  """
+  @spec get_spec(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
+  def get_spec(project_path, module_name, function_name, arity) do
+    list_specs(project_path, module_name)
+    |> Enum.find(fn spec ->
+      to_string(spec.function) == to_string(function_name) and spec.arity == arity
+    end)
+  end
+
+  # ============================================================================
+  # Callback Queries
+  # ============================================================================
+
+  @doc """
+  List all callbacks (behaviour definitions) in the project.
+  """
+  @spec list_callbacks(project_path(), module_name() | nil) :: [map()]
+  def list_callbacks(project_path, module_filter) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      callbacks = ast_data[:callbacks] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(callbacks, fn cb ->
+          Map.merge(cb, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  List optional callbacks (where optional == true) in the project.
+  """
+  @spec list_optional_callbacks(project_path(), module_name() | nil) :: [map()]
+  def list_optional_callbacks(project_path, module_filter) do
+    list_callbacks(project_path, module_filter)
+    |> Enum.filter(fn cb -> Map.get(cb, :optional, false) == true end)
+  end
+
+  # ============================================================================
+  # Struct Queries
+  # ============================================================================
+
+  @doc """
+  List all structs defined in the project.
+  """
+  @spec list_structs(project_path()) :: [map()]
+  def list_structs(project_path) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      structs = ast_data[:structs] || []
+      Enum.map(structs, fn struct ->
+        Map.put(struct, :file, path)
+      end)
+    end)
+  end
+
+  @doc """
+  Get struct fields for a specific module.
+  """
+  @spec get_struct(project_path(), module_name()) :: map() | nil
+  def get_struct(project_path, module_name) do
+    list_structs(project_path)
+    |> Enum.find(&(&1.module == module_name))
+  end
+
+  # ============================================================================
+  # Doc Queries
+  # ============================================================================
+
+  @doc """
+  List all @doc entries in the project.
+  """
+  @spec list_docs(project_path(), module_name() | nil) :: [map()]
+  def list_docs(project_path, module_filter) do
+    Store.all_asts(project_path)
+    |> Enum.flat_map(fn {path, ast_data} ->
+      docs = ast_data[:docs] || []
+      modules = ast_data[:modules] || []
+      module_name = List.first(modules)[:name] || "Unknown"
+
+      if module_filter == nil or module_name == module_filter do
+        Enum.map(docs, fn doc ->
+          Map.merge(doc, %{module: module_name, file: path})
+        end)
+      else
+        []
+      end
+    end)
+  end
+
+  @doc """
+  Get @doc for a specific function.
+  """
+  @spec get_function_doc(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
+  def get_function_doc(project_path, module_name, function_name, arity) do
+    list_docs(project_path, module_name)
+    |> Enum.find(fn doc ->
+      to_string(doc.function) == to_string(function_name) and doc.arity == arity
+    end)
+  end
+
+  @doc """
+  Get @moduledoc for a specific module.
+  """
+  @spec get_moduledoc(project_path(), module_name()) :: {:ok, String.t()} | :not_found
+  def get_moduledoc(project_path, module_name) do
+    case find_module(project_path, module_name) do
+      {:ok, %{ast_data: ast_data}} ->
+        modules = ast_data[:modules] || []
+        case Enum.find(modules, &(&1.name == module_name)) do
+          %{moduledoc: doc} when is_binary(doc) -> {:ok, doc}
+          _ -> :not_found
+        end
+
+      :not_found ->
+        :not_found
+    end
+  end
+end

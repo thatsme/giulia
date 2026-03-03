@@ -1,6 +1,6 @@
 defmodule Giulia.Inference.ResponseParser do
   @moduledoc """
-  Model response parsing for the OODA loop.
+  Model response parsing for the inference loop.
 
   Parses LLM responses into structured tool calls, handling:
   - Native tool_calls from providers (Anthropic, etc.)
