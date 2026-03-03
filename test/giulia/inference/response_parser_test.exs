@@ -1,6 +1,6 @@
 defmodule Giulia.Inference.ResponseParserTest do
   @moduledoc """
-  Tests for the OODA loop response parser.
+  Tests for the inference loop response parser.
 
   ResponseParser sits between the LLM provider and the Engine, translating
   raw model responses into structured directives:

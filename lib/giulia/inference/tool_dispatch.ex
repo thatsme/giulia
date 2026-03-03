@@ -175,7 +175,7 @@ defmodule Giulia.Inference.ToolDispatch do
   defp execute_normal(tool_name, params, response, state) do
     # BROADCAST: Tool call starting
     if state.request_id do
-      Logger.info("OODA BROADCAST: tool_call #{tool_name} to #{state.request_id}")
+      Logger.info("INFERENCE BROADCAST: tool_call #{tool_name} to #{state.request_id}")
 
       Events.broadcast(state.request_id, %{
         type: :tool_call,

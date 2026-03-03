@@ -30,7 +30,7 @@ defmodule Giulia.Inference.EventsTest do
       event = %{type: :tool_call, tool: "read_file"}
       Events.broadcast(request_id, event)
 
-      assert_receive {:ooda_event, ^event}, 1000
+      assert_receive {:inference_event, ^event}, 1000
     end
 
     test "non-subscriber does not receive events" do
@@ -40,7 +40,7 @@ defmodule Giulia.Inference.EventsTest do
       Events.subscribe(request_id)
       Events.broadcast(other_id, %{type: :tool_call})
 
-      refute_receive {:ooda_event, _}, 200
+      refute_receive {:inference_event, _}, 200
     end
 
     test "multiple subscribers receive the same event" do
@@ -52,7 +52,7 @@ defmodule Giulia.Inference.EventsTest do
       event = %{type: :iteration, count: 1}
       Events.broadcast(request_id, event)
 
-      assert_receive {:ooda_event, ^event}, 1000
+      assert_receive {:inference_event, ^event}, 1000
     end
   end
 
@@ -72,7 +72,7 @@ defmodule Giulia.Inference.EventsTest do
 
       Events.broadcast(request_id, %{type: :test})
 
-      refute_receive {:ooda_event, _}, 200
+      refute_receive {:inference_event, _}, 200
     end
   end
 

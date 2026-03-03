@@ -179,7 +179,7 @@ defmodule Giulia.Client.Commands do
         Enum.each(files, fn %{"path" => path, "size" => size} ->
           IO.puts("  #{path} (#{size} bytes)")
         end)
-        IO.puts("\nUse commit_changes in the OODA loop to flush to disk.\n")
+        IO.puts("\nUse commit_changes in the inference loop to flush to disk.\n")
 
       {:ok, %{"transaction_mode" => false}} ->
         Output.info("Transaction mode is not active. No files staged.")

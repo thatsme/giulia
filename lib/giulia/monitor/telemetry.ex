@@ -7,20 +7,20 @@ defmodule Giulia.Monitor.Telemetry do
      Captures every REST call crossing the HTTP boundary: method, path,
      query params, status, duration, and response body (truncated at 5 KB).
 
-  2. **OODA Pipeline** — 7 internal events from Engine + ToolDispatch.
+  2. **Inference Pipeline** — 7 internal events from Engine + ToolDispatch.
      Captures inference lifecycle, LLM calls, tool executions.
 
-  Build 95: Logic Monitor (OODA events).
+  Build 95: Logic Monitor (inference events).
   Build 96: Global Logic Tap (HTTP skin events).
   """
 
   @max_response_size 5_000
 
-  # Internal OODA pipeline events
-  @ooda_events [
-    [:giulia, :ooda, :start],
-    [:giulia, :ooda, :step],
-    [:giulia, :ooda, :done],
+  # Internal inference pipeline events
+  @inference_events [
+    [:giulia, :inference, :start],
+    [:giulia, :inference, :step],
+    [:giulia, :inference, :done],
     [:giulia, :llm, :call],
     [:giulia, :llm, :parsed],
     [:giulia, :tool, :start],
@@ -35,16 +35,16 @@ defmodule Giulia.Monitor.Telemetry do
 
   @doc "Attach all telemetry handlers. Call once after supervisor starts."
   def attach do
-    :telemetry.attach_many("giulia-monitor-ooda", @ooda_events, &handle_ooda_event/4, nil)
+    :telemetry.attach_many("giulia-monitor-inference", @inference_events, &handle_inference_event/4, nil)
     :telemetry.attach_many("giulia-monitor-http", @http_events, &handle_http_event/4, nil)
   end
 
   # ============================================================================
-  # OODA Pipeline Handler (unchanged from Build 95)
+  # Inference Pipeline Handler (Build 95, renamed in Build 112)
   # ============================================================================
 
   @doc false
-  def handle_ooda_event(event_name, measurements, metadata, _config) do
+  def handle_inference_event(event_name, measurements, metadata, _config) do
     Giulia.Monitor.Store.push(%{
       event: Enum.join(event_name, "."),
       measurements: measurements,

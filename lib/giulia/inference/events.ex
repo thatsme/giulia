@@ -1,6 +1,6 @@
 defmodule Giulia.Inference.Events do
   @moduledoc """
-  Event broadcasting for the OODA loop.
+  Event broadcasting for the inference loop.
   Allows clients to subscribe and receive real-time updates.
   """
   use GenServer
@@ -55,7 +55,7 @@ defmodule Giulia.Inference.Events do
     subs = Map.get(state.subscriptions, request_id, [])
     Logger.info("EVENTS: Broadcasting #{inspect(event.type)} to #{length(subs)} subscribers for #{request_id}")
     Enum.each(subs, fn pid ->
-      send(pid, {:ooda_event, event})
+      send(pid, {:inference_event, event})
     end)
     {:noreply, state}
   end

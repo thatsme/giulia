@@ -1,9 +1,9 @@
 defmodule Giulia.Inference.Orchestrator do
   @moduledoc """
-  Thin GenServer shell for the OODA Loop State Machine.
+  Thin GenServer shell for the Inference Loop State Machine.
 
   All control flow has been extracted to focused modules (build 84):
-  - `Engine`        — OODA loop core, provider calls, response routing
+  - `Engine`        — Inference loop core, provider calls, response routing
   - `ToolDispatch`  — Tool execution, staging, approval gating
   - `ContextBuilder`— Messages, previews, interventions, hub risk
 
@@ -31,10 +31,10 @@ defmodule Giulia.Inference.Orchestrator do
   end
 
   @doc """
-  Execute synchronously. Blocks until the OODA loop completes.
+  Execute synchronously. Blocks until the inference loop completes.
   """
   def execute(orchestrator, prompt, opts \\ []) do
-    # 10-minute timeout — the OODA loop can run many iterations
+    # 10-minute timeout — the inference loop can run many iterations
     GenServer.call(orchestrator, {:execute, prompt, opts}, 600_000)
   end
 

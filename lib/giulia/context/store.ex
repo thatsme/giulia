@@ -7,8 +7,13 @@ defmodule Giulia.Context.Store do
 
   All AST data is namespaced by project_path to support multi-project isolation.
   ETS keys: {:ast, project_path, file_path}
+
+  This module is the public facade. Query logic is delegated to `Store.Query`,
+  formatted output to `Store.Formatter`. Extracted in Build 111.
   """
   use GenServer
+
+  alias Giulia.Context.Store
 
   @table __MODULE__
 
@@ -22,12 +27,57 @@ defmodule Giulia.Context.Store do
   @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: :def | :defp, file: String.t(), line: non_neg_integer()}
   @type store_stats :: %{ast_files: non_neg_integer(), total_entries: non_neg_integer()}
 
-  # Client API
+  # ============================================================================
+  # GenServer Lifecycle
+  # ============================================================================
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
+
+  @impl true
+  def init(_) do
+    table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    {:ok, %{table: table}}
+  end
+
+  # ============================================================================
+  # Raw ETS Operations
+  # ============================================================================
+
+  @doc """
+  Store arbitrary key-value data.
+  """
+  @spec put(term(), term()) :: :ok
+  def put(key, value) do
+    :ets.insert(@table, {key, value})
+    :ok
+  end
+
+  @doc """
+  Get arbitrary key-value data.
+  """
+  @spec get(term()) :: {:ok, term()} | :error
+  def get(key) do
+    case :ets.lookup(@table, key) do
+      [{^key, value}] -> {:ok, value}
+      [] -> :error
+    end
+  end
+
+  @doc """
+  Delete a key.
+  """
+  @spec delete(term()) :: :ok
+  def delete(key) do
+    :ets.delete(@table, key)
+    :ok
+  end
+
+  # ============================================================================
+  # AST Storage
+  # ============================================================================
 
   @doc """
   Store a file's AST metadata, scoped to a project.
@@ -61,6 +111,20 @@ defmodule Giulia.Context.Store do
   end
 
   @doc """
+  Clear all AST data for a specific project (for re-indexing).
+  """
+  @spec clear_asts(project_path()) :: :ok
+  def clear_asts(project_path) do
+    :ets.match_delete(@table, {{:ast, project_path, :_}, :_})
+    Giulia.Persistence.Writer.clear_project(project_path)
+    :ok
+  end
+
+  # ============================================================================
+  # Project Files
+  # ============================================================================
+
+  @doc """
   Store the master list of indexed source files for a project.
   Called by the Indexer after a scan completes.
   """
@@ -82,6 +146,10 @@ defmodule Giulia.Context.Store do
       [] -> []
     end
   end
+
+  # ============================================================================
+  # Embeddings
+  # ============================================================================
 
   @doc """
   Store embedding vectors for a project.
@@ -115,44 +183,9 @@ defmodule Giulia.Context.Store do
     :ok
   end
 
-  @doc """
-  Store arbitrary key-value data.
-  """
-  @spec put(term(), term()) :: :ok
-  def put(key, value) do
-    :ets.insert(@table, {key, value})
-    :ok
-  end
-
-  @doc """
-  Get arbitrary key-value data.
-  """
-  @spec get(term()) :: {:ok, term()} | :error
-  def get(key) do
-    case :ets.lookup(@table, key) do
-      [{^key, value}] -> {:ok, value}
-      [] -> :error
-    end
-  end
-
-  @doc """
-  Delete a key.
-  """
-  @spec delete(term()) :: :ok
-  def delete(key) do
-    :ets.delete(@table, key)
-    :ok
-  end
-
-  @doc """
-  Clear all AST data for a specific project (for re-indexing).
-  """
-  @spec clear_asts(project_path()) :: :ok
-  def clear_asts(project_path) do
-    :ets.match_delete(@table, {{:ast, project_path, :_}, :_})
-    Giulia.Persistence.Writer.clear_project(project_path)
-    :ok
-  end
+  # ============================================================================
+  # Stats / Debug
+  # ============================================================================
 
   @doc """
   Get stats about the store for a specific project.
@@ -208,384 +241,31 @@ defmodule Giulia.Context.Store do
   end
 
   # ============================================================================
-  # Query Interface - The "Knowledge" Layer
+  # Delegated: Query (17 functions)
   # ============================================================================
 
-  @doc """
-  List all modules in the indexed project.
-  Returns a list of module names with their file paths.
-  """
-  @spec list_modules(project_path()) :: [module_entry()]
-  def list_modules(project_path) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      modules = ast_data[:modules] || []
-      Enum.map(modules, fn mod ->
-        %{
-          name: mod.name,
-          file: path,
-          line: mod.line
-        }
-      end)
-    end)
-    |> Enum.sort_by(& &1.name)
-  end
+  defdelegate find_module(project_path, module_name), to: Store.Query
+  defdelegate find_module_by_file(project_path, file_path), to: Store.Query
+  defdelegate get_spec(project_path, module_name, function_name, arity), to: Store.Query
+  defdelegate list_optional_callbacks(project_path, module_filter), to: Store.Query
+  defdelegate list_structs(project_path), to: Store.Query
+  defdelegate get_struct(project_path, module_name), to: Store.Query
+  defdelegate get_function_doc(project_path, module_name, function_name, arity), to: Store.Query
+  defdelegate get_moduledoc(project_path, module_name), to: Store.Query
 
-  @doc """
-  List all functions in the indexed project, optionally filtered by module.
+  # Default-arg wrappers — can't use defdelegate with \\ defaults
+  def list_modules(project_path), do: Store.Query.list_modules(project_path)
+  def list_functions(project_path, module_filter \\ nil), do: Store.Query.list_functions(project_path, module_filter)
+  def find_function(project_path, function_name, arity \\ nil), do: Store.Query.find_function(project_path, function_name, arity)
+  def list_types(project_path, module_filter \\ nil), do: Store.Query.list_types(project_path, module_filter)
+  def list_specs(project_path, module_filter \\ nil), do: Store.Query.list_specs(project_path, module_filter)
+  def list_callbacks(project_path, module_filter \\ nil), do: Store.Query.list_callbacks(project_path, module_filter)
+  def list_docs(project_path, module_filter \\ nil), do: Store.Query.list_docs(project_path, module_filter)
 
-  ## Examples
+  # ============================================================================
+  # Delegated: Formatter (2 functions)
+  # ============================================================================
 
-      list_functions(project_path)                           # All functions
-      list_functions(project_path, "Giulia.StructuredOutput")  # Single module
-      list_functions(project_path, nil)                        # Same as no filter
-  """
-  @spec list_functions(project_path(), module_name() | nil) :: [function_entry()]
-  def list_functions(project_path, module_filter \\ nil) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      functions = ast_data[:functions] || []
-      modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
-
-      # Filter by module if specified
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(functions, fn func ->
-          %{
-            module: module_name,
-            name: func.name,
-            arity: func.arity,
-            type: func.type,
-            file: path,
-            line: func.line
-          }
-        end)
-      else
-        []
-      end
-    end)
-    |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
-  end
-
-  @doc """
-  Find a specific module by name within a project.
-  Returns {:ok, %{file: path, ast_data: data}} or :not_found.
-  """
-  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: ast_data()}} | :not_found
-  def find_module(project_path, module_name) do
-    all_asts(project_path)
-    |> Enum.find_value(:not_found, fn {path, ast_data} ->
-      modules = ast_data[:modules] || []
-      if Enum.any?(modules, &(&1.name == module_name)) do
-        {:ok, %{file: path, ast_data: ast_data}}
-      else
-        nil
-      end
-    end)
-  end
-
-  @doc """
-  Find the primary module defined in a file path within a project.
-  Returns {:ok, %{name: module_name}} or :not_found.
-  """
-  @spec find_module_by_file(project_path(), file_path()) :: {:ok, %{name: module_name()}} | :not_found
-  def find_module_by_file(project_path, file_path) do
-    # Normalize path separators for matching
-    normalized = String.replace(file_path, "\\", "/")
-
-    all_asts(project_path)
-    |> Enum.find_value(:not_found, fn {path, ast_data} ->
-      path_normalized = String.replace(path, "\\", "/")
-      if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
-        modules = ast_data[:modules] || []
-        case modules do
-          [first | _] -> {:ok, %{name: first.name}}
-          _ -> nil
-        end
-      else
-        nil
-      end
-    end)
-  end
-
-  @doc """
-  Find a specific function by name (optionally with arity) within a project.
-  Returns a list of matches across all modules.
-  """
-  @spec find_function(project_path(), atom() | String.t(), non_neg_integer() | nil) :: [function_entry()]
-  def find_function(project_path, function_name, arity \\ nil) do
-    list_functions(project_path)
-    |> Enum.filter(fn func ->
-      name_match = to_string(func.name) == to_string(function_name)
-      arity_match = arity == nil or func.arity == arity
-      name_match and arity_match
-    end)
-  end
-
-  @doc """
-  List all types defined in the project.
-  """
-  @spec list_types(project_path(), module_name() | nil) :: [map()]
-  def list_types(project_path, module_filter \\ nil) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      types = ast_data[:types] || []
-      modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
-
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(types, fn type ->
-          Map.merge(type, %{module: module_name, file: path})
-        end)
-      else
-        []
-      end
-    end)
-  end
-
-  @doc """
-  List all specs defined in the project.
-  """
-  @spec list_specs(project_path(), module_name() | nil) :: [map()]
-  def list_specs(project_path, module_filter \\ nil) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      specs = ast_data[:specs] || []
-      modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
-
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(specs, fn spec ->
-          Map.merge(spec, %{module: module_name, file: path})
-        end)
-      else
-        []
-      end
-    end)
-  end
-
-  @doc """
-  Get spec for a specific function.
-  """
-  @spec get_spec(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
-  def get_spec(project_path, module_name, function_name, arity) do
-    list_specs(project_path, module_name)
-    |> Enum.find(fn spec ->
-      to_string(spec.function) == to_string(function_name) and spec.arity == arity
-    end)
-  end
-
-  @doc """
-  List all callbacks (behaviour definitions) in the project.
-  """
-  @spec list_callbacks(project_path(), module_name() | nil) :: [map()]
-  def list_callbacks(project_path, module_filter \\ nil) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      callbacks = ast_data[:callbacks] || []
-      modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
-
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(callbacks, fn cb ->
-          Map.merge(cb, %{module: module_name, file: path})
-        end)
-      else
-        []
-      end
-    end)
-  end
-
-  @doc """
-  List optional callbacks (where optional == true) in the project.
-  """
-  @spec list_optional_callbacks(project_path(), module_name() | nil) :: [map()]
-  def list_optional_callbacks(project_path, module_filter \\ nil) do
-    list_callbacks(project_path, module_filter)
-    |> Enum.filter(fn cb -> Map.get(cb, :optional, false) == true end)
-  end
-
-  @doc """
-  List all structs defined in the project.
-  """
-  @spec list_structs(project_path()) :: [map()]
-  def list_structs(project_path) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      structs = ast_data[:structs] || []
-      Enum.map(structs, fn struct ->
-        Map.put(struct, :file, path)
-      end)
-    end)
-  end
-
-  @doc """
-  Get struct fields for a specific module.
-  """
-  @spec get_struct(project_path(), module_name()) :: map() | nil
-  def get_struct(project_path, module_name) do
-    list_structs(project_path)
-    |> Enum.find(&(&1.module == module_name))
-  end
-
-  @doc """
-  List all @doc entries in the project.
-  """
-  @spec list_docs(project_path(), module_name() | nil) :: [map()]
-  def list_docs(project_path, module_filter \\ nil) do
-    all_asts(project_path)
-    |> Enum.flat_map(fn {path, ast_data} ->
-      docs = ast_data[:docs] || []
-      modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
-
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(docs, fn doc ->
-          Map.merge(doc, %{module: module_name, file: path})
-        end)
-      else
-        []
-      end
-    end)
-  end
-
-  @doc """
-  Get @doc for a specific function.
-  """
-  @spec get_function_doc(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
-  def get_function_doc(project_path, module_name, function_name, arity) do
-    list_docs(project_path, module_name)
-    |> Enum.find(fn doc ->
-      to_string(doc.function) == to_string(function_name) and doc.arity == arity
-    end)
-  end
-
-  @doc """
-  Get @moduledoc for a specific module.
-  """
-  @spec get_moduledoc(project_path(), module_name()) :: {:ok, String.t()} | :not_found
-  def get_moduledoc(project_path, module_name) do
-    case find_module(project_path, module_name) do
-      {:ok, %{ast_data: ast_data}} ->
-        modules = ast_data[:modules] || []
-        case Enum.find(modules, &(&1.name == module_name)) do
-          %{moduledoc: doc} when is_binary(doc) -> {:ok, doc}
-          _ -> :not_found
-        end
-
-      :not_found ->
-        :not_found
-    end
-  end
-
-  @doc """
-  Generate a compact project summary for LLM context injection.
-  """
-  @spec project_summary(project_path()) :: String.t()
-  def project_summary(project_path) do
-    modules = list_modules(project_path)
-    functions = list_functions(project_path)
-    types = list_types(project_path)
-    specs = list_specs(project_path)
-    structs = list_structs(project_path)
-    callbacks = list_callbacks(project_path)
-    stats = stats(project_path)
-
-    public_functions =
-      functions
-      |> Enum.filter(&(&1.type == :def))
-      |> Enum.group_by(& &1.module)
-
-    module_summaries =
-      modules
-      |> Enum.map(fn mod ->
-        funcs = Map.get(public_functions, mod.name, [])
-        func_list = Enum.map_join(funcs, ", ", &"#{&1.name}/#{&1.arity}")
-        "  - #{mod.name}: #{func_list}"
-      end)
-      |> Enum.join("\n")
-
-    """
-    === PROJECT INDEX ===
-    Files: #{stats.ast_files}
-    Modules: #{length(modules)}
-    Functions: #{length(functions)}
-    Types: #{length(types)}
-    Specs: #{length(specs)}
-    Structs: #{length(structs)}
-    Callbacks: #{length(callbacks)}
-
-    Modules:
-    #{module_summaries}
-    """
-  end
-
-  @doc """
-  Generate a detailed summary with types and structs for a specific module.
-  """
-  @spec module_details(project_path(), module_name()) :: String.t()
-  def module_details(project_path, module_name) do
-    case find_module(project_path, module_name) do
-      {:ok, %{file: file, ast_data: ast_data}} ->
-        modules = ast_data[:modules] || []
-        mod = Enum.find(modules, &(&1.name == module_name))
-
-        functions = list_functions(project_path, module_name)
-        types = list_types(project_path, module_name)
-        specs = list_specs(project_path, module_name)
-        callbacks = list_callbacks(project_path, module_name)
-        struct_info = get_struct(project_path, module_name)
-
-        public_funcs = Enum.filter(functions, &(&1.type == :def))
-        private_funcs = Enum.filter(functions, &(&1.type == :defp))
-
-        moduledoc_section = case mod[:moduledoc] do
-          nil -> ""
-          doc -> "\nModuledoc:\n  #{String.slice(doc, 0, 200)}#{if String.length(doc) > 200, do: "...", else: ""}\n"
-        end
-
-        struct_section = case struct_info do
-          nil -> ""
-          %{fields: fields} -> "\nStruct fields: #{Enum.join(fields, ", ")}\n"
-        end
-
-        types_section = if types != [] do
-          type_list = Enum.map_join(types, ", ", &"#{&1.name}/#{&1.arity}")
-          "\nTypes: #{type_list}\n"
-        else
-          ""
-        end
-
-        callbacks_section = if callbacks != [] do
-          cb_list = Enum.map_join(callbacks, ", ", &"#{&1.function}/#{&1.arity}")
-          "\nCallbacks: #{cb_list}\n"
-        else
-          ""
-        end
-
-        """
-        === #{module_name} ===
-        File: #{file}
-        #{moduledoc_section}#{struct_section}#{types_section}#{callbacks_section}
-        Public functions (#{length(public_funcs)}):
-          #{Enum.map_join(public_funcs, "\n  ", &"#{&1.name}/#{&1.arity}")}
-
-        Private functions (#{length(private_funcs)}):
-          #{Enum.map_join(private_funcs, "\n  ", &"#{&1.name}/#{&1.arity}")}
-
-        Specs defined: #{length(specs)}
-        """
-
-      :not_found ->
-        "Module '#{module_name}' not found in index."
-    end
-  end
-
-  # Server Callbacks
-
-  @impl true
-  def init(_) do
-    table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
-    {:ok, %{table: table}}
-  end
+  defdelegate project_summary(project_path), to: Store.Formatter
+  defdelegate module_details(project_path, module_name), to: Store.Formatter
 end
