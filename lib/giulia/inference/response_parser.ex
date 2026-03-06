@@ -136,6 +136,7 @@ defmodule Giulia.Inference.ResponseParser do
   def extract_error_context(json, position) do
     start_pos = max(0, position - 30)
     end_pos = min(String.length(json), position + 30)
-    String.slice(json, start_pos, end_pos - start_pos)
+    length = max(0, end_pos - start_pos)
+    String.slice(json, start_pos, length)
   end
 end

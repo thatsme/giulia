@@ -163,7 +163,8 @@ defmodule Giulia.Provider.LMStudio do
     end)
   end
 
-  defp parse_response(%{"choices" => [choice | _]}) do
+  @doc false
+  def parse_response(%{"choices" => [choice | _]}) do
     message = choice["message"]
     tool_calls = parse_tool_calls(message["tool_calls"])
     finish_reason = choice["finish_reason"]
@@ -175,7 +176,8 @@ defmodule Giulia.Provider.LMStudio do
     }
   end
 
-  defp parse_response(other) do
+  @doc false
+  def parse_response(other) do
     %{
       content: inspect(other),
       tool_calls: [],

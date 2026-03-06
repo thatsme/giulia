@@ -109,12 +109,9 @@ defmodule Giulia.Provider.Gemini do
   defp normalize_role("user"), do: "user"
   defp normalize_role(other), do: other
 
-  # Parse Gemini's response structure
-  defp parse_response(%{"candidates" => [first | _]}) do
+  @doc false
+  def parse_response(%{"candidates" => [first | _]}) do
     case first do
-      %{"content" => %{"parts" => [%{"text" => text} | _]}} ->
-        {:ok, %{content: text, tool_calls: nil}}
-
       %{"content" => %{"parts" => parts}} when is_list(parts) ->
         text = Enum.map_join(parts, "\n", fn
           %{"text" => t} -> t
@@ -127,11 +124,13 @@ defmodule Giulia.Provider.Gemini do
     end
   end
 
-  defp parse_response(%{"error" => error}) do
+  @doc false
+  def parse_response(%{"error" => error}) do
     {:error, {:gemini_error, error}}
   end
 
-  defp parse_response(other) do
+  @doc false
+  def parse_response(other) do
     Logger.warning("Unexpected Gemini response: #{inspect(other)}")
     {:error, :unexpected_response}
   end

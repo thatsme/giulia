@@ -82,16 +82,18 @@ defmodule Giulia.Provider.Groq do
     end)
   end
 
-  # Parse OpenAI-compatible response
-  defp parse_response(%{"choices" => [%{"message" => %{"content" => content}} | _]}) do
+  @doc false
+  def parse_response(%{"choices" => [%{"message" => %{"content" => content}} | _]}) do
     {:ok, %{content: content, tool_calls: nil}}
   end
 
-  defp parse_response(%{"error" => error}) do
+  @doc false
+  def parse_response(%{"error" => error}) do
     {:error, {:groq_error, error}}
   end
 
-  defp parse_response(other) do
+  @doc false
+  def parse_response(other) do
     Logger.warning("Unexpected Groq response: #{inspect(other)}")
     {:error, :unexpected_response}
   end
