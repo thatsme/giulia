@@ -154,6 +154,9 @@ defmodule Giulia.StructuredOutput do
     apply_changeset(changeset)
   end
 
+  def parse_map(nil, _schema_module), do: {:error, :nil_arguments}
+  def parse_map(_, _schema_module), do: {:error, :invalid_arguments}
+
   @doc "Validate tool arguments from LLM response against the appropriate schema.\r\n"
   def validate_tool_call(%{name: name, arguments: args}) do
     schema_module = tool_schema(name)
