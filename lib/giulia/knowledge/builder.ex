@@ -335,7 +335,7 @@ defmodule Giulia.Knowledge.Builder do
         # Remote call: Module.func(args) — resolve aliases
         {{:., _, [{:__aliases__, _meta, parts}, func_name]}, _call_meta, args} = node, set
         when is_atom(func_name) and is_list(args) ->
-          raw_mod = Enum.map_join(parts, ".", &to_string/1)
+          raw_mod = resolve_module_parts(parts, caller_module)
           mod = Map.get(alias_map, raw_mod, raw_mod)
           if MapSet.member?(all_modules, mod) do
             target_mfa = "#{mod}.#{func_name}/#{length(args)}"
@@ -374,5 +374,28 @@ defmodule Giulia.Knowledge.Builder do
       end)
 
     calls
+  end
+
+  # Resolve __MODULE__ AST tuples in alias parts to the enclosing module name.
+  # Sourceror represents `__MODULE__.Foo` as [{:__MODULE__, meta, nil}, :Foo].
+  defp resolve_module_parts(parts, caller_module) do
+    parts
+    |> Enum.map(fn
+      {:__MODULE__, _meta, _} -> caller_module
+      atom when is_atom(atom) -> Atom.to_string(atom)
+      other -> to_string(other)
+    end)
+    |> then(fn resolved ->
+      # If __MODULE__ was first, it already contains dots (e.g. "Giulia.Core.Foo"),
+      # so we join carefully to avoid "Giulia.Core.Foo.Bar" becoming malformed.
+      case resolved do
+        [mod_string | rest] when is_binary(mod_string) and rest != [] ->
+          mod_string <> "." <> Enum.join(rest, ".")
+        [mod_string] when is_binary(mod_string) ->
+          mod_string
+        _ ->
+          Enum.join(resolved, ".")
+      end
+    end)
   end
 end
