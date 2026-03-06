@@ -232,13 +232,15 @@ Function-level edges: <count> MFA→MFA call edges
 
 ### Section 10: Struct Lifecycle
 
-**Table columns:** Struct | Defining Module | Users | User Count | Logic Leaks | Leak Count
+**Table columns:** Struct | Defining Module | User Count | Logic Leaks | Leak Count
 
 **Rules:**
 - Use `struct_lifecycle` endpoint
 - **Logic leaks**: modules that reference a struct but are not the defining module — potential
   encapsulation violations where struct internals are accessed outside their owning context
 - Sort by leak_count descending — highest leak count = worst encapsulation
+- User Count is the number in the table; list the actual user module names in commentary
+  below the table only for structs with leaks > 0 (keeps the table scannable)
 - If a struct has 0 users outside its defining module, it's well-encapsulated — no action needed
 - If a struct has 0 users total (including its own module), flag as "potentially unused struct"
 - Commentary: not all logic leaks are bugs — shared data structures (e.g., `%User{}` across
