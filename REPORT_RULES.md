@@ -1,0 +1,274 @@
+# Giulia Analysis Report — Generation Rules
+
+This document defines the standard procedure for generating a project analysis report
+using Giulia's API. It is the canonical reference for both human operators and AI agents.
+
+## Prerequisites
+
+1. Giulia daemon running (`GET /health` returns `status: ok`)
+2. Project scanned (`POST /api/index/scan` with project path)
+3. Wait for scan completion — poll `GET /api/index/status?path=...` until `state: idle`
+4. Knowledge graph built — verify `GET /api/knowledge/stats?path=...` returns `vertices > 0`
+
+If the graph has 0 vertices after scan, the graph builder crashed. Check daemon logs.
+
+---
+
+## Data Collection Phase
+
+Call endpoints in this order. All require `?path=<project_path>` query param.
+
+### Stage 1: Index (fast, ETS-backed)
+
+| Endpoint | Key Fields | Report Section |
+|----------|-----------|----------------|
+| `GET /api/index/summary` | modules, functions, types, specs, structs, callbacks | Executive Summary |
+| `GET /api/index/status` | files_scanned, state, cache_status | Executive Summary |
+
+### Stage 2: Knowledge Graph Topology (graph-backed)
+
+| Endpoint | Key Fields | Report Section |
+|----------|-----------|----------------|
+| `GET /api/knowledge/stats` | vertices, edges, components, hubs, type_counts | Executive Summary |
+| `GET /api/knowledge/cycles` | cycles list | Architecture Health |
+| `GET /api/knowledge/integrity` | status, fractures | Architecture Health |
+| `GET /api/knowledge/fan_in_out` | per-module in/out degree | Top Hubs |
+| `GET /api/knowledge/dead_code` | unused functions | Dead Code |
+| `GET /api/knowledge/orphan_specs` | specs without matching function | Architecture Health |
+
+### Stage 3: Risk Analysis (graph + AST, heavier)
+
+| Endpoint | Key Fields | Report Section |
+|----------|-----------|----------------|
+| `GET /api/knowledge/heatmap` | per-module score, zone, breakdown (complexity, centrality, coupling, has_test) | Heatmap Zones |
+| `GET /api/knowledge/change_risk` | ranked modules with composite scores | Change Risk |
+| `GET /api/knowledge/god_modules` | functions, complexity, score | God Modules |
+| `GET /api/knowledge/coupling` | caller/callee pairs with call counts | Coupling Analysis |
+| `GET /api/knowledge/unprotected_hubs` | hub modules with low spec/doc coverage | Unprotected Hubs |
+
+### Stage 4: Deep Analysis (optional, slower)
+
+| Endpoint | Key Fields | Report Section |
+|----------|-----------|----------------|
+| `GET /api/knowledge/struct_lifecycle` | struct data flow across modules | Struct Lifecycle |
+| `GET /api/knowledge/duplicates` | semantic duplicate function clusters | Duplicates |
+| `POST /api/briefing/preflight` | per-module 6-contract checklist | Preflight (appendix) |
+
+### Stage 5: Runtime (if daemon is analyzing itself or connected node)
+
+| Endpoint | Key Fields | Report Section |
+|----------|-----------|----------------|
+| `GET /api/runtime/pulse` | processes, memory, schedulers, run_queue, uptime | Runtime Health |
+| `GET /api/runtime/top_processes` | top N by reductions/memory | Hot Spots |
+| `GET /api/runtime/hot_spots` | module-level CPU/memory fusion | Hot Spots |
+
+---
+
+## Report Structure
+
+The report MUST follow this section order. Every section is mandatory unless
+the data source explicitly failed (in which case, note the failure).
+
+### Section 1: Executive Summary
+
+A single table with all key metrics. This is the first thing the reader sees.
+
+**Required fields:**
+- Source files, Modules, Functions, Types, Specs (with coverage %), Structs, Callbacks
+- Graph vertices, edges, connected components
+- Circular dependencies count
+- Behaviour fractures count
+- Orphan specs count
+- Dead code count
+
+**Rules:**
+- Spec coverage = specs / total public functions (from summary endpoint)
+- End with a 1-2 sentence **Verdict** — overall health assessment with the single biggest gap called out
+
+### Section 2: Heatmap Zones
+
+Three sub-tables: Red (>= 60), Yellow (30-59), Green (< 30).
+
+**Red Zone table columns:** Module | Score | Complexity | Centrality | Max Coupling | Tests?
+
+**Rules:**
+- Red zone: list ALL modules individually with full breakdown
+- Yellow zone: list ALL modules individually (abbreviated — score and zone only is acceptable for large projects)
+- Green zone: count only, optionally list notable modules
+- `has_test` comes from real file cross-referencing (`suggest_test_file` maps `lib/foo.ex` to `test/foo_test.exs` and checks `File.exists?`). It is NOT inferred. If has_test is false, there is genuinely no matching `_test.exs` file by naming convention. Note: non-standard test locations (e.g., `test/livebook_teams/` for a `Livebook.Hubs` module) will show as false — the detection uses path convention only.
+
+**Heatmap scoring formula (for reference):**
+```
+norm_centrality = min(in_degree / 15 * 100, 100)    — weight 0.30
+norm_complexity = min(complexity / 200 * 100, 100)   — weight 0.25
+norm_test       = if has_test, 0, else 100            — weight 0.25
+norm_coupling   = min(max_coupling / 50 * 100, 100)  — weight 0.20
+score           = weighted sum, truncated to integer
+```
+
+### Section 3: Top 5 Hubs
+
+Sorted by in-degree (fan-in). Shows which modules are most dangerous to modify.
+
+**Table columns:** Module | In-Degree | Out-Degree | Risk Profile
+
+**Rules:**
+- Use `fan_in_out` endpoint data, cross-referenced with `centrality` for the top 5
+- Risk Profile is a 1-sentence human-readable assessment:
+  - Pure hub (high in, low out): "Stable interface — everything depends on it"
+  - Fan-out monster (low in, high out): "Orchestrator — depends on many, few depend on it"
+  - Bidirectional hub (high in AND out): "Critical junction — high blast radius in both directions"
+
+### Section 4: Change Risk (Top 10)
+
+**Table columns:** Rank | Module | Score | Key Driver
+
+**Rules:**
+- Use `change_risk` endpoint, take top 10
+- Key Driver: identify the dominant factor (centrality, complexity, coupling, function count)
+- The change_risk score combines: centrality * function_count * (1 + complexity_norm + coupling_norm)
+
+### Section 5: God Modules
+
+**Table columns:** Module | Functions | Complexity | Score
+
+**Rules:**
+- Use `god_modules` endpoint
+- Add 1-sentence commentary per module: is it a refactoring target? Is the complexity by design?
+- Call out god modules with zero fan-in — they're high complexity but LOW risk to refactor (nothing depends on them)
+
+### Section 6: Blast Radius (Top 3 Risk Modules) — MANDATORY
+
+This is the most valuable section. For the top 3 modules from change_risk:
+
+**Per module, call:**
+```
+GET /api/knowledge/impact?module=<name>&path=<path>&depth=2
+```
+
+**Format:**
+```
+### <Module Name> (change_risk rank #N)
+
+Depth 1 (direct dependents): <list of modules>
+Depth 2 (transitive): <list of modules not in depth 1>
+
+Total blast radius: N modules affected
+Function-level edges: <count> MFA→MFA call edges
+```
+
+**Rules:**
+- Always use depth=2
+- Separate depth-1 and depth-2 modules explicitly — this is what makes risk concrete
+- Include the function_edges count if available
+- If a depth-2 module is itself a hub (in_degree >= 5), flag it: "cascading hub risk"
+
+### Section 7: Unprotected Hubs
+
+**Table columns:** Module | In-Degree | Spec Coverage | Severity (red/yellow)
+
+**Rules:**
+- Use `unprotected_hubs` endpoint
+- Only show red and yellow severity (green hubs are adequately protected)
+- Add a key insight line: how many specs exist project-wide and where they're concentrated
+
+### Section 8: Coupling Analysis (Top 10 Pairs)
+
+**Table columns:** Caller | Callee | Call Count | Distinct Functions
+
+**Rules:**
+- Use `coupling` endpoint, take top 10
+- Ignore stdlib coupling (Enum, Map, String, Logger, etc.) — only report project-internal coupling
+- If coupling is "by design" (e.g., thin GenServer + pure state module), note it
+
+### Section 9: Dead Code
+
+**Table columns:** Module | Function | Line
+
+**Rules:**
+- Use `dead_code` endpoint
+- Flag known false positives:
+  - `__skills__/0` in SkillRouter base module (overridden by `@before_compile`)
+  - Callback implementations that appear unused at the source level
+  - Functions called only via `apply/3` or dynamic dispatch
+- State the ratio: N functions out of M total (X%)
+
+### Section 10: Architecture Health
+
+A pass/fail checklist table:
+
+| Check | Status |
+|-------|--------|
+| Circular dependencies | 0 — Clean DAG / N cycles found |
+| Behaviour integrity | Consistent / N fractures |
+| Orphan specs | 0 / N orphans found |
+| Dead code | N functions (M genuinely unused) |
+
+**Rules:**
+- Cycles > 0 is a P0 issue — list the cycle chains
+- Fractures > 0 is a P1 issue — list which behaviours/implementers are broken
+- Orphan specs indicate refactoring debris — list them for cleanup
+
+### Section 11: Runtime Health (if available)
+
+**Table 1:** Processes | Memory | Schedulers | Run Queue | Uptime | ETS Tables
+
+**Table 2 (Hot Spots):** Module | Reductions % | Memory
+
+**Rules:**
+- Only include if runtime data is available (self-introspection or connected node)
+- Run queue > 0 sustained = scheduler pressure, flag as warning
+- Memory > 500MB = investigate, flag largest ETS tables
+- Hot spots: top 5 by reductions, note if expected (e.g., supervisor at startup) or anomalous
+
+### Section 12: Recommended Actions (Priority Order)
+
+Synthesize findings into concrete, prioritized recommendations.
+
+**Priority levels:**
+- **P0**: Blocking issues — cycles, behaviour fractures, crashes
+- **P1**: High-risk gaps — unprotected hubs, god modules with high fan-in
+- **P2**: Improvement opportunities — god module splits, coupling reduction, dead code
+- **P3**: Polish — spec coverage for non-hub modules, doc coverage
+
+**Rules:**
+- Each recommendation must reference specific data from the report (module name, score, metric)
+- Include expected impact: "splitting X would reduce complexity from N to ~M"
+- Maximum 5 recommendations — focus on highest leverage
+
+---
+
+## Formatting Rules
+
+1. **File naming**: `<ProjectName>_REPORT_<YYYYMMDDHH>.md`
+2. **Module names**: Use short form (drop common prefix). `Giulia.Context.Store` → `Context.Store`
+3. **Numbers**: Use commas for thousands (1,098 not 1098)
+4. **Percentages**: One decimal place (20.3% not 20.312%)
+5. **Scores**: Integer only (truncate, don't round)
+6. **Tables**: Always use markdown tables with alignment
+7. **Commentary**: Keep per-row commentary to 1 sentence max. Longer analysis goes after the table.
+8. **Footer**: Always include: `Generated by Giulia v<version> — <endpoint_count> endpoints, <date>`
+
+---
+
+## Error Handling
+
+If any endpoint returns non-200:
+- **500 with detail**: Report the error message in the section, proceed to next section
+- **500 without detail**: Note "endpoint crashed — no error detail available" (this should not happen after Build 126)
+- **404**: Module/vertex not found — note it and skip
+- **503**: Service unavailable (e.g., EmbeddingServing not loaded) — note it, section marked "unavailable"
+- **Timeout**: Note timeout, section marked "timed out"
+
+NEVER skip a section silently. Every section must appear, even if just to say "data unavailable".
+
+---
+
+## Anti-Patterns (Do NOT Do These)
+
+1. **Don't grep for dependencies** — use the knowledge graph. Grep misses indirect deps.
+2. **Don't infer test existence** — `has_test` is real file detection, not inference. If it says false, the file doesn't exist (by naming convention).
+3. **Don't report stdlib coupling as a problem** — Enum/Map/String coupling is normal Elixir.
+4. **Don't report god modules without fan-in context** — a 200-complexity leaf module is a refactoring opportunity, not a risk.
+5. **Don't generate the report before the graph is built** — graph-dependent sections will all be empty/wrong.
+6. **Don't skip blast radius** — Section 6 is mandatory for every report. It's what makes risk concrete.
