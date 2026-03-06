@@ -140,7 +140,7 @@ defmodule Giulia.Tools.LookupFunction do
   end
 
   defp build_header(match) do
-    visibility = if match.type == :defp, do: "private", else: "public"
+    visibility = if match.type in [:defp, :defmacrop, :defguardp], do: "private", else: "public"
     """
     # Module: #{match.module}
     # Function: #{match.name}/#{match.arity} (#{visibility})

@@ -33,7 +33,7 @@ defmodule Giulia.AST.Processor do
         }
 
   @type module_info :: %{name: String.t(), line: non_neg_integer(), moduledoc: String.t() | nil}
-  @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp, line: non_neg_integer()}
+  @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp | :defmacro | :defmacrop | :defdelegate | :defguard | :defguardp, line: non_neg_integer()}
   @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
   @type type_info :: %{name: atom(), arity: non_neg_integer(), visibility: :type | :typep | :opaque, line: non_neg_integer(), definition: String.t()}
   @type spec_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
@@ -63,8 +63,12 @@ defmodule Giulia.AST.Processor do
   @spec parse_file(String.t()) :: parse_result()
   def parse_file(path) do
     with {:ok, source} <- File.read(path),
+         true <- String.valid?(source),
          {:ok, ast} <- Sourceror.parse_string(source) do
       {:ok, ast, source}
+    else
+      false -> {:error, :invalid_utf8}
+      error -> error
     end
   end
 

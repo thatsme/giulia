@@ -244,7 +244,7 @@ defmodule Giulia.Intelligence.Preflight do
 
     public_functions =
       Store.list_functions(project_path, module_name)
-      |> Enum.filter(fn f -> f.type == :def end)
+      |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
     public_count = length(public_functions)
     spec_count = length(specs)

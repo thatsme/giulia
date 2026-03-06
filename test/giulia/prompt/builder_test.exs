@@ -122,6 +122,7 @@ defmodule Giulia.Prompt.BuilderTest do
     # These require Registry to be running, but we can test that
     # the function is exported and accepts the right args
     test "function is exported" do
+      Code.ensure_loaded!(Builder)
       assert function_exported?(Builder, :build_tiered_prompt, 2)
     end
   end

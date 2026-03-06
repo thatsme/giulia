@@ -68,7 +68,7 @@ defmodule Giulia.Knowledge.Topology do
         dependents: Enum.sort(dependents)
       }}
     else
-      {:error, :not_found}
+      {:error, {:not_found, module}}
     end
   end
 

@@ -231,7 +231,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
         # Get public function names
         public_funcs =
           functions
-          |> Enum.filter(&(&1.type == :def))
+          |> Enum.filter(&(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
           |> Enum.map_join(", ", &"#{&1.name}/#{&1.arity}")
 
         text =
@@ -263,7 +263,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
       # Only embed public functions
       functions
-      |> Enum.filter(&(&1.type == :def))
+      |> Enum.filter(&(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
       |> Enum.map(fn func ->
         func_id = "#{module_name}.#{func.name}/#{func.arity}"
 

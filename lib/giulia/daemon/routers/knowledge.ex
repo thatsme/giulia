@@ -109,7 +109,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
             {:ok, result} ->
               send_json(conn, 200, Map.put(result, :module, module))
 
-            {:error, :not_found} ->
+            {:error, {:not_found, _}} ->
               send_json(conn, 404, %{error: "Module not found in graph", module: module})
           end
         else

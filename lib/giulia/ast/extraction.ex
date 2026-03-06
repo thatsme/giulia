@@ -156,15 +156,17 @@ defmodule Giulia.AST.Extraction do
     end
   end
 
-  # def/defp with when clause: def foo(x) when is_integer(x), do: ...
+  @def_types [:def, :defp, :defmacro, :defmacrop, :defdelegate, :defguard, :defguardp]
+
+  # def/defp/defmacro/defguard with when clause: def foo(x) when is_integer(x), do: ...
   defp extract_function_info({def_type, meta, [{:when, _, [{name, _, args} | _]} | _]})
-       when def_type in [:def, :defp] and is_atom(name) do
+       when def_type in @def_types and is_atom(name) do
     {:ok, build_function_info(name, args, def_type, meta)}
   end
 
-  # Standard def/defp: def foo(x), do: ...
+  # Standard def/defp/defmacro/defdelegate/defguard: def foo(x), do: ...
   defp extract_function_info({def_type, meta, [{name, _, args} | _]})
-       when def_type in [:def, :defp] and is_atom(name) do
+       when def_type in @def_types and is_atom(name) do
     {:ok, build_function_info(name, args, def_type, meta)}
   end
 

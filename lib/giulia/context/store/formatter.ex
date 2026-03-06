@@ -28,7 +28,7 @@ defmodule Giulia.Context.Store.Formatter do
 
     public_functions =
       functions
-      |> Enum.filter(&(&1.type == :def))
+      |> Enum.filter(&(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
       |> Enum.group_by(& &1.module)
 
     module_summaries =
@@ -71,8 +71,8 @@ defmodule Giulia.Context.Store.Formatter do
         callbacks = Store.list_callbacks(project_path, module_name)
         struct_info = Store.get_struct(project_path, module_name)
 
-        public_funcs = Enum.filter(functions, &(&1.type == :def))
-        private_funcs = Enum.filter(functions, &(&1.type == :defp))
+        public_funcs = Enum.filter(functions, &(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
+        private_funcs = Enum.filter(functions, &(&1.type in [:defp, :defmacrop, :defguardp]))
 
         moduledoc_section = case mod[:moduledoc] do
           nil -> ""

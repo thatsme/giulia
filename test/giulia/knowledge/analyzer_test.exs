@@ -152,7 +152,7 @@ defmodule Giulia.Knowledge.AnalyzerTest do
     end
 
     test "returns error for unknown vertex" do
-      assert {:error, :not_found} = Analyzer.centrality(star_graph(), "NonExistent")
+      assert {:error, {:not_found, "NonExistent"}} = Analyzer.centrality(star_graph(), "NonExistent")
     end
 
     test "middle node in linear graph" do
