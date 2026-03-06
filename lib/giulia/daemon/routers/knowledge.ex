@@ -204,16 +204,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/dead_code" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_dead_code(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "dead_code failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_dead_code(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "dead_code failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "dead_code crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "dead_code crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -227,16 +229,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/cycles" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_cycles(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "cycles failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_cycles(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "cycles failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "cycles crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "cycles crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -250,16 +254,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/god_modules" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_god_modules(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "god_modules failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_god_modules(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "god_modules failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "god_modules crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "god_modules crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -273,16 +279,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/orphan_specs" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_orphan_specs(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "orphan_specs failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_orphan_specs(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "orphan_specs failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "orphan_specs crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "orphan_specs crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -296,16 +304,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/fan_in_out" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_fan_in_out(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "fan_in_out failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_fan_in_out(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "fan_in_out failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "fan_in_out crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "fan_in_out crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -319,16 +329,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/coupling" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.find_coupling(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "coupling failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.find_coupling(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "coupling failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "coupling crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "coupling crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
@@ -362,16 +374,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/change_risk" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
-        case Giulia.Knowledge.Store.change_risk_score(project_path) do
-          {:ok, result} -> send_json(conn, 200, result)
-          {:error, reason} -> send_json(conn, 500, %{error: "change_risk failed", detail: inspect(reason)})
-        end
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          case Giulia.Knowledge.Store.change_risk_score(project_path) do
+            {:ok, result} -> send_json(conn, 200, result)
+            {:error, reason} -> send_json(conn, 500, %{error: "change_risk failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "change_risk crashed", detail: Exception.message(e)})
     end
-  rescue
-    e -> send_json(conn, 500, %{error: "change_risk crashed", detail: Exception.message(e)})
   end
 
   # -------------------------------------------------------------------
