@@ -24,7 +24,10 @@ defmodule Giulia.Knowledge.Insights do
         specs = data[:specs] || []
         functions = data[:functions] || []
         modules = data[:modules] || []
-        module_name = List.first(modules)[:name] || "Unknown"
+        module_name = case modules do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
 
         # Build set of defined {function_name, arity} pairs
         defined_funcs =
@@ -366,7 +369,7 @@ defmodule Giulia.Knowledge.Insights do
                 Macro.prewalk(ast, [], fn
                   # %Module.Name{...} — struct construction or pattern match
                   {:%, _meta, [{:__aliases__, _, parts}, {:%{}, _, _}]} = node, refs ->
-                    raw_name = Enum.map_join(parts, ".", &to_string/1)
+                    raw_name = Enum.map_join(parts, ".", &safe_part_to_string/1)
                     resolved = Map.get(alias_map, raw_name, raw_name)
                     if MapSet.member?(struct_names, resolved) do
                       {node, [{resolved, file_module} | refs]}
@@ -717,4 +720,10 @@ defmodule Giulia.Knowledge.Insights do
       _ -> :error
     end
   end
+
+  # Safely convert AST alias parts to strings.
+  defp safe_part_to_string(part) when is_atom(part), do: Atom.to_string(part)
+  defp safe_part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
+  defp safe_part_to_string({atom, _, _}) when is_atom(atom), do: Atom.to_string(atom)
+  defp safe_part_to_string(other), do: inspect(other)
 end

@@ -392,8 +392,10 @@ defmodule Giulia.Knowledge.Metrics do
     # Walk all source files and collect {caller_module, callee_module, function_name} tuples
     call_pairs =
       Enum.reduce(all_asts, [], fn {path, data}, acc ->
-        modules = data[:modules] || []
-        caller_module = List.first(modules)[:name]
+        caller_module = case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> nil
+        end
 
         if caller_module do
           source = case File.read(path) do
@@ -408,7 +410,7 @@ defmodule Giulia.Knowledge.Metrics do
                   # Remote call: Module.func(args)
                   {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                   when is_atom(func_name) and is_list(args) ->
-                    callee = Enum.map_join(parts, ".", &to_string/1)
+                    callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
                     if callee != caller_module do
                       {node, [{caller_module, callee, to_string(func_name)} | list]}
                     else
@@ -499,8 +501,10 @@ defmodule Giulia.Knowledge.Metrics do
   @spec collect_remote_calls(map()) :: [{String.t(), String.t(), String.t()}]
   def collect_remote_calls(all_asts) do
     Enum.reduce(all_asts, [], fn {path, data}, acc ->
-      modules = data[:modules] || []
-      caller_module = List.first(modules)[:name]
+      caller_module = case data[:modules] do
+        [%{name: name} | _] -> name
+        _ -> nil
+      end
 
       if caller_module do
         source = case File.read(path) do
@@ -514,7 +518,7 @@ defmodule Giulia.Knowledge.Metrics do
               Macro.prewalk(ast, acc, fn
                 {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                 when is_atom(func_name) and is_list(args) ->
-                  callee = Enum.map_join(parts, ".", &to_string/1)
+                  callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
                   if callee != caller_module do
                     {node, [{caller_module, callee, to_string(func_name)} | list]}
                   else
@@ -588,8 +592,10 @@ defmodule Giulia.Knowledge.Metrics do
   defp build_coupling_map(all_asts) do
     call_pairs =
       Enum.reduce(all_asts, [], fn {path, data}, acc ->
-        modules = data[:modules] || []
-        caller = List.first(modules)[:name]
+        caller = case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> nil
+        end
 
         if caller do
           source = case File.read(path) do
@@ -603,7 +609,7 @@ defmodule Giulia.Knowledge.Metrics do
                 Macro.prewalk(ast, acc, fn
                   {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                   when is_atom(func_name) and is_list(args) ->
-                    callee = Enum.map_join(parts, ".", &to_string/1)
+                    callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
                     if callee != caller do
                       {node, [{caller, callee} | list]}
                     else
@@ -640,8 +646,10 @@ defmodule Giulia.Knowledge.Metrics do
   # Walk all source files to collect function calls: remote (Module.func) and local (func)
   defp collect_all_calls(all_asts) do
     Enum.reduce(all_asts, MapSet.new(), fn {path, data}, acc ->
-      modules = data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case data[:modules] do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       # Build alias map: "Schema" → "Realm.Compute.Schema"
       alias_map =
@@ -665,7 +673,7 @@ defmodule Giulia.Knowledge.Metrics do
               # Remote call: Module.func(args) — resolve aliases
               {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, set
               when is_atom(func_name) and is_list(args) ->
-                raw_mod = Enum.map_join(parts, ".", &to_string/1)
+                raw_mod = Enum.map_join(parts, ".", &safe_part_to_string/1)
                 mod = Map.get(alias_map, raw_mod, raw_mod)
                 {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
 
@@ -711,4 +719,9 @@ defmodule Giulia.Knowledge.Metrics do
       _ -> false
     end)
   end
+
+  defp safe_part_to_string(part) when is_atom(part), do: Atom.to_string(part)
+  defp safe_part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
+  defp safe_part_to_string({atom, _, _}) when is_atom(atom), do: Atom.to_string(atom)
+  defp safe_part_to_string(other), do: inspect(other)
 end

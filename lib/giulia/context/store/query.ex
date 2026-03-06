@@ -99,7 +99,10 @@ defmodule Giulia.Context.Store.Query do
     |> Enum.flat_map(fn {path, ast_data} ->
       functions = ast_data[:functions] || []
       modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case modules do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(functions, fn func ->
@@ -146,7 +149,10 @@ defmodule Giulia.Context.Store.Query do
     |> Enum.flat_map(fn {path, ast_data} ->
       types = ast_data[:types] || []
       modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case modules do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(types, fn type ->
@@ -167,7 +173,10 @@ defmodule Giulia.Context.Store.Query do
     |> Enum.flat_map(fn {path, ast_data} ->
       specs = ast_data[:specs] || []
       modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case modules do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(specs, fn spec ->
@@ -203,7 +212,10 @@ defmodule Giulia.Context.Store.Query do
     |> Enum.flat_map(fn {path, ast_data} ->
       callbacks = ast_data[:callbacks] || []
       modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case modules do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(callbacks, fn cb ->
@@ -264,7 +276,10 @@ defmodule Giulia.Context.Store.Query do
     |> Enum.flat_map(fn {path, ast_data} ->
       docs = ast_data[:docs] || []
       modules = ast_data[:modules] || []
-      module_name = List.first(modules)[:name] || "Unknown"
+      module_name = case modules do
+        [%{name: name} | _] -> name
+        _ -> "Unknown"
+      end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(docs, fn doc ->
