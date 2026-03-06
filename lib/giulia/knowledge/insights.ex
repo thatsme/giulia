@@ -258,7 +258,8 @@ defmodule Giulia.Knowledge.Insights do
         has_test =
           case Giulia.Context.Store.find_module(project_path, mod) do
             {:ok, %{file: file}} ->
-              test_file = Giulia.Tools.RunTests.suggest_test_file(file)
+              rel_file = Path.relative_to(file, project_path)
+              test_file = Giulia.Tools.RunTests.suggest_test_file(rel_file)
               full_path = Path.join(project_path, test_file)
               File.exists?(full_path)
 
@@ -464,7 +465,8 @@ defmodule Giulia.Knowledge.Insights do
   defp module_to_test_path(module_name, project_path) do
     case Giulia.Context.Store.find_module(project_path, module_name) do
       {:ok, %{file: source_file}} ->
-        test_file = Giulia.Tools.RunTests.suggest_test_file(source_file)
+        rel_file = Path.relative_to(source_file, project_path)
+        test_file = Giulia.Tools.RunTests.suggest_test_file(rel_file)
         full_path = Path.join(project_path, test_file)
         if File.exists?(full_path), do: test_file, else: nil
       _ ->
