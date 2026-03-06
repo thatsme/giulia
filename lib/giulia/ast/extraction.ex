@@ -58,7 +58,7 @@ defmodule Giulia.AST.Extraction do
   defp extract_module_info({:defmodule, meta, [{:__aliases__, _, parts} | rest]}) when is_list(parts) do
     moduledoc = extract_moduledoc_from_body(rest)
     {:ok, %{
-      name: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      name: parts |> Enum.map(&safe_part_to_string/1) |> Enum.join("."),
       line: Keyword.get(meta, :line, 0),
       moduledoc: moduledoc
     }}
@@ -226,12 +226,12 @@ defmodule Giulia.AST.Extraction do
   # Multi-module: alias Giulia.Core.{ProjectContext, PathMapper, PathSandbox}
   defp extract_import_info({directive, meta, [{{:., _, [{:__aliases__, _, base_parts}, :{}]}, _, children}]})
        when directive in [:import, :alias, :use, :require] do
-    base = base_parts |> Enum.map(&to_string/1) |> Enum.join(".")
+    base = base_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
     line = Keyword.get(meta, :line, 0)
 
     entries = Enum.map(children, fn
       {:__aliases__, _, parts} when is_list(parts) ->
-        child = parts |> Enum.map(&to_string/1) |> Enum.join(".")
+        child = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
         %{type: directive, module: "#{base}.#{child}", line: line}
       _ ->
         nil
@@ -246,7 +246,7 @@ defmodule Giulia.AST.Extraction do
        when is_list(parts) do
     {:ok, %{
       type: :use,
-      module: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      module: parts |> Enum.map(&safe_part_to_string/1) |> Enum.join("."),
       line: Keyword.get(meta, :line, 0)
     }}
   end
@@ -266,7 +266,7 @@ defmodule Giulia.AST.Extraction do
        when directive in [:import, :alias, :use, :require] and is_list(parts) do
     {:ok, %{
       type: directive,
-      module: parts |> Enum.map(&to_string/1) |> Enum.join("."),
+      module: parts |> Enum.map(&safe_part_to_string/1) |> Enum.join("."),
       line: Keyword.get(meta, :line, 0)
     }}
   end
@@ -505,7 +505,7 @@ defmodule Giulia.AST.Extraction do
         case node do
           # Track module context
           {:defmodule, _, [{:__aliases__, _, parts} | _]} ->
-            module_name = parts |> Enum.map(&to_string/1) |> Enum.join(".")
+            module_name = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
             {node, {module_name, acc}}
 
           # defstruct with keyword list (standard AST)
@@ -660,4 +660,18 @@ defmodule Giulia.AST.Extraction do
       _, _ -> nil
     end
   end
+
+  # ============================================================================
+  # Private Helpers
+  # ============================================================================
+
+  # Safely convert AST alias parts to strings.
+  # Handles {:__MODULE__, meta, nil} and other compile-time macros.
+  defp safe_part_to_string(part) when is_atom(part), do: Atom.to_string(part)
+  defp safe_part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
+  defp safe_part_to_string({:__ENV__, _, _}), do: "__ENV__"
+  defp safe_part_to_string({:__DIR__, _, _}), do: "__DIR__"
+  defp safe_part_to_string({:__CALLER__, _, _}), do: "__CALLER__"
+  defp safe_part_to_string({atom, _, _}) when is_atom(atom), do: Atom.to_string(atom)
+  defp safe_part_to_string(other), do: inspect(other)
 end

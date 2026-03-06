@@ -162,8 +162,14 @@ defmodule Giulia.Knowledge.Store do
     store_pid = self()
 
     Task.start(fn ->
-      graph = Builder.build_graph(ast_data)
-      GenServer.cast(store_pid, {:graph_ready, project_path, graph})
+      try do
+        graph = Builder.build_graph(ast_data)
+        GenServer.cast(store_pid, {:graph_ready, project_path, graph})
+      rescue
+        e ->
+          Logger.error("Knowledge graph build failed: #{Exception.message(e)}")
+          GenServer.cast(store_pid, {:graph_ready, project_path, Graph.new(type: :directed)})
+      end
     end)
 
     {:noreply, state}
@@ -228,7 +234,15 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_call({:rebuild, project_path, ast_data}, _from, state) do
-    graph = Builder.build_graph(ast_data)
+    graph =
+      try do
+        Builder.build_graph(ast_data)
+      rescue
+        e ->
+          Logger.error("Knowledge graph build failed: #{Exception.message(e)}")
+          Graph.new(type: :directed)
+      end
+
     ets_put_graph(project_path, graph)
     ets_clear_metrics(project_path)
     {:reply, :ok, state}

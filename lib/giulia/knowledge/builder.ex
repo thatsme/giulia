@@ -382,8 +382,12 @@ defmodule Giulia.Knowledge.Builder do
     parts
     |> Enum.map(fn
       {:__MODULE__, _meta, _} -> caller_module
+      {:__ENV__, _meta, _} -> "__ENV__"
+      {:__DIR__, _meta, _} -> "__DIR__"
+      {:__CALLER__, _meta, _} -> "__CALLER__"
       atom when is_atom(atom) -> Atom.to_string(atom)
-      other -> to_string(other)
+      {atom, _, _} when is_atom(atom) -> Atom.to_string(atom)
+      other -> inspect(other)
     end)
     |> then(fn resolved ->
       # If __MODULE__ was first, it already contains dots (e.g. "Giulia.Core.Foo"),
