@@ -70,7 +70,9 @@ defmodule Giulia.Core.PathMapper do
   Smart path resolution - the main entry point.
   Use this for all path operations in the daemon.
   """
-  @spec resolve_path(String.t()) :: String.t()
+  @spec resolve_path(String.t() | nil) :: String.t() | nil
+  def resolve_path(nil), do: nil
+
   def resolve_path(path) do
     if in_container?() do
       to_container(path)
@@ -176,6 +178,8 @@ defmodule Giulia.Core.PathMapper do
       path -> normalize_slashes(path)
     end
   end
+
+  defp normalize_slashes(nil), do: nil
 
   defp normalize_slashes(path) do
     path

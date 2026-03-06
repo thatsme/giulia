@@ -21,7 +21,7 @@ defmodule Giulia.Daemon.Endpoint do
   plug :fetch_query_params
   plug Plug.Parsers,
     parsers: [:json],
-    pass: ["application/json"],
+    pass: ["application/json", "text/*", "multipart/*"],
     json_decoder: Jason
   plug :dispatch
 
@@ -148,7 +148,12 @@ defmodule Giulia.Daemon.Endpoint do
 
   # List projects
   get "/api/projects" do
-    projects = Giulia.Core.ContextManager.list_projects()
+    projects =
+      Giulia.Core.ContextManager.list_projects()
+      |> Enum.map(fn project ->
+        Map.update(project, :pid, nil, &inspect/1)
+      end)
+
     send_json(conn, 200, %{projects: projects})
   end
 

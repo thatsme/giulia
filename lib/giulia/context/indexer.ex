@@ -370,6 +370,8 @@ defmodule Giulia.Context.Indexer do
     end
   end
 
+  defp valid_project_root?(nil), do: false
+
   defp valid_project_root?(path) do
     Enum.any?(@project_markers, fn marker ->
       Path.join(path, marker) |> File.exists?()
