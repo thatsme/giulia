@@ -6,10 +6,17 @@ defmodule Giulia.Runtime.Collector do
   results in an ETS ring buffer. Enables trend detection, alert
   generation, and temporal queries ("memory grew 40% in 10 minutes").
 
-  Default: 20 entries at 30s interval = 10 minutes of high-resolution data.
-  Configurable up to 600 entries (5 hours).
+  Default: 20 entries at 60s interval = 20 minutes of high-resolution data.
+  Configurable up to 600 entries (10 hours).
 
   Each entry: `{timestamp, pulse_map, top_processes_snapshot}`
+
+  ## Performance
+
+  `pulse/1` is cheap (5 BIFs). `top_processes/2` is expensive (iterates
+  every PID). To avoid burning CPU during idle periods, top_processes is
+  only collected every `@heavy_tick_interval` ticks (~4 minutes).
+  On-demand queries via `/api/runtime/top_processes` are unaffected.
   """
 
   use GenServer
@@ -18,9 +25,12 @@ defmodule Giulia.Runtime.Collector do
 
   require Logger
 
-  @default_interval 30_000
+  @default_interval 60_000
   @default_buffer_size 20
   @ets_table :giulia_runtime_snapshots
+
+  # Collect top_processes every Nth tick (expensive: iterates all PIDs)
+  @heavy_tick_interval 4
 
   # Alert thresholds
   @high_memory_mb 512
@@ -147,20 +157,25 @@ defmodule Giulia.Runtime.Collector do
 
   defp do_collect(state) do
     node_ref = state.node
+    heavy_tick? = rem(state.tick_count, @heavy_tick_interval) == 0
 
     case Inspector.pulse(node_ref) do
       {:ok, pulse} ->
-        # Also grab top processes
+        # top_processes is expensive (iterates all PIDs) — only collect on heavy ticks
         top_procs =
-          case Inspector.top_processes(node_ref, :reductions) do
-            {:ok, procs} -> procs
-            _ -> []
+          if heavy_tick? do
+            case Inspector.top_processes(node_ref, :reductions) do
+              {:ok, procs} -> Enum.take(procs, 5)
+              _ -> []
+            end
+          else
+            []
           end
 
         snapshot = %{
           timestamp: pulse.timestamp,
           pulse: pulse,
-          top_processes: Enum.take(top_procs, 5)
+          top_processes: top_procs
         }
 
         node_key = resolve_key(node_ref)
@@ -242,7 +257,12 @@ defmodule Giulia.Runtime.Collector do
       end
 
     # Message queue alert (check top processes for queue buildup)
-    top_procs = latest[:top_processes] || []
+    # Find the most recent snapshot that has top_processes data (heavy tick)
+    top_procs =
+      snapshots
+      |> Enum.reverse()
+      |> Enum.find_value([], fn s -> if s[:top_processes] != [], do: s[:top_processes] end)
+
     queue_offenders =
       top_procs
       |> Enum.filter(fn p -> (p[:message_queue] || p.message_queue || 0) > @high_message_queue end)
