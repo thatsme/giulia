@@ -12,6 +12,7 @@ defmodule Giulia.Inference.ContextBuilder.Intervention do
                        list_files lookup_function get_function get_context cycle_check)
 
   @doc "Build the main intervention message (dispatches to read-only or write variant)."
+  @spec build_intervention_message(map(), String.t() | nil, String.t() | nil) :: String.t()
   def build_intervention_message(state, target_file, fresh_content) do
     case state.last_action do
       {tool_name, _params} when tool_name in @read_only_tools ->
@@ -23,6 +24,7 @@ defmodule Giulia.Inference.ContextBuilder.Intervention do
   end
 
   @doc "Build test failure intervention."
+  @spec build_test_failure_intervention(map(), map()) :: String.t()
   def build_test_failure_intervention(test_params, state) do
     test_file = test_params["file"] || test_params[:file]
     opts = Helpers.build_tool_opts(state)
@@ -68,6 +70,7 @@ defmodule Giulia.Inference.ContextBuilder.Intervention do
   end
 
   @doc "Build intervention for read-only tool loops."
+  @spec build_readonly_intervention(String.t(), map()) :: String.t()
   def build_readonly_intervention(tool_name, state) do
     last_result =
       case state.action_history do
@@ -92,6 +95,7 @@ defmodule Giulia.Inference.ContextBuilder.Intervention do
   end
 
   @doc "Build intervention for write-tool loops."
+  @spec build_write_intervention(map(), String.t() | nil, String.t() | nil) :: String.t()
   def build_write_intervention(state, target_file, fresh_content) do
     error_summary =
       state.recent_errors

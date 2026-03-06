@@ -26,6 +26,11 @@ defmodule Giulia.Inference.ResponseParser do
     - `{:text, content}` — plain text (no tool call found)
     - `{:error, reason}` — parse failure
   """
+  @spec parse(map()) ::
+          {:tool_call, String.t(), map()}
+          | {:multi_tool_call, String.t(), map(), [map()]}
+          | {:text, String.t()}
+          | {:error, term()}
   def parse(%{content: nil}), do: {:error, :empty_response}
 
   def parse(%{tool_calls: [tc | _]}) do
@@ -65,6 +70,8 @@ defmodule Giulia.Inference.ResponseParser do
   Parse a single <action> block from hybrid format content.
   Falls back to JSON parsing on failure.
   """
+  @spec parse_single_action(String.t()) ::
+          {:tool_call, String.t(), map()} | {:text, String.t()} | {:error, term()}
   def parse_single_action(content) do
     case Parser.parse_response(content) do
       {:ok, %{"tool" => tool, "parameters" => params}} ->
@@ -80,6 +87,8 @@ defmodule Giulia.Inference.ResponseParser do
   @doc """
   JSON-only parsing path for model responses.
   """
+  @spec parse_json(String.t()) ::
+          {:tool_call, String.t(), map()} | {:text, String.t()} | {:error, term()}
   def parse_json(content) do
     case StructuredOutput.extract_json(content) do
       {:ok, json} ->
@@ -116,6 +125,7 @@ defmodule Giulia.Inference.ResponseParser do
   @doc """
   Clean up model output that contains internal tokens or malformed data.
   """
+  @spec clean_output(String.t()) :: String.t()
   def clean_output(text) do
     text
     |> String.replace(~r/<\|im_start\|>.*?(<\|im_end\|>)?/s, "")
@@ -133,6 +143,7 @@ defmodule Giulia.Inference.ResponseParser do
   @doc """
   Extract context around a JSON parse error position.
   """
+  @spec extract_error_context(String.t(), non_neg_integer()) :: String.t()
   def extract_error_context(json, position) do
     start_pos = max(0, position - 30)
     end_pos = min(String.length(json), position + 30)

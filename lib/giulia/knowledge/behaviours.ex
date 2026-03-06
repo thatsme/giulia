@@ -14,6 +14,8 @@ defmodule Giulia.Knowledge.Behaviours do
   # Behaviour Integrity Check
   # ============================================================================
 
+  @spec behaviour_integrity(Graph.t(), String.t(), String.t()) ::
+          {:ok, :consistent} | {:error, :not_found} | {:error, [map()]}
   def behaviour_integrity(graph, behaviour, project_path) do
     if not Graph.has_vertex?(graph, behaviour) do
       {:error, :not_found}
@@ -110,6 +112,7 @@ defmodule Giulia.Knowledge.Behaviours do
     end
   end
 
+  @spec all_behaviours(Graph.t(), String.t()) :: {:ok, :consistent} | {:error, map()}
   def all_behaviours(graph, project_path) do
     # Find behaviour modules from ETS (modules that declare @callback).
     behaviour_modules =
@@ -147,6 +150,7 @@ defmodule Giulia.Knowledge.Behaviours do
   Returns a MapSet of `{implementer_module, callback_name, callback_arity}` tuples.
   Used by dead code detection to exclude behaviour callbacks from dead code reports.
   """
+  @spec collect_behaviour_callbacks(Graph.t(), String.t()) :: MapSet.t()
   def collect_behaviour_callbacks(graph, project_path) do
     Graph.edges(graph)
     |> Enum.filter(fn edge -> edge.label == :implements end)

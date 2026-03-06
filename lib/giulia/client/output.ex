@@ -5,6 +5,7 @@ defmodule Giulia.Client.Output do
 
   alias Giulia.Client.HTTP
 
+  @spec print_banner() :: :ok
   def print_banner do
     client_ver = Giulia.Version.short_version()
 
@@ -59,6 +60,7 @@ defmodule Giulia.Client.Output do
     _ -> "not available"
   end
 
+  @spec print_help() :: :ok
   def print_help do
     IO.puts("""
 
@@ -111,6 +113,7 @@ defmodule Giulia.Client.Output do
     """)
   end
 
+  @spec print_status(map()) :: :ok
   def print_status(status) do
     IO.puts("""
 
@@ -124,6 +127,7 @@ defmodule Giulia.Client.Output do
     """)
   end
 
+  @spec print_projects([map()] | term()) :: :ok
   def print_projects([]) do
     info("No active projects. Use `giulia /init` in a project directory.")
   end
@@ -148,11 +152,16 @@ defmodule Giulia.Client.Output do
   end
   defp format_uptime(_), do: "unknown"
 
+  @spec info(String.t()) :: :ok
   def info(msg), do: IO.puts("\e[36m#{msg}\e[0m")
+  @spec success(String.t()) :: :ok
   def success(msg), do: IO.puts("\e[32m+ #{msg}\e[0m")
+  @spec warning(String.t()) :: :ok
   def warning(msg), do: IO.puts("\e[33m! #{msg}\e[0m")
+  @spec error(String.t()) :: :ok
   def error(msg), do: IO.puts("\e[31m- #{msg}\e[0m")
 
+  @spec confirm?(String.t()) :: boolean()
   def confirm?(prompt) do
     response = IO.gets("#{prompt} [y/N] ") |> String.trim() |> String.downcase()
     response in ["y", "yes"]

@@ -33,6 +33,7 @@ defmodule Giulia.Knowledge.Metrics do
   # Heatmap (Composite module health score)
   # ============================================================================
 
+  @spec heatmap(Graph.t(), String.t()) :: {:ok, map()}
   def heatmap(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
     coupling_map = build_coupling_map(all_asts)
@@ -144,6 +145,7 @@ defmodule Giulia.Knowledge.Metrics do
   # Change Risk Score
   # ============================================================================
 
+  @spec change_risk(Graph.t(), String.t()) :: {:ok, map()}
   def change_risk(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
     coupling_map = build_coupling_map(all_asts)
@@ -249,6 +251,7 @@ defmodule Giulia.Knowledge.Metrics do
   # God Module Detection
   # ============================================================================
 
+  @spec god_modules(Graph.t(), String.t()) :: {:ok, map()}
   def god_modules(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
     god_modules_impl(graph, project_path, all_asts)
@@ -311,6 +314,7 @@ defmodule Giulia.Knowledge.Metrics do
   # Dead Code Detection
   # ============================================================================
 
+  @spec dead_code(Graph.t(), String.t()) :: {:ok, map()}
   def dead_code(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
     dead_code_with_asts(graph, project_path, all_asts)
@@ -321,6 +325,7 @@ defmodule Giulia.Knowledge.Metrics do
   Same as `dead_code/2` but avoids a redundant `all_asts` fetch when called
   from `compute_cached_metrics/2`.
   """
+  @spec dead_code_with_asts(Graph.t(), String.t(), map()) :: {:ok, map()}
   def dead_code_with_asts(graph, project_path, all_asts) do
     # Step 1: Get all defined functions
     all_functions = Giulia.Context.Store.list_functions(project_path, nil)
@@ -380,6 +385,7 @@ defmodule Giulia.Knowledge.Metrics do
   # Coupling Score (Function-level)
   # ============================================================================
 
+  @spec coupling(String.t()) :: {:ok, map()}
   def coupling(project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 
@@ -457,6 +463,7 @@ defmodule Giulia.Knowledge.Metrics do
   Knowledge.Store in a background Task after graph rebuild, results cached
   for <10ms reads.
   """
+  @spec compute_cached_metrics(Graph.t(), String.t()) :: map()
   def compute_cached_metrics(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 
@@ -489,6 +496,7 @@ defmodule Giulia.Knowledge.Metrics do
   `build_coupling_map_from_calls/1` derive their output from these triples,
   eliminating the double-parse that existed before Build 99.
   """
+  @spec collect_remote_calls(map()) :: [{String.t(), String.t(), String.t()}]
   def collect_remote_calls(all_asts) do
     Enum.reduce(all_asts, [], fn {path, data}, acc ->
       modules = data[:modules] || []
@@ -532,6 +540,7 @@ defmodule Giulia.Knowledge.Metrics do
   Derive coupling pairs from pre-collected call triples.
   Same output as `coupling/1` but without re-parsing source files.
   """
+  @spec coupling_from_calls([{String.t(), String.t(), String.t()}]) :: {:ok, map()}
   def coupling_from_calls(call_triples) do
     pairs =
       call_triples
@@ -557,6 +566,7 @@ defmodule Giulia.Knowledge.Metrics do
   Derive coupling map from pre-collected call triples.
   Same output as `build_coupling_map/1` but without re-parsing source files.
   """
+  @spec build_coupling_map_from_calls([{String.t(), String.t(), String.t()}]) :: map()
   def build_coupling_map_from_calls(call_triples) do
     call_triples
     |> Enum.group_by(fn {caller, _callee, _func} -> caller end)

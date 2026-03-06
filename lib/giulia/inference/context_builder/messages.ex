@@ -11,6 +11,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
   alias Giulia.Prompt.Builder
 
   @doc "Build the initial message list for a new inference."
+  @spec build_initial_messages(String.t(), map(), module()) :: [map()]
   def build_initial_messages(prompt, state, provider_module) do
     constitution = Helpers.get_constitution(state.project_pid)
     minimal = provider_module == Giulia.Provider.LMStudio
@@ -37,6 +38,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
   end
 
   @doc "Inject distilled context into messages (after first iteration)."
+  @spec inject_distilled_context([map()], map()) :: [map()]
   def inject_distilled_context(messages, state) do
     if state.action_history == [] do
       messages
@@ -54,6 +56,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
   end
 
   @doc "Build the context reminder string."
+  @spec build_context_reminder(map()) :: String.t()
   def build_context_reminder(state) do
     recent_actions =
       state.action_history
@@ -83,6 +86,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
   end
 
   @doc "Count recent consecutive think calls."
+  @spec count_recent_thinks([tuple()]) :: non_neg_integer()
   def count_recent_thinks(action_history) do
     action_history
     |> Enum.take_while(fn {tool, _, _} -> tool == "think" end)

@@ -56,6 +56,7 @@ defmodule Giulia.Inference.ContextBuilder do
   @write_tools ["write_file", "edit_file", "write_function", "patch_function"]
 
   @doc "Build test hints for BUILD GREEN observations."
+  @spec build_test_hint(map()) :: String.t()
   def build_test_hint(state) do
     target_file = Helpers.extract_target_file(state)
     direct_hint = build_direct_test_hint(target_file, state)
@@ -92,6 +93,7 @@ defmodule Giulia.Inference.ContextBuilder do
   end
 
   @doc "Build graph-driven regression hint."
+  @spec build_regression_hint(map()) :: String.t()
   def build_regression_hint(state) do
     case state.last_action do
       {tool_name, params}
@@ -122,6 +124,7 @@ defmodule Giulia.Inference.ContextBuilder do
   end
 
   @doc "Assess hub risk for a write tool. Returns warning string or nil."
+  @spec assess_hub_risk(String.t(), map(), String.t()) :: String.t() | nil
   def assess_hub_risk(tool_name, params, project_path)
       when tool_name in @write_tools do
     module_name = resolve_module_from_params(tool_name, params, project_path)
@@ -153,6 +156,7 @@ defmodule Giulia.Inference.ContextBuilder do
   def assess_hub_risk(_tool_name, _params, _project_path), do: nil
 
   @doc "Resolve the module name from tool params."
+  @spec resolve_module_from_params(String.t(), map(), String.t()) :: String.t() | nil
   def resolve_module_from_params("edit_file", params, project_path) do
     file = params["file"] || params[:file]
     module_from_file_path(file, project_path)

@@ -8,6 +8,7 @@ defmodule Giulia.Daemon.Helpers do
   import Plug.Conn
 
   @doc "Send a JSON response with the given status code and data."
+  @spec send_json(Plug.Conn.t(), integer(), term()) :: Plug.Conn.t()
   def send_json(conn, status, data) do
     conn
     |> put_resp_content_type("application/json")
@@ -15,6 +16,7 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc "Resolve project path from ?path= query param. Returns nil if missing."
+  @spec resolve_project_path(Plug.Conn.t()) :: String.t() | nil
   def resolve_project_path(conn) do
     case conn.query_params["path"] do
       nil -> nil
@@ -23,6 +25,7 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc "Parse ?node= param for runtime endpoints, default to :local."
+  @spec parse_node_param(Plug.Conn.t()) :: atom()
   def parse_node_param(conn) do
     case conn.query_params["node"] do
       nil -> :local
@@ -32,6 +35,7 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc "Format a behaviour fracture map for JSON output."
+  @spec format_fracture(map()) :: map()
   def format_fracture(frac) do
     fmt = fn list -> Enum.map(list, fn {name, arity} -> "#{name}/#{arity}" end) end
 
@@ -45,6 +49,7 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc "Parse an integer query param with a default fallback."
+  @spec parse_int_param(String.t() | nil, integer()) :: integer()
   def parse_int_param(nil, default), do: default
 
   def parse_int_param(str, default) do
@@ -55,6 +60,7 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc "Parse a float query param with a default fallback."
+  @spec parse_float_param(String.t() | nil, float()) :: float()
   def parse_float_param(nil, default), do: default
 
   def parse_float_param(str, default) do

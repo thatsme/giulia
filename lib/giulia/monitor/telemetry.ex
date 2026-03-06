@@ -34,6 +34,7 @@ defmodule Giulia.Monitor.Telemetry do
   ]
 
   @doc "Attach all telemetry handlers. Call once after supervisor starts."
+  @spec attach() :: :ok
   def attach do
     :telemetry.attach_many("giulia-monitor-inference", @inference_events, &handle_inference_event/4, nil)
     :telemetry.attach_many("giulia-monitor-http", @http_events, &handle_http_event/4, nil)

@@ -7,21 +7,25 @@ defmodule Giulia.Inference.Events do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
   @doc "Subscribe to events for a specific request"
+  @spec subscribe(String.t()) :: :ok
   def subscribe(request_id) do
     GenServer.call(__MODULE__, {:subscribe, request_id, self()})
   end
 
   @doc "Unsubscribe from events"
+  @spec unsubscribe(String.t()) :: :ok
   def unsubscribe(request_id) do
     GenServer.cast(__MODULE__, {:unsubscribe, request_id, self()})
   end
 
   @doc "Broadcast an event to all subscribers"
+  @spec broadcast(String.t(), map()) :: :ok
   def broadcast(request_id, event) do
     GenServer.cast(__MODULE__, {:broadcast, request_id, event})
   end
@@ -29,6 +33,7 @@ defmodule Giulia.Inference.Events do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     {:ok, %{subscriptions: %{}}}
   end

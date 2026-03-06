@@ -14,6 +14,7 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
   # ============================================================================
 
   @doc "Stage a write tool call in the transaction buffer instead of writing to disk."
+  @spec execute_staged(String.t(), map(), map(), map()) :: {:next, :step, map()}
   def execute_staged(tool_name, params, response, state) do
     # BROADCAST
     if state.request_id do
@@ -103,6 +104,7 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
   # ============================================================================
 
   @doc "Read a file, returning staged content if it exists in the transaction buffer."
+  @spec execute_read_with_overlay(map(), map(), map(), (String.t(), map(), map(), map() -> tuple())) :: {:next, :step, map()} | tuple()
   def execute_read_with_overlay(params, response, state, execute_normal_fn) do
     path = params["path"] || params[:path] || params["file"] || params[:file]
     resolved_path = ContextBuilder.resolve_tool_path(path, state)
@@ -161,6 +163,7 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
   # ============================================================================
 
   @doc "List all files currently in the transaction staging buffer."
+  @spec execute_get_staged_files(map(), map()) :: {:next, :step, map()}
   def execute_get_staged_files(response, state) do
     result = {:ok, Transaction.format_staged_files(state.transaction)}
 

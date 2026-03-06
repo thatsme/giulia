@@ -23,6 +23,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Returns true if edit_file is attempted right after a failed patch_function."
+  @spec edit_file_after_patch_failure?(String.t(), map()) :: boolean()
   def edit_file_after_patch_failure?("edit_file", %{
         action_history: [{last_tool, _, {:error, _}} | _]
       })
@@ -33,6 +34,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   def edit_file_after_patch_failure?(_, _), do: false
 
   @doc "Handle a blocked edit_file attempt with guidance to use read_file + patch_function."
+  @spec handle_blocked_edit_file(map(), map(), map()) :: {:next, :step, map()}
   def handle_blocked_edit_file(params, response, state) do
     _file = params["file"] || params["path"] || "the target file"
     Logger.warning("BLOCKED: edit_file after patch_function failure — forcing read_file reset")
@@ -70,6 +72,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Validate tool parameters before execution."
+  @spec preflight_check(String.t(), map()) :: :ok | {:error, :missing_code}
   def preflight_check(tool_name, params)
       when tool_name in ["patch_function", "write_function"] do
     code = params["code"] || params[:code]
@@ -84,6 +87,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   def preflight_check(_tool_name, _params), do: :ok
 
   @doc "Handle a preflight failure with detailed error guidance."
+  @spec handle_preflight_failure(String.t(), map(), atom(), map(), map()) :: {:next, :step, map()}
   def handle_preflight_failure(tool_name, params, :missing_code, response, state) do
     func_name = params["function_name"] || "func"
     module = params["module"] || "Module"
@@ -132,6 +136,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Determine if a tool call requires user approval."
+  @spec requires_approval?(String.t(), map(), map()) :: boolean()
   def requires_approval?("run_mix", params, _state) do
     command = params["command"] || params[:command] || ""
     command not in ["compile", "help"]
@@ -148,6 +153,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Auto-enable transaction mode when modifying hub modules."
+  @spec maybe_auto_enable_transaction(String.t(), map(), map()) :: map()
   def maybe_auto_enable_transaction(tool_name, params, state)
       when tool_name in @stageable_tools do
     {new_tx, new_max} =
@@ -174,6 +180,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Handle a detected tool loop — heuristic completion for reads, intervention for writes."
+  @spec handle_loop(String.t(), map()) :: {:next, :intervene, map()} | {:done, {:ok, String.t()}, map()}
   def handle_loop(tool_name, state) do
     Logger.warning("Same action repeated #{State.repeat_count(state)}x")
 
@@ -204,6 +211,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   end
 
   @doc "Find the best successful tool observation (longest) from action_history."
+  @spec find_last_successful_observation(map()) :: String.t() | nil
   def find_last_successful_observation(state) do
     state.action_history
     |> Enum.flat_map(fn
@@ -218,6 +226,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   # ============================================================================
 
   @doc "Extract downstream dependent module names from impact map output text."
+  @spec extract_downstream_dependents(String.t()) :: [String.t()]
   def extract_downstream_dependents(result_str) do
     case String.split(result_str, "DOWNSTREAM (what depends on me):") do
       [_, downstream_section] ->
@@ -246,6 +255,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
   end
 
   @doc "Convert a module name to a path fragment for fuzzy matching."
+  @spec module_to_path(String.t()) :: String.t()
   def module_to_path(module_name) do
     module_name
     |> String.split(".")

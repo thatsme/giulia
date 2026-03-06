@@ -1,6 +1,7 @@
 defmodule Giulia.StructuredOutput do
   @moduledoc "Validates LLM responses against Ecto schemas without C dependencies.\r\n\r\nUses Jason (pure Elixir fallback) for JSON parsing and Ecto changesets\r\nfor validation. This replaces InstructorEx with zero native dependencies.\r\n\r\nIncludes robust JSON extraction for small models (3B) that often:\r\n- Add preamble like \"Sure! Here's the JSON:\"\r\n- Forget to close brackets\r\n- Include markdown code fences\r\n"
   @doc "Parse a JSON string and validate against an Ecto schema module.\r\n\r\nThe schema module must implement a `changeset/1` function.\r\nAutomatically extracts JSON from model output that includes preamble.\r\n"
+  @spec parse(String.t(), module()) :: {:ok, struct()} | {:error, term()}
   def parse(raw_string, schema_module) do
     with {:ok, json_string} <- extract_json(raw_string),
          {:ok, data} <- Jason.decode(json_string),
@@ -15,6 +16,7 @@ defmodule Giulia.StructuredOutput do
   end
 
   @doc "Extract JSON from raw model output.\r\n\r\nHandles common small-model issues:\r\n- Preamble text before JSON (\"Sure! Here's the JSON:\")\r\n- Markdown code fences (```json ... ```)\r\n- <action> tags (our preferred format for 3B models)\r\n- Trailing text after JSON\r\n- Nested JSON objects\r\n"
+  @spec extract_json(String.t()) :: {:ok, String.t()} | {:error, :no_json_found}
   def extract_json(raw_string) when is_binary(raw_string) do
     cleaned = raw_string |> String.trim() |> strip_action_tags() |> strip_markdown_fences()
 
@@ -149,6 +151,7 @@ defmodule Giulia.StructuredOutput do
   end
 
   @doc "Parse a map (already decoded) and validate against an Ecto schema module.\r\n"
+  @spec parse_map(map() | nil | term(), module()) :: {:ok, struct()} | {:error, term()}
   def parse_map(data, schema_module) when is_map(data) do
     changeset = schema_module.changeset(data)
     apply_changeset(changeset)
@@ -158,6 +161,7 @@ defmodule Giulia.StructuredOutput do
   def parse_map(_, _schema_module), do: {:error, :invalid_arguments}
 
   @doc "Validate tool arguments from LLM response against the appropriate schema.\r\n"
+  @spec validate_tool_call(%{name: String.t(), arguments: map()}) :: {:ok, struct()} | {:error, term()}
   def validate_tool_call(%{name: name, arguments: args}) do
     schema_module = tool_schema(name)
 

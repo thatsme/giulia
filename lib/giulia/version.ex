@@ -10,9 +10,13 @@ defmodule Giulia.Version do
   @version Mix.Project.config()[:version]
   @build Mix.Project.config()[:build] || 0
 
+  @spec version() :: String.t()
   def version, do: @version
+
+  @spec build() :: non_neg_integer()
   def build, do: @build
 
+  @spec short_version() :: String.t()
   def short_version do
     "v#{@version}.#{@build}"
   end

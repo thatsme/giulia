@@ -6,6 +6,7 @@ defmodule Giulia.Client.Commands do
   alias Giulia.Client
   alias Giulia.Client.{HTTP, Output, Renderer, REPL}
 
+  @spec process([String.t()]) :: :ok
   def process([]) do
     REPL.start()
   end

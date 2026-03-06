@@ -28,6 +28,7 @@ defmodule Giulia.Daemon.SkillRouter do
   After compilation, `MyRouter.__skills__()` returns the list of skill maps.
   """
 
+  @spec __using__(keyword()) :: Macro.t()
   defmacro __using__(_opts) do
     quote do
       use Plug.Router

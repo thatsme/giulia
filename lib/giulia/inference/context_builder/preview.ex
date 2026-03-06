@@ -8,6 +8,7 @@ defmodule Giulia.Inference.ContextBuilder.Preview do
   alias Giulia.Utils.Diff
 
   @doc "Generate a preview for the approval request."
+  @spec generate_preview(String.t(), map(), map()) :: String.t()
   def generate_preview(tool_name, params, state) do
     case tool_name do
       "write_file" ->

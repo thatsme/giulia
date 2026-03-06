@@ -46,34 +46,42 @@ defmodule Giulia.Knowledge.Store.Reader do
   # Topology queries (8) — ETS read + Analyzer
   # ============================================================================
 
+  @spec stats(String.t()) :: map()
   def stats(project_path) do
     project_path |> get_graph() |> Analyzer.stats()
   end
 
+  @spec centrality(String.t(), String.t()) :: {:ok, map()} | {:error, {:not_found, String.t()}}
   def centrality(project_path, module) do
     project_path |> get_graph() |> Analyzer.centrality(module)
   end
 
+  @spec dependents(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependents(project_path, module) do
     project_path |> get_graph() |> Analyzer.dependents(module)
   end
 
+  @spec dependencies(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependencies(project_path, module) do
     project_path |> get_graph() |> Analyzer.dependencies(module)
   end
 
+  @spec impact_map(String.t(), String.t(), non_neg_integer()) :: {:ok, map()} | {:error, tuple()}
   def impact_map(project_path, vertex_id, depth) do
     project_path |> get_graph() |> Analyzer.impact_map(vertex_id, depth)
   end
 
+  @spec trace_path(String.t(), String.t(), String.t()) :: {:ok, :no_path | [String.t()]} | {:error, {:not_found, String.t()}}
   def trace_path(project_path, from, to) do
     project_path |> get_graph() |> Analyzer.trace_path(from, to)
   end
 
+  @spec find_cycles(String.t()) :: {:ok, map()}
   def find_cycles(project_path) do
     project_path |> get_graph() |> Analyzer.cycles()
   end
 
+  @spec find_fan_in_out(String.t()) :: {:ok, map()}
   def find_fan_in_out(project_path) do
     graph = get_graph(project_path)
     Analyzer.fan_in_out(graph, project_path)
@@ -83,6 +91,7 @@ defmodule Giulia.Knowledge.Store.Reader do
   # Cached metrics (5) — ETS cache-first, cold fallback computes + writes
   # ============================================================================
 
+  @spec heatmap(String.t()) :: {:ok, map()}
   def heatmap(project_path) do
     case get_cached(project_path, :heatmap) do
       nil ->
@@ -96,6 +105,7 @@ defmodule Giulia.Knowledge.Store.Reader do
     end
   end
 
+  @spec change_risk_score(String.t()) :: {:ok, map()}
   def change_risk_score(project_path) do
     case get_cached(project_path, :change_risk) do
       nil ->
@@ -109,6 +119,7 @@ defmodule Giulia.Knowledge.Store.Reader do
     end
   end
 
+  @spec find_god_modules(String.t()) :: {:ok, map()}
   def find_god_modules(project_path) do
     case get_cached(project_path, :god_modules) do
       nil ->
@@ -122,6 +133,7 @@ defmodule Giulia.Knowledge.Store.Reader do
     end
   end
 
+  @spec find_dead_code(String.t()) :: {:ok, map()}
   def find_dead_code(project_path) do
     case get_cached(project_path, :dead_code) do
       nil ->
@@ -135,6 +147,7 @@ defmodule Giulia.Knowledge.Store.Reader do
     end
   end
 
+  @spec find_coupling(String.t()) :: {:ok, map()}
   def find_coupling(project_path) do
     case get_cached(project_path, :coupling) do
       nil ->
@@ -151,18 +164,22 @@ defmodule Giulia.Knowledge.Store.Reader do
   # Non-cached analysis (4) — direct Analyzer call, no graph needed
   # ============================================================================
 
+  @spec find_orphan_specs(String.t()) :: {:ok, map()}
   def find_orphan_specs(project_path) do
     Analyzer.orphan_specs(project_path)
   end
 
+  @spec find_api_surface(String.t()) :: {:ok, map()}
   def find_api_surface(project_path) do
     Analyzer.api_surface(project_path)
   end
 
+  @spec style_oracle(String.t(), String.t(), non_neg_integer()) :: {:ok, map()}
   def style_oracle(project_path, query, top_k) do
     Analyzer.style_oracle(project_path, query, top_k)
   end
 
+  @spec struct_lifecycle(String.t(), String.t()) :: {:ok, map()}
   def struct_lifecycle(project_path, struct_module) do
     Analyzer.struct_lifecycle(project_path, struct_module)
   end
@@ -171,31 +188,37 @@ defmodule Giulia.Knowledge.Store.Reader do
   # Graph-dependent analysis (6) — ETS read + Analyzer
   # ============================================================================
 
+  @spec find_unprotected_hubs(String.t(), keyword()) :: {:ok, map()}
   def find_unprotected_hubs(project_path, opts) do
     graph = get_graph(project_path)
     Analyzer.find_unprotected_hubs(graph, project_path, opts)
   end
 
+  @spec get_test_targets(String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_test_targets(project_path, module) do
     graph = get_graph(project_path)
     Analyzer.test_targets(graph, module, project_path)
   end
 
+  @spec check_behaviour_integrity(String.t(), String.t()) :: {:ok, :consistent} | {:error, :not_found | [map()]}
   def check_behaviour_integrity(project_path, behaviour) do
     graph = get_graph(project_path)
     Analyzer.behaviour_integrity(graph, behaviour, project_path)
   end
 
+  @spec check_all_behaviours(String.t()) :: {:ok, :consistent} | {:error, map()}
   def check_all_behaviours(project_path) do
     graph = get_graph(project_path)
     Analyzer.all_behaviours(graph, project_path)
   end
 
+  @spec logic_flow(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def logic_flow(project_path, from_mfa, to_mfa) do
     graph = get_graph(project_path)
     Analyzer.logic_flow(graph, project_path, from_mfa, to_mfa)
   end
 
+  @spec pre_impact_check(String.t(), map()) :: {:ok, map()}
   def pre_impact_check(project_path, params) do
     graph = get_graph(project_path)
     Analyzer.pre_impact_check(graph, project_path, params)
@@ -205,10 +228,12 @@ defmodule Giulia.Knowledge.Store.Reader do
   # Direct graph operations (2)
   # ============================================================================
 
+  @spec graph(String.t()) :: Graph.t()
   def graph(project_path) do
     get_graph(project_path)
   end
 
+  @spec get_implementers(String.t(), String.t()) :: {:ok, [String.t()]}
   def get_implementers(project_path, behaviour) do
     graph = get_graph(project_path)
 

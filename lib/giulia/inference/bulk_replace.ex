@@ -22,6 +22,9 @@ defmodule Giulia.Inference.BulkReplace do
     - `:resolve_fn` — `fn path -> resolved_path end`
     - `:modified_files` — existing MapSet of modified files
   """
+  @spec execute(map(), Giulia.Inference.Transaction.t(), keyword()) ::
+          {:ok, String.t(), Giulia.Inference.Transaction.t(), MapSet.t(), map()}
+          | {:error, String.t()}
   def execute(params, tx, opts) do
     pattern = params["pattern"] || params[:pattern]
     replacement = params["replacement"] || params[:replacement]
@@ -195,6 +198,7 @@ defmodule Giulia.Inference.BulkReplace do
   @doc """
   Extract a broader search term from a failed pattern for diagnostics.
   """
+  @spec extract_broad_pattern(String.t()) :: String.t()
   def extract_broad_pattern(pattern) do
     cond do
       String.starts_with?(pattern, "def ") ->
@@ -221,6 +225,7 @@ defmodule Giulia.Inference.BulkReplace do
   @doc """
   Scan target files for a broader pattern and return sample matches for diagnostics.
   """
+  @spec diagnose(String.t(), [String.t()], (String.t() -> String.t()), map()) :: String.t()
   def diagnose(broad_pattern, file_list, resolve_fn, staging_buffer) do
     samples =
       file_list

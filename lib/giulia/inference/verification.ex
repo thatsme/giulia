@@ -18,6 +18,7 @@ defmodule Giulia.Inference.Verification do
   Parse mix compile output to determine success/warnings/errors.
   Returns `:success`, `{:warnings, text}`, or `{:error, text}`.
   """
+  @spec parse_compile_result(String.t()) :: :success | {:warnings, String.t()} | {:error, String.t()}
   def parse_compile_result(output) do
     cond do
       # Explicit exit code failure
@@ -45,6 +46,7 @@ defmodule Giulia.Inference.Verification do
   @doc """
   Extract specific error lines from compile output for cleaner feedback.
   """
+  @spec extract_compile_errors(String.t()) :: String.t()
   def extract_compile_errors(output) do
     specific_errors =
       output
@@ -75,6 +77,7 @@ defmodule Giulia.Inference.Verification do
   @doc """
   Extract warning lines from compile output.
   """
+  @spec extract_compile_warnings(String.t()) :: String.t()
   def extract_compile_warnings(output) do
     output
     |> String.split("\n")
@@ -87,6 +90,7 @@ defmodule Giulia.Inference.Verification do
   Check baseline project state before starting work.
   Returns `:clean`, `:dirty`, or `:unknown`.
   """
+  @spec check_baseline(String.t() | nil, keyword()) :: :clean | :dirty | :unknown
   def check_baseline(project_path, tool_opts) do
     if project_path do
       Logger.info("Checking baseline compilation state...")
@@ -121,6 +125,7 @@ defmodule Giulia.Inference.Verification do
   Build the BUILD GREEN observation string.
   Returns the observation text (caller manages state).
   """
+  @spec build_green_observation(String.t(), term(), String.t() | nil, String.t(), String.t() | nil) :: String.t()
   def build_green_observation(tool_name, result, warnings, test_hint, test_summary) do
     warnings_section =
       if warnings do

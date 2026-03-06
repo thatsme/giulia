@@ -6,8 +6,10 @@ defmodule Giulia.Client.HTTP do
 
   @daemon_url "http://localhost:4000"
 
+  @spec daemon_url() :: String.t()
   def daemon_url, do: @daemon_url
 
+  @spec get(String.t()) :: {:ok, map()} | {:error, term()}
   def get(path) do
     url = @daemon_url <> path
 
@@ -25,6 +27,7 @@ defmodule Giulia.Client.HTTP do
     e -> {:error, e}
   end
 
+  @spec post(String.t(), map()) :: {:ok, map()} | {:error, term()}
   def post(path, body) do
     url = @daemon_url <> path
 

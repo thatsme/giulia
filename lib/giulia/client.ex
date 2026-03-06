@@ -19,6 +19,7 @@ defmodule Giulia.Client do
   # ============================================================================
 
   @doc "Main entry point for the thin client (escript)."
+  @spec main([String.t()]) :: :ok
   def main(args \\ []) do
     args = Enum.map(args, &fix_msys_path/1)
 
@@ -33,28 +34,33 @@ defmodule Giulia.Client do
   end
 
   @doc "Send a chat message to the daemon."
+  @spec chat(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(message, opts \\ []) do
     path = Keyword.get(opts, :path, get_working_directory())
     HTTP.post("/api/command", %{message: message, path: path})
   end
 
   @doc "Initialize a project via the daemon."
+  @spec init_project(String.t() | nil, keyword()) :: {:ok, map()} | {:error, term()}
   def init_project(path \\ nil, _opts \\ []) do
     host_path = path || get_working_directory()
     HTTP.post("/api/init", %{path: host_path})
   end
 
   @doc "Get daemon status."
+  @spec status() :: {:ok, map()} | {:error, term()}
   def status do
     HTTP.get("/api/status")
   end
 
   @doc "List active projects."
+  @spec list_projects() :: {:ok, map()} | {:error, term()}
   def list_projects do
     HTTP.get("/api/projects")
   end
 
   @doc "Get the real working directory (where user launched from)."
+  @spec get_working_directory() :: String.t()
   def get_working_directory do
     case System.get_env("GIULIA_CLIENT_CWD") do
       nil -> File.cwd!()

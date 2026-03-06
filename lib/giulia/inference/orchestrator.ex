@@ -26,6 +26,7 @@ defmodule Giulia.Inference.Orchestrator do
   # Client API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
@@ -33,6 +34,7 @@ defmodule Giulia.Inference.Orchestrator do
   @doc """
   Execute synchronously. Blocks until the inference loop completes.
   """
+  @spec execute(pid(), String.t(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def execute(orchestrator, prompt, opts \\ []) do
     # 10-minute timeout — the inference loop can run many iterations
     GenServer.call(orchestrator, {:execute, prompt, opts}, 600_000)
@@ -41,6 +43,7 @@ defmodule Giulia.Inference.Orchestrator do
   @doc """
   Execute asynchronously. Returns immediately, sends result via message.
   """
+  @spec execute_async(pid(), String.t(), keyword()) :: :ok
   def execute_async(orchestrator, prompt, opts \\ []) do
     GenServer.cast(orchestrator, {:execute_async, prompt, opts, self()})
   end
@@ -48,6 +51,7 @@ defmodule Giulia.Inference.Orchestrator do
   @doc """
   Get current state (for debugging/monitoring).
   """
+  @spec get_state(pid()) :: map()
   def get_state(orchestrator) do
     GenServer.call(orchestrator, :get_state)
   end
@@ -55,6 +59,7 @@ defmodule Giulia.Inference.Orchestrator do
   @doc """
   Cancel the current task.
   """
+  @spec cancel(pid()) :: :ok
   def cancel(orchestrator) do
     GenServer.cast(orchestrator, :cancel)
   end
@@ -62,6 +67,7 @@ defmodule Giulia.Inference.Orchestrator do
   @doc """
   Pause the thinking loop (can resume later).
   """
+  @spec pause(pid()) :: :ok
   def pause(orchestrator) do
     GenServer.cast(orchestrator, :pause)
   end

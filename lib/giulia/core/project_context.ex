@@ -45,6 +45,7 @@ defmodule Giulia.Core.ProjectContext do
   # Client API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     path = Keyword.fetch!(opts, :path)
     GenServer.start_link(__MODULE__, opts, name: via_tuple(path))
@@ -53,6 +54,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get the registry name for a project path.
   """
+  @spec via_tuple(String.t()) :: {:via, module(), term()}
   def via_tuple(path) do
     {:via, Registry, {Giulia.Registry, {:project, normalize_path(path)}}}
   end
@@ -60,6 +62,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get the current constitution for this project.
   """
+  @spec get_constitution(GenServer.server()) :: map() | nil
   def get_constitution(pid) do
     GenServer.call(pid, :get_constitution)
   end
@@ -67,6 +70,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Reload the constitution from GIULIA.md.
   """
+  @spec reload_constitution(GenServer.server()) :: :ok
   def reload_constitution(pid) do
     GenServer.call(pid, :reload_constitution)
   end
@@ -74,6 +78,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get project stats.
   """
+  @spec get_stats(GenServer.server()) :: map()
   def get_stats(pid) do
     GenServer.call(pid, :get_stats)
   end
@@ -82,6 +87,7 @@ defmodule Giulia.Core.ProjectContext do
   Validate a path against this project's sandbox.
   Returns {:ok, expanded_path} or {:error, :sandbox_violation}.
   """
+  @spec validate_path(GenServer.server(), String.t()) :: {:ok, String.t()} | {:error, :sandbox_violation}
   def validate_path(pid, path) do
     GenServer.call(pid, {:validate_path, path})
   end
@@ -89,6 +95,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Execute a sandboxed file read.
   """
+  @spec read_file(GenServer.server(), String.t()) :: {:ok, String.t()} | {:error, term()}
   def read_file(pid, path) do
     GenServer.call(pid, {:read_file, path})
   end
@@ -96,6 +103,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Execute a sandboxed file write.
   """
+  @spec write_file(GenServer.server(), String.t(), String.t()) :: :ok | {:error, term()}
   def write_file(pid, path, content) do
     GenServer.call(pid, {:write_file, path, content})
   end
@@ -103,6 +111,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get the AST for a file in this project.
   """
+  @spec get_ast(GenServer.server(), String.t()) :: {:ok, map()} | {:error, term()}
   def get_ast(pid, path) do
     GenServer.call(pid, {:get_ast, path})
   end
@@ -110,6 +119,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Search files in this project.
   """
+  @spec search_files(GenServer.server(), String.t()) :: [String.t()]
   def search_files(pid, pattern) do
     GenServer.call(pid, {:search_files, pattern})
   end
@@ -117,6 +127,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Add a message to conversation history.
   """
+  @spec add_to_history(GenServer.server(), String.t(), String.t()) :: :ok
   def add_to_history(pid, role, content) do
     GenServer.cast(pid, {:add_history, role, content})
   end
@@ -124,6 +135,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get recent conversation history.
   """
+  @spec get_history(GenServer.server(), non_neg_integer()) :: [map()]
   def get_history(pid, limit \\ 50) do
     GenServer.call(pid, {:get_history, limit})
   end
@@ -135,6 +147,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Mark a file as dirty (modified since last verification).
   """
+  @spec mark_dirty(GenServer.server(), String.t()) :: :ok
   def mark_dirty(pid, file_path) do
     GenServer.cast(pid, {:mark_dirty, file_path})
   end
@@ -142,6 +155,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Mark the project as clean (after successful verification).
   """
+  @spec mark_clean(GenServer.server()) :: :ok
   def mark_clean(pid) do
     GenServer.cast(pid, :mark_clean)
   end
@@ -149,6 +163,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Mark verification as failed.
   """
+  @spec mark_verification_failed(GenServer.server()) :: :ok
   def mark_verification_failed(pid) do
     GenServer.cast(pid, :mark_verification_failed)
   end
@@ -156,6 +171,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Check if the project has dirty (unverified) files.
   """
+  @spec dirty?(GenServer.server()) :: boolean()
   def dirty?(pid) do
     GenServer.call(pid, :dirty?)
   end
@@ -163,6 +179,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get the list of dirty files.
   """
+  @spec get_dirty_files(GenServer.server()) :: [String.t()]
   def get_dirty_files(pid) do
     GenServer.call(pid, :get_dirty_files)
   end
@@ -170,6 +187,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get verification status.
   """
+  @spec verification_status(GenServer.server()) :: map()
   def verification_status(pid) do
     GenServer.call(pid, :verification_status)
   end
@@ -178,6 +196,7 @@ defmodule Giulia.Core.ProjectContext do
   Toggle transaction mode preference for this project.
   Returns the new value.
   """
+  @spec toggle_transaction_preference(GenServer.server()) :: boolean()
   def toggle_transaction_preference(pid) do
     GenServer.call(pid, :toggle_transaction_preference)
   end
@@ -185,6 +204,7 @@ defmodule Giulia.Core.ProjectContext do
   @doc """
   Get the current transaction mode preference.
   """
+  @spec transaction_preference(GenServer.server()) :: boolean()
   def transaction_preference(pid) do
     GenServer.call(pid, :transaction_preference)
   end

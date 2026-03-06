@@ -39,6 +39,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Create a new transaction state, optionally starting in transaction mode.
   """
+  @spec new(boolean()) :: t()
   def new(mode \\ false) do
     %__MODULE__{mode: mode}
   end
@@ -51,6 +52,7 @@ defmodule Giulia.Inference.Transaction do
   Stage a write_file operation — store content in the staging buffer.
   Returns `{result, updated_tx}`.
   """
+  @spec stage_write(t(), map(), (String.t() -> String.t())) :: {{:ok, String.t()}, t()}
   def stage_write(tx, params, resolve_fn) do
     path = params["path"] || params[:path]
     content = params["content"] || params[:content] || ""
@@ -68,6 +70,7 @@ defmodule Giulia.Inference.Transaction do
   Stage an edit_file operation — apply search/replace in memory using staged content as overlay.
   Returns `{result, updated_tx}`.
   """
+  @spec stage_edit(t(), map(), (String.t() -> String.t())) :: {{:ok | :error, String.t()}, t()}
   def stage_edit(tx, params, resolve_fn) do
     file = params["file"] || params[:file]
     old_text = params["old_text"] || params[:old_text] || ""
@@ -112,6 +115,7 @@ defmodule Giulia.Inference.Transaction do
   4. Restore original disk content
   Returns `{result, updated_tx}`.
   """
+  @spec stage_ast(t(), String.t(), map(), keyword()) :: {{:ok | :error, String.t()}, t()}
   def stage_ast(tx, tool_name, params, opts) do
     module = params["module"] || params[:module]
     project_path = Keyword.fetch!(opts, :project_path)
@@ -172,6 +176,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Read a file with staging overlay. Returns staged content if available, nil otherwise.
   """
+  @spec read_with_overlay(t(), String.t()) :: String.t() | nil
   def read_with_overlay(tx, resolved_path) do
     Map.get(tx.staging_buffer, resolved_path)
   end
@@ -179,6 +184,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Format the list of staged files for the model.
   """
+  @spec format_staged_files(t()) :: String.t()
   def format_staged_files(tx) do
     file_list =
       tx.staging_buffer
@@ -206,6 +212,7 @@ defmodule Giulia.Inference.Transaction do
   check behaviour-implementer contracts.
   Returns `:ok` or `{:error, fractures}`.
   """
+  @spec integrity_check([String.t()], String.t(), keyword()) :: :ok | {:error, map()}
   def integrity_check(staged_files, project_path, _opts) do
     # Re-index modified .ex/.exs files so ETS is fresh
     staged_files
@@ -231,6 +238,7 @@ defmodule Giulia.Inference.Transaction do
   Run auto-regression tests for all modules affected by the staged files.
   Returns `{:ok, results}` or `{:error, failures, results}`.
   """
+  @spec auto_regress([String.t()], String.t(), keyword()) :: {:ok, :no_tests | list()} | {:error, list(), list()}
   def auto_regress(staged_files, project_path, tool_opts) do
     # Collect test targets for all modified modules
     all_test_targets =
@@ -274,6 +282,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Build the commit success report.
   """
+  @spec success_report(t()) :: String.t()
   def success_report(tx) do
     file_count = map_size(tx.staging_buffer)
     file_list = tx.staging_buffer |> Map.keys() |> Enum.map_join("\n", &"  - #{&1}")
@@ -290,6 +299,7 @@ defmodule Giulia.Inference.Transaction do
   Rollback all staged changes to their original state.
   Returns a new transaction state with empty staging fields.
   """
+  @spec rollback(t(), String.t() | nil) :: t()
   def rollback(tx, project_path) do
     Enum.each(tx.staging_backups, fn
       {path, :new_file} ->
@@ -324,6 +334,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Format a fracture report from behaviour-implementer mismatches.
   """
+  @spec format_fracture_report(map()) :: String.t()
   def format_fracture_report(fractures) when is_map(fractures) do
     Enum.map_join(fractures, "\n\n", fn {behaviour, impl_fractures} ->
       impl_details =
@@ -340,6 +351,7 @@ defmodule Giulia.Inference.Transaction do
   Check if a write tool targets a hub module and auto-enable transaction mode.
   Returns updated transaction state and optionally updated max_iterations.
   """
+  @spec maybe_auto_enable(t(), map(), keyword()) :: {t(), non_neg_integer() | nil}
   def maybe_auto_enable(tx, params, opts) do
     if tx.mode do
       {tx, nil}
@@ -389,6 +401,7 @@ defmodule Giulia.Inference.Transaction do
   @doc """
   Backup original file content before first staging.
   """
+  @spec backup_original(t(), String.t()) :: t()
   def backup_original(tx, resolved_path) do
     if Map.has_key?(tx.staging_backups, resolved_path) do
       tx

@@ -8,6 +8,7 @@ defmodule Giulia.Client.Daemon do
 
   @docker_image "giulia/core:latest"
 
+  @spec ensure_running() :: :ok | {:error, term()}
   def ensure_running do
     if healthy?() do
       :ok
@@ -22,6 +23,7 @@ defmodule Giulia.Client.Daemon do
     end
   end
 
+  @spec healthy?() :: boolean()
   def healthy? do
     case HTTP.get("/health") do
       {:ok, %{"status" => "ok"}} -> true
@@ -29,6 +31,7 @@ defmodule Giulia.Client.Daemon do
     end
   end
 
+  @spec stop() :: :ok
   def stop do
     System.cmd("docker", ["stop", "giulia-daemon"], stderr_to_stdout: true)
     System.cmd("docker", ["rm", "giulia-daemon"], stderr_to_stdout: true)

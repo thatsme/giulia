@@ -22,6 +22,7 @@ defmodule Giulia.Core.ContextManager do
   # Client API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -30,6 +31,7 @@ defmodule Giulia.Core.ContextManager do
   Get or create a ProjectContext for the given path.
   Returns {:ok, pid} or {:needs_init, path} if no GIULIA.md exists.
   """
+  @spec get_context(String.t()) :: {:ok, pid()} | {:needs_init, String.t()}
   def get_context(path) do
     GenServer.call(__MODULE__, {:get_context, path})
   end
@@ -38,6 +40,7 @@ defmodule Giulia.Core.ContextManager do
   Initialize a new project at the given path.
   Creates GIULIA.md and starts a ProjectContext.
   """
+  @spec init_project(String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
   def init_project(path, opts \\ []) do
     GenServer.call(__MODULE__, {:init_project, path, opts}, :infinity)
   end
@@ -45,6 +48,7 @@ defmodule Giulia.Core.ContextManager do
   @doc """
   List all active project contexts.
   """
+  @spec list_projects() :: [map()]
   def list_projects do
     GenServer.call(__MODULE__, :list_projects)
   end
@@ -52,6 +56,7 @@ defmodule Giulia.Core.ContextManager do
   @doc """
   Shutdown a specific project context.
   """
+  @spec shutdown_project(String.t()) :: :ok | {:error, :not_found}
   def shutdown_project(path) do
     GenServer.call(__MODULE__, {:shutdown_project, path})
   end
@@ -59,6 +64,7 @@ defmodule Giulia.Core.ContextManager do
   @doc """
   Check if a project is initialized (has GIULIA.md).
   """
+  @spec initialized?(String.t()) :: boolean()
   def initialized?(path) do
     giulia_md_path(path) |> File.exists?()
   end
