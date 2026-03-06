@@ -14,6 +14,48 @@ If the graph has 0 vertices after scan, the graph builder crashed. Check daemon 
 
 ---
 
+## Key Scoring Formulas
+
+These formulas drive the two most-referenced sections (Heatmap and Change Risk).
+Understand them before interpreting any results.
+
+### Heatmap Score (0-100)
+
+```
+norm_centrality = min(in_degree / 15 * 100, 100)    — weight 0.30
+norm_complexity = min(complexity / 200 * 100, 100)   — weight 0.25
+norm_test       = if has_test, 0, else 100            — weight 0.25
+norm_coupling   = min(max_coupling / 50 * 100, 100)  — weight 0.20
+score           = weighted sum, truncated to integer
+```
+
+**Critical interaction: test weight = 0.25 means every module without a matching
+`_test.exs` file gets a 25-point floor penalty regardless of all other factors.**
+A module with zero centrality, zero complexity, and zero coupling still scores 25
+if it has no test file. Conversely, a well-tested module gets a 25-point floor
+reduction. Before interpreting heatmap results — especially red-zone counts —
+verify test detection is working correctly (`has_test` values are plausible for
+the project). A broken test detector inflates ALL scores by 25 points.
+
+### Change Risk Score
+
+```
+change_risk = centrality * function_count * (1 + complexity_norm + coupling_norm)
+```
+
+Where:
+- `centrality` = in-degree (number of modules that depend on this one)
+- `function_count` = total public + private functions
+- `complexity_norm` = AST complexity / 100
+- `coupling_norm` = max coupling to any single module / 50
+
+This is a multiplicative formula — a module with high centrality AND high function
+count AND high complexity will have an exponentially higher score than one with only
+one factor elevated. This is intentional: the risk of modifying a module compounds
+across dimensions.
+
+---
+
 ## Data Collection Phase
 
 Call endpoints in this order. All require `?path=<project_path>` query param.
@@ -46,12 +88,12 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 | `GET /api/knowledge/coupling` | caller/callee pairs with call counts | Coupling Analysis |
 | `GET /api/knowledge/unprotected_hubs` | hub modules with low spec/doc coverage | Unprotected Hubs |
 
-### Stage 4: Deep Analysis (optional, slower)
+### Stage 4: Deep Analysis (struct lifecycle, duplicates, preflight)
 
 | Endpoint | Key Fields | Report Section |
 |----------|-----------|----------------|
-| `GET /api/knowledge/struct_lifecycle` | struct data flow across modules | Struct Lifecycle |
-| `GET /api/knowledge/duplicates` | semantic duplicate function clusters | Duplicates |
+| `GET /api/knowledge/struct_lifecycle` | struct data flow, logic leaks, users | Struct Lifecycle |
+| `GET /api/knowledge/duplicates` | semantic duplicate function clusters | Semantic Duplicates |
 | `POST /api/briefing/preflight` | per-module 6-contract checklist | Preflight (appendix) |
 
 ### Stage 5: Runtime (if daemon is analyzing itself or connected node)
@@ -96,15 +138,7 @@ Three sub-tables: Red (>= 60), Yellow (30-59), Green (< 30).
 - Yellow zone: list ALL modules individually (abbreviated — score and zone only is acceptable for large projects)
 - Green zone: count only, optionally list notable modules
 - `has_test` comes from real file cross-referencing (`suggest_test_file` maps `lib/foo.ex` to `test/foo_test.exs` and checks `File.exists?`). It is NOT inferred. If has_test is false, there is genuinely no matching `_test.exs` file by naming convention. Note: non-standard test locations (e.g., `test/livebook_teams/` for a `Livebook.Hubs` module) will show as false — the detection uses path convention only.
-
-**Heatmap scoring formula (for reference):**
-```
-norm_centrality = min(in_degree / 15 * 100, 100)    — weight 0.30
-norm_complexity = min(complexity / 200 * 100, 100)   — weight 0.25
-norm_test       = if has_test, 0, else 100            — weight 0.25
-norm_coupling   = min(max_coupling / 50 * 100, 100)  — weight 0.20
-score           = weighted sum, truncated to integer
-```
+- See "Key Scoring Formulas" above for the test weight interaction — verify `has_test` values are plausible before interpreting red-zone counts
 
 ### Section 3: Top 5 Hubs
 
@@ -126,7 +160,7 @@ Sorted by in-degree (fan-in). Shows which modules are most dangerous to modify.
 **Rules:**
 - Use `change_risk` endpoint, take top 10
 - Key Driver: identify the dominant factor (centrality, complexity, coupling, function count)
-- The change_risk score combines: centrality * function_count * (1 + complexity_norm + coupling_norm)
+- See "Key Scoring Formulas" above for the full change_risk formula and why it's multiplicative
 
 ### Section 5: God Modules
 
@@ -161,7 +195,10 @@ Function-level edges: <count> MFA→MFA call edges
 - Always use depth=2
 - Separate depth-1 and depth-2 modules explicitly — this is what makes risk concrete
 - Include the function_edges count if available
-- If a depth-2 module is itself a hub (in_degree >= 5), flag it: "cascading hub risk"
+- **Cascading hub risk**: if a depth-2 module appears in the report's Top 5 Hubs list
+  (Section 3), flag it as "cascading hub risk — modifying <root> could cascade through
+  <hub> to its N dependents." Use the Top 5 Hubs list as the threshold, not a fixed
+  in-degree number — this scales naturally with project size.
 
 ### Section 7: Unprotected Hubs
 
@@ -193,7 +230,33 @@ Function-level edges: <count> MFA→MFA call edges
   - Functions called only via `apply/3` or dynamic dispatch
 - State the ratio: N functions out of M total (X%)
 
-### Section 10: Architecture Health
+### Section 10: Struct Lifecycle
+
+**Table columns:** Struct | Defining Module | Users | User Count | Logic Leaks | Leak Count
+
+**Rules:**
+- Use `struct_lifecycle` endpoint
+- **Logic leaks**: modules that reference a struct but are not the defining module — potential
+  encapsulation violations where struct internals are accessed outside their owning context
+- Sort by leak_count descending — highest leak count = worst encapsulation
+- If a struct has 0 users outside its defining module, it's well-encapsulated — no action needed
+- If a struct has 0 users total (including its own module), flag as "potentially unused struct"
+- Commentary: not all logic leaks are bugs — shared data structures (e.g., `%User{}` across
+  contexts) will naturally appear. Flag the pattern, let the reader judge intent.
+
+### Section 11: Semantic Duplicates
+
+**Rules:**
+- Use `duplicates` endpoint
+- Report: "N clusters found at >= X% similarity threshold"
+- List top 3 clusters with their similarity score and member function names
+- **False positive caveat**: large clusters of accessor functions (`get_x/1`, `set_x/2`),
+  delegate functions (`defdelegate`), or simple CRUD wrappers are expected to cluster —
+  they share structural patterns, not duplicated logic. Flag these as "structural similarity,
+  not duplication" when the cluster members are all accessors/delegates.
+- If EmbeddingServing is unavailable (503), note: "Semantic duplicates unavailable — EmbeddingServing not loaded"
+
+### Section 12: Architecture Health
 
 A pass/fail checklist table:
 
@@ -209,7 +272,7 @@ A pass/fail checklist table:
 - Fractures > 0 is a P1 issue — list which behaviours/implementers are broken
 - Orphan specs indicate refactoring debris — list them for cleanup
 
-### Section 11: Runtime Health (if available)
+### Section 13: Runtime Health (if available)
 
 **Table 1:** Processes | Memory | Schedulers | Run Queue | Uptime | ETS Tables
 
@@ -221,7 +284,7 @@ A pass/fail checklist table:
 - Memory > 500MB = investigate, flag largest ETS tables
 - Hot spots: top 5 by reductions, note if expected (e.g., supervisor at startup) or anomalous
 
-### Section 12: Recommended Actions (Priority Order)
+### Section 14: Recommended Actions (Priority Order)
 
 Synthesize findings into concrete, prioritized recommendations.
 
@@ -234,7 +297,10 @@ Synthesize findings into concrete, prioritized recommendations.
 **Rules:**
 - Each recommendation must reference specific data from the report (module name, score, metric)
 - Include expected impact: "splitting X would reduce complexity from N to ~M"
-- Maximum 5 recommendations — focus on highest leverage
+- **P0 and P1 items are never capped** — list every blocking/high-risk issue
+- **P2 and P3 items are limited to 3 combined** — focus on highest leverage
+- This means a clean project might have 3 recommendations total (all P2/P3), while a
+  project with systemic issues could have 10+ (7 P0/P1 + 3 P2/P3)
 
 ---
 
@@ -247,7 +313,7 @@ Synthesize findings into concrete, prioritized recommendations.
 5. **Scores**: Integer only (truncate, don't round)
 6. **Tables**: Always use markdown tables with alignment
 7. **Commentary**: Keep per-row commentary to 1 sentence max. Longer analysis goes after the table.
-8. **Footer**: Always include: `Generated by Giulia v<version> — <endpoint_count> endpoints, <date>`
+8. **Footer**: Always include: `Generated by Giulia v<version> — <project_path> — <endpoint_count> endpoints, <date>`
 
 ---
 
@@ -272,3 +338,5 @@ NEVER skip a section silently. Every section must appear, even if just to say "d
 4. **Don't report god modules without fan-in context** — a 200-complexity leaf module is a refactoring opportunity, not a risk.
 5. **Don't generate the report before the graph is built** — graph-dependent sections will all be empty/wrong.
 6. **Don't skip blast radius** — Section 6 is mandatory for every report. It's what makes risk concrete.
+7. **Don't use a fixed in-degree threshold for cascading hub risk** — use the Top 5 Hubs list from the same report. What counts as a "hub" scales with project size.
+8. **Don't interpret heatmap red zones without checking test detection** — a broken test detector inflates all scores by 25 points (see scoring formula interaction).
