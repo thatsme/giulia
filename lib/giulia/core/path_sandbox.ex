@@ -117,11 +117,13 @@ defmodule Giulia.Core.PathSandbox do
   defp expand_path(path, root) do
     # Handle both absolute and relative paths
     # Note: On Linux, Windows paths like "C:/..." appear as :relative
-    # so we also check if it starts with "/" (container path)
-    normalized = normalize_slashes(path)
+    # so we also check if it starts with "/" or "X:/" (container/Windows path)
+    normalized = path |> strip_null_bytes() |> normalize_slashes()
 
     full_path =
-      if Path.type(path) == :absolute or String.starts_with?(normalized, "/") do
+      if Path.type(path) == :absolute or
+           String.starts_with?(normalized, "/") or
+           Regex.match?(~r/^[A-Za-z]:\//, normalized) do
         normalized
       else
         Path.join(root, normalized)
@@ -175,8 +177,15 @@ defmodule Giulia.Core.PathSandbox do
   end
 
   defp allowed_external?(path, sandbox) do
+    normalized_path = normalize_slashes(path)
+
     Enum.any?(sandbox.allowed_external, fn allowed ->
-      String.starts_with?(normalize_slashes(path), normalize_slashes(allowed))
+      # Ensure path boundary: /tmp/cache must not match /tmp/cacheevil
+      # Compare with trailing slash to enforce directory boundary
+      allowed_prefix = normalize_slashes(allowed)
+      allowed_with_sep = if String.ends_with?(allowed_prefix, "/"), do: allowed_prefix, else: allowed_prefix <> "/"
+
+      normalized_path == allowed_prefix or String.starts_with?(normalized_path, allowed_with_sep)
     end)
   end
 
@@ -191,5 +200,11 @@ defmodule Giulia.Core.PathSandbox do
   defp normalize_slashes(path) do
     # Normalize to forward slashes for consistent comparison
     String.replace(path, "\\", "/")
+  end
+
+  # Strip null bytes — prevents C string terminator attacks where the OS
+  # truncates at \0 while Elixir sees the full binary
+  defp strip_null_bytes(path) do
+    String.replace(path, "\0", "")
   end
 end
