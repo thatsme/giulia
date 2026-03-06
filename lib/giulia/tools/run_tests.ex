@@ -108,7 +108,13 @@ defmodule Giulia.Tools.RunTests do
   """
   @spec suggest_test_file(String.t()) :: String.t()
   def suggest_test_file(source_path) do
-    source_path
+    # Extract the lib-relative portion even from absolute paths
+    rel = case Regex.run(~r"(lib/.+)$", source_path) do
+      [_, match] -> match
+      nil -> source_path
+    end
+
+    rel
     |> String.replace_prefix("lib/", "test/")
     |> String.replace_suffix(".ex", "_test.exs")
   end
