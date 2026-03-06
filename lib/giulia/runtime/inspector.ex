@@ -442,15 +442,23 @@ defmodule Giulia.Runtime.Inspector do
   defp format_mfa(_), do: nil
 
   defp collect_ets_info(node, tables) do
+    word_size = :erlang.system_info(:wordsize)
+
     table_info =
       tables
       |> Enum.map(fn tab ->
-        name = safe_rpc_default(node, :ets, :info, [tab, :name], tab)
-        size = safe_rpc_default(node, :ets, :info, [tab, :size], 0)
-        memory_words = safe_rpc_default(node, :ets, :info, [tab, :memory], 0)
-        memory_mb = Float.round(memory_words * :erlang.system_info(:wordsize) / (1024 * 1024), 3)
+        # Single call per table instead of 3 separate calls
+        case safe_rpc(node, :ets, :info, [tab]) do
+          {:ok, info} when is_list(info) ->
+            name = Keyword.get(info, :name, tab)
+            size = Keyword.get(info, :size, 0)
+            memory_words = Keyword.get(info, :memory, 0)
+            memory_mb = Float.round(memory_words * word_size / (1024 * 1024), 3)
+            %{name: inspect(name), size: size, memory_mb: memory_mb}
 
-        %{name: inspect(name), size: size, memory_mb: memory_mb}
+          _ ->
+            %{name: inspect(tab), size: 0, memory_mb: 0.0}
+        end
       end)
       |> Enum.sort_by(& &1.memory_mb, :desc)
 

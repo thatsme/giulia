@@ -119,21 +119,21 @@ defmodule Giulia.Daemon.Routers.Monitor do
   defp serialize_event(other), do: safe_encode(other)
 
   defp safe_encode(data) when is_map(data) do
-    Map.new(data, fn
-      {k, v} when is_pid(v) -> {k, inspect(v)}
-      {k, v} when is_reference(v) -> {k, inspect(v)}
-      {k, v} when is_atom(v) -> {k, to_string(v)}
-      {k, v} when is_map(v) -> {k, safe_encode(v)}
-      {k, v} when is_list(v) -> {k, Enum.map(v, &safe_encode_value/1)}
-      {k, v} -> {k, v}
-    end)
+    Map.new(data, fn {k, v} -> {k, safe_encode_value(v)} end)
   end
 
+  defp safe_encode(data) when is_tuple(data), do: inspect(data)
+  defp safe_encode(data) when is_function(data), do: inspect(data)
+  defp safe_encode(data) when is_pid(data), do: inspect(data)
+  defp safe_encode(data) when is_reference(data), do: inspect(data)
   defp safe_encode(data), do: data
 
   defp safe_encode_value(v) when is_pid(v), do: inspect(v)
   defp safe_encode_value(v) when is_reference(v), do: inspect(v)
+  defp safe_encode_value(v) when is_function(v), do: inspect(v)
+  defp safe_encode_value(v) when is_tuple(v), do: inspect(v)
   defp safe_encode_value(v) when is_atom(v), do: to_string(v)
   defp safe_encode_value(v) when is_map(v), do: safe_encode(v)
+  defp safe_encode_value(v) when is_list(v), do: Enum.map(v, &safe_encode_value/1)
   defp safe_encode_value(v), do: v
 end
