@@ -110,7 +110,8 @@ defmodule Giulia.Provider.Anthropic do
     end)
   end
 
-  defp parse_response(%{"content" => content, "stop_reason" => stop_reason}) do
+  @doc false
+  def parse_response(%{"content" => content, "stop_reason" => stop_reason}) do
     {text_content, tool_calls} =
       Enum.reduce(content, {nil, []}, fn
         %{"type" => "text", "text" => text}, {_, tools} ->
@@ -130,10 +131,29 @@ defmodule Giulia.Provider.Anthropic do
     }
   end
 
+  @doc false
+  def parse_response(other) do
+    %{
+      content: inspect(other),
+      tool_calls: [],
+      stop_reason: :error
+    }
+  end
+
   defp parse_stop_reason("end_turn"), do: :end_turn
   defp parse_stop_reason("tool_use"), do: :tool_use
   defp parse_stop_reason("max_tokens"), do: :max_tokens
-  defp parse_stop_reason(other), do: String.to_atom(other)
+  defp parse_stop_reason(nil), do: :unknown
+  defp parse_stop_reason(other) when is_binary(other) do
+    # Use to_existing_atom to prevent atom table exhaustion from untrusted input.
+    # Falls back to :unknown for unrecognized stop reasons.
+    try do
+      String.to_existing_atom(other)
+    rescue
+      ArgumentError -> :unknown
+    end
+  end
+  defp parse_stop_reason(_other), do: :unknown
 
   defp stream_events(%Req.Response{} = resp) do
     Stream.resource(
