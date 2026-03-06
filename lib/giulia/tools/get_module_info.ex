@@ -78,11 +78,11 @@ defmodule Giulia.Tools.GetModuleInfo do
     line_count = ast_data[:line_count] || 0
 
     public_funcs = functions
-    |> Enum.filter(&(&1.type == :def))
+    |> Enum.filter(&(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
     |> Enum.map_join("\n", &"  - #{&1.name}/#{&1.arity} (line #{&1.line})")
 
     private_funcs = functions
-    |> Enum.filter(&(&1.type == :defp))
+    |> Enum.filter(&(&1.type in [:defp, :defmacrop, :defguardp]))
     |> Enum.map_join("\n", &"  - #{&1.name}/#{&1.arity} (line #{&1.line})")
 
     deps = imports

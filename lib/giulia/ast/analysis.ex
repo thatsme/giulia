@@ -114,7 +114,7 @@ defmodule Giulia.AST.Analysis do
     function_section =
       info.functions
       |> Enum.map_join("\n", fn f ->
-        visibility = if f.type == :def, do: "public", else: "private"
+        visibility = if f.type in [:def, :defmacro, :defdelegate, :defguard], do: "public", else: "private"
         "  - #{f.name}/#{f.arity} [#{visibility}] (line #{f.line})"
       end)
 

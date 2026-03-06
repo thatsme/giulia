@@ -160,7 +160,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   defp extract_file_from_text(text) do
-    case Regex.run(~r/(?:lib|test)\/[\w\/]+\.(?:ex|exs)/, text) do
+    case Regex.run(~r/(?:lib|test)\/[\w\/]+\.(?:exs|ex)/, text) do
       [match] -> match
       nil -> nil
     end

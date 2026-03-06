@@ -198,8 +198,8 @@ defmodule Giulia.Knowledge.Metrics do
             _ ->
               all_asts_data = Map.get(all_asts |> Map.new(), path, %{})
               functions = all_asts_data[:functions] || []
-              pub = Enum.count(functions, fn f -> f.type == :def end)
-              priv = Enum.count(functions, fn f -> f.type == :defp end)
+              pub = Enum.count(functions, fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+              priv = Enum.count(functions, fn f -> f.type in [:defp, :defmacrop, :defguardp] end)
               {pub, priv}
           end
 

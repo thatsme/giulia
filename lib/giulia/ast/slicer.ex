@@ -19,12 +19,19 @@ defmodule Giulia.AST.Slicer do
   def slice_function(source, function_name, arity) do
     with {:ok, ast} <- Sourceror.parse_string(source) do
       {_ast, result} = Macro.prewalk(ast, nil, fn
+        # Standard: def foo(args)
         {def_type, _meta, [{name, _, args} | _]} = node, nil
-        when def_type in [:def, :defp] and is_atom(name) ->
-          name_matches = name == function_name or to_string(name) == to_string(function_name)
-          arity_matches = length(args || []) == arity
+        when def_type in [:def, :defp] and is_atom(name) and name != :when ->
+          if matches_function?(name, args, function_name, arity) do
+            {node, Macro.to_string(node)}
+          else
+            {node, nil}
+          end
 
-          if name_matches and arity_matches do
+        # With when clause: def foo(args) when guard
+        {def_type, _meta, [{:when, _, [{name, _, args} | _]} | _]} = node, nil
+        when def_type in [:def, :defp] and is_atom(name) ->
+          if matches_function?(name, args, function_name, arity) do
             {node, Macro.to_string(node)}
           else
             {node, nil}
@@ -39,6 +46,12 @@ defmodule Giulia.AST.Slicer do
         func_source -> {:ok, func_source}
       end
     end
+  end
+
+  defp matches_function?(name, args, target_name, target_arity) do
+    name_matches = name == target_name or to_string(name) == to_string(target_name)
+    arity_matches = length(args || []) == target_arity
+    name_matches and arity_matches
   end
 
   @doc """
@@ -137,10 +150,19 @@ defmodule Giulia.AST.Slicer do
   # ============================================================================
 
   defp find_function_ast(ast, function_name, arity) do
-    result =
-      ast
-      |> Sourceror.prewalk(nil, fn
+    {_, result} =
+      Macro.prewalk(ast, nil, fn
+        # Standard: def foo(args)
         {def_type, _meta, [{^function_name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] ->
+          if length(args || []) == arity do
+            {node, node}
+          else
+            {node, nil}
+          end
+
+        # With when clause: def foo(args) when guard
+        {def_type, _meta, [{:when, _, [{^function_name, _, args} | _]} | _]} = node, nil
         when def_type in [:def, :defp] ->
           if length(args || []) == arity do
             {node, node}
@@ -151,7 +173,6 @@ defmodule Giulia.AST.Slicer do
         node, acc ->
           {node, acc}
       end)
-      |> elem(1)
 
     case result do
       nil -> {:error, :not_found}
@@ -160,41 +181,56 @@ defmodule Giulia.AST.Slicer do
   end
 
   defp find_function_at_line(ast, target_line) do
-    ast
-    |> Sourceror.prewalk(nil, fn
-      {def_type, meta, [{name, _, args} | _]} = node, nil
-      when def_type in [:def, :defp] ->
-        start_line = Keyword.get(meta, :line, 0)
-        end_line = get_end_line(meta, start_line)
-        arity = length(args || [])
+    {_, result} =
+      Macro.prewalk(ast, nil, fn
+        # Standard: def foo(args)
+        {def_type, meta, [{name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] and is_atom(name) and name != :when ->
+          start_line = Keyword.get(meta, :line, 0)
+          end_line = get_end_line(meta, start_line)
+          arity = length(args || [])
 
-        if target_line >= start_line and target_line <= end_line do
-          {node, {name, arity, Macro.to_string(node)}}
-        else
-          {node, nil}
-        end
+          if target_line >= start_line and target_line <= end_line do
+            {node, {name, arity, Macro.to_string(node)}}
+          else
+            {node, nil}
+          end
 
-      node, acc ->
-        {node, acc}
-    end)
-    |> elem(1)
+        # With when clause: def foo(args) when guard
+        {def_type, meta, [{:when, _, [{name, _, args} | _]} | _]} = node, nil
+        when def_type in [:def, :defp] and is_atom(name) ->
+          start_line = Keyword.get(meta, :line, 0)
+          end_line = get_end_line(meta, start_line)
+          arity = length(args || [])
+
+          if target_line >= start_line and target_line <= end_line do
+            {node, {name, arity, Macro.to_string(node)}}
+          else
+            {node, nil}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    result
   end
 
   defp extract_called_functions(func_ast) do
-    func_ast
-    |> Sourceror.prewalk([], fn
-      {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
-        if name not in [:def, :defp, :do, :end, :if, :case, :cond, :fn, :&, :|>] do
-          {node, [{name, length(args)} | acc]}
-        else
-          {node, acc}
-        end
+    {_, result} =
+      Macro.prewalk(func_ast, [], fn
+        {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
+          if name not in [:def, :defp, :do, :end, :if, :case, :cond, :fn, :&, :|>] do
+            {node, [{name, length(args)} | acc]}
+          else
+            {node, acc}
+          end
 
-      node, acc ->
-        {node, acc}
-    end)
-    |> elem(1)
-    |> Enum.uniq()
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.uniq(result)
   end
 
   defp get_line_range(meta) when is_list(meta) do

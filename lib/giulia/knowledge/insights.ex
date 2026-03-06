@@ -239,7 +239,7 @@ defmodule Giulia.Knowledge.Insights do
         # Query ETS for spec/doc/function coverage
         public_functions =
           Giulia.Context.Store.list_functions(project_path, mod)
-          |> Enum.filter(fn f -> f.type == :def end)
+          |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
         specs = Giulia.Context.Store.list_specs(project_path, mod)
         docs = Giulia.Context.Store.list_docs(project_path, mod)
@@ -431,8 +431,8 @@ defmodule Giulia.Knowledge.Insights do
 
         case modules do
           [mod | _] ->
-            public = Enum.count(functions, fn f -> f.type == :def end)
-            private = Enum.count(functions, fn f -> f.type == :defp end)
+            public = Enum.count(functions, fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+            private = Enum.count(functions, fn f -> f.type in [:defp, :defmacrop, :defguardp] end)
             total = public + private
             ratio = if total > 0, do: Float.round(public / total, 2), else: 0.0
 

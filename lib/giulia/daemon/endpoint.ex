@@ -303,7 +303,7 @@ defmodule Giulia.Daemon.Endpoint do
 
         header = if module_filter, do: "Functions in #{module_filter}:", else: "Functions (showing first 20):"
         func_list = Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
-          type_marker = if f.type == :defp, do: "(private)", else: ""
+          type_marker = if f.type in [:defp, :defmacrop, :defguardp], do: "(private)", else: ""
           "- #{f.module}.#{f.name}/#{f.arity} #{type_marker}"
         end)
         "#{header}\n#{func_list}"

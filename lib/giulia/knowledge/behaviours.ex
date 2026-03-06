@@ -53,7 +53,7 @@ defmodule Giulia.Knowledge.Behaviours do
             # Get public functions of the implementer
             impl_functions =
               Giulia.Context.Store.list_functions(project_path, impl_mod)
-              |> Enum.filter(fn f -> f.type == :def end)
+              |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
               |> Enum.map(fn f -> {to_string(f.name), f.arity} end)
               |> MapSet.new()
 

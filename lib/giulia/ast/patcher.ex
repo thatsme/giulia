@@ -15,18 +15,28 @@ defmodule Giulia.AST.Patcher do
   def patch_function(source, function_name, arity, new_body) do
     with {:ok, ast} <- Sourceror.parse_string(source),
          {:ok, new_ast} <- Sourceror.parse_string(new_body) do
-      patched =
-        Sourceror.postwalk(ast, fn
-          {def_type, _meta, [{^function_name, _fn_meta, args} | _]} = node
+      {patched, _acc} =
+        Macro.postwalk(ast, nil, fn
+          # Standard: def foo(args)
+          {def_type, _meta, [{^function_name, _fn_meta, args} | _]} = node, acc
           when def_type in [:def, :defp] ->
             if length(args || []) == arity do
-              new_ast
+              {new_ast, acc}
             else
-              node
+              {node, acc}
             end
 
-          node ->
-            node
+          # With when clause: def foo(args) when guard
+          {def_type, _meta, [{:when, _, [{^function_name, _, args} | _]} | _]} = node, acc
+          when def_type in [:def, :defp] ->
+            if length(args || []) == arity do
+              {new_ast, acc}
+            else
+              {node, acc}
+            end
+
+          node, acc ->
+            {node, acc}
         end)
 
       {:ok, Macro.to_string(patched)}
@@ -43,15 +53,26 @@ defmodule Giulia.AST.Patcher do
          {:ok, func_ast} <- Sourceror.parse_string(function_source) do
       module_parts = String.split(module_name, ".") |> Enum.map(&String.to_atom/1)
 
-      patched =
-        Sourceror.postwalk(ast, fn
-          {:defmodule, meta, [{:__aliases__, alias_meta, ^module_parts}, body_block]} ->
-            [do: {:__block__, block_meta, body}] = body_block
-            new_body = body ++ [func_ast]
-            {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, block_meta, new_body}]]}
+      {patched, _acc} =
+        Macro.postwalk(ast, nil, fn
+          {:defmodule, meta, [{:__aliases__, alias_meta, ^module_parts}, body_block]}, acc ->
+            case body_block do
+              [do: {:__block__, block_meta, body}] ->
+                new_body = body ++ [func_ast]
+                node = {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, block_meta, new_body}]]}
+                {node, acc}
 
-          node ->
-            node
+              [{_do_key, body}] ->
+                # Single expression body — wrap in block
+                node = {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, [], [body, func_ast]}]]}
+                {node, acc}
+
+              _ ->
+                {{:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, body_block]}, acc}
+            end
+
+          node, acc ->
+            {node, acc}
         end)
 
       {:ok, Macro.to_string(patched)}
@@ -64,10 +85,21 @@ defmodule Giulia.AST.Patcher do
   @spec get_function_range(Macro.t(), atom(), non_neg_integer()) ::
           {:ok, {non_neg_integer(), non_neg_integer()}} | :not_found
   def get_function_range(ast, function_name, arity) do
-    result =
-      ast
-      |> Sourceror.prewalk(nil, fn
+    {_, result} =
+      Macro.prewalk(ast, nil, fn
+        # Standard: def foo(args)
         {def_type, meta, [{^function_name, _, args} | _]} = node, nil
+        when def_type in [:def, :defp] ->
+          if length(args || []) == arity do
+            start_line = Keyword.get(meta, :line, 0)
+            end_line = Keyword.get(meta, :end_of_expression, []) |> Keyword.get(:line, start_line)
+            {node, {start_line, end_line}}
+          else
+            {node, nil}
+          end
+
+        # With when clause: def foo(args) when guard
+        {def_type, meta, [{:when, _, [{^function_name, _, args} | _]} | _]} = node, nil
         when def_type in [:def, :defp] ->
           if length(args || []) == arity do
             start_line = Keyword.get(meta, :line, 0)
@@ -80,7 +112,6 @@ defmodule Giulia.AST.Patcher do
         node, acc ->
           {node, acc}
       end)
-      |> elem(1)
 
     case result do
       nil -> :not_found

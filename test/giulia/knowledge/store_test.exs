@@ -124,7 +124,7 @@ defmodule Giulia.Knowledge.StoreTest do
 
     test "unknown module returns error" do
       populate_and_rebuild()
-      assert {:error, :not_found} = Store.centrality(@project, "NonExistent")
+      assert {:error, {:not_found, "NonExistent"}} = Store.centrality(@project, "NonExistent")
     end
   end
 

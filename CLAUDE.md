@@ -227,10 +227,25 @@ mix compile
 
 # Run interactive
 iex -S mix
-
-# Test
-mix test
 ```
+
+## Testing (CRITICAL — read TESTING.md for full details)
+
+Tests MUST run inside Docker from the live-mounted volume. Never run from `/app`.
+
+```bash
+# Run ALL tests
+docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+
+# Run single file
+docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs"
+
+# Run specific test by line
+docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs:42"
+```
+
+**Why:** EXLA doesn't compile on Windows. `MIX_ENV=test` skips Bandit (port 4000 conflict).
+`/projects/Giulia` is the live host mount; `/app` is a stale image copy.
 
 ## Building the Light Client (HTTP-based thin client)
 
