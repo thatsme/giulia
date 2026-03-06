@@ -24,6 +24,8 @@ defmodule Giulia.Inference.RenameMFA do
     - `:resolve_fn` — `fn path -> resolved_path end`
     - `:request_id` — for event broadcasting (optional)
   """
+  @spec execute(map(), Transaction.t(), keyword()) ::
+          {:ok, String.t(), Transaction.t(), MapSet.t(), map()} | {:error, String.t()}
   def execute(params, tx, opts) do
     module = params["module"] || params[:module]
     old_name = params["old_name"] || params[:old_name]
@@ -258,6 +260,7 @@ defmodule Giulia.Inference.RenameMFA do
   Detect default arguments and return the range of valid arities.
   e.g., `def execute(name, args, opts \\\\ [])` → `[2, 3]`
   """
+  @spec detect_arity_range(String.t(), atom(), non_neg_integer()) :: [non_neg_integer()]
   def detect_arity_range(source, old_atom, declared_arity) do
     case Sourceror.parse_string(source) do
       {:ok, ast} ->
@@ -293,6 +296,8 @@ defmodule Giulia.Inference.RenameMFA do
   AST-guided, line-level rename within a single source file.
   Returns `{new_source, change_count}`.
   """
+  @spec rename_in_source(String.t(), String.t(), atom(), String.t(), String.t(), [non_neg_integer()], keyword()) ::
+          {String.t(), non_neg_integer()}
   def rename_in_source(source, target_module, old_atom, old_name, new_name, arity_range, opts) do
     is_target = Keyword.get(opts, :is_target, false)
     is_implementer = Keyword.get(opts, :is_implementer, false)
@@ -391,6 +396,7 @@ defmodule Giulia.Inference.RenameMFA do
   @doc """
   Replace function name on a specific line using word-boundary regex.
   """
+  @spec rename_on_line(String.t(), String.t(), String.t()) :: String.t()
   def rename_on_line(line, old_name, new_name) do
     Regex.replace(~r/\b#{Regex.escape(old_name)}\(/, line, "#{new_name}(")
   end

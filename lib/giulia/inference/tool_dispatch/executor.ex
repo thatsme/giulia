@@ -20,6 +20,7 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
   # ============================================================================
 
   @doc "Execute a tool call through the normal lifecycle (telemetry, execute, record)."
+  @spec execute_normal(String.t(), map(), map(), map()) :: {:next, atom() | tuple(), map()}
   def execute_normal(tool_name, params, response, state) do
     # BROADCAST: Tool call starting
     if state.request_id do

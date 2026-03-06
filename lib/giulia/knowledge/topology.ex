@@ -13,6 +13,7 @@ defmodule Giulia.Knowledge.Topology do
   # Graph Statistics
   # ============================================================================
 
+  @spec stats(Graph.t()) :: map()
   def stats(graph) do
     vertices = Graph.vertices(graph)
     vertex_count = length(vertices)
@@ -58,6 +59,7 @@ defmodule Giulia.Knowledge.Topology do
   # Centrality & Neighbors
   # ============================================================================
 
+  @spec centrality(Graph.t(), String.t()) :: {:ok, map()} | {:error, {:not_found, String.t()}}
   def centrality(graph, module) do
     if Graph.has_vertex?(graph, module) do
       dependents = Graph.in_neighbors(graph, module)
@@ -72,6 +74,7 @@ defmodule Giulia.Knowledge.Topology do
     end
   end
 
+  @spec dependents(Graph.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependents(graph, module) do
     if Graph.has_vertex?(graph, module) do
       # Who points TO this module (incoming edges) = who depends on me
@@ -82,6 +85,7 @@ defmodule Giulia.Knowledge.Topology do
     end
   end
 
+  @spec dependencies(Graph.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependencies(graph, module) do
     if Graph.has_vertex?(graph, module) do
       # What this module points TO (outgoing edges) = what I depend on
@@ -96,6 +100,7 @@ defmodule Giulia.Knowledge.Topology do
   # Impact Analysis
   # ============================================================================
 
+  @spec impact_map(Graph.t(), String.t(), non_neg_integer()) :: {:ok, map()} | {:error, tuple()}
   def impact_map(graph, vertex_id, depth) do
     if Graph.has_vertex?(graph, vertex_id) do
       # Upstream: what this vertex depends on (follow outgoing edges)
@@ -140,6 +145,7 @@ defmodule Giulia.Knowledge.Topology do
     end
   end
 
+  @spec trace_path(Graph.t(), String.t(), String.t()) :: {:ok, :no_path | [String.t()]} | {:error, {:not_found, String.t()}}
   def trace_path(graph, from, to) do
     if not Graph.has_vertex?(graph, from) do
       {:error, {:not_found, from}}
@@ -159,6 +165,7 @@ defmodule Giulia.Knowledge.Topology do
   # Circular Dependency Detection
   # ============================================================================
 
+  @spec cycles(Graph.t()) :: {:ok, map()}
   def cycles(graph) do
     # Filter to module-only subgraph (exclude function/struct vertices)
     module_vertices =
@@ -195,6 +202,7 @@ defmodule Giulia.Knowledge.Topology do
   # Fan-in / Fan-out Analysis
   # ============================================================================
 
+  @spec fan_in_out(Graph.t(), String.t()) :: {:ok, map()}
   def fan_in_out(graph, project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 

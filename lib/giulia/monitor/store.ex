@@ -18,26 +18,31 @@ defmodule Giulia.Monitor.Store do
   # Public API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Push a telemetry event into the buffer and fan out to SSE subscribers."
+  @spec push(map()) :: :ok
   def push(event) do
     GenServer.cast(__MODULE__, {:push, event})
   end
 
   @doc "Return the last `n` events (default: all in buffer)."
+  @spec history(non_neg_integer()) :: [map()]
   def history(n \\ @max_events) do
     GenServer.call(__MODULE__, {:history, n})
   end
 
   @doc "Subscribe the calling process to receive `{:monitor_event, event}` messages."
+  @spec subscribe() :: :ok
   def subscribe do
     GenServer.call(__MODULE__, :subscribe)
   end
 
   @doc "Unsubscribe the calling process."
+  @spec unsubscribe() :: :ok
   def unsubscribe do
     GenServer.cast(__MODULE__, {:unsubscribe, self()})
   end

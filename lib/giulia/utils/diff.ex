@@ -22,6 +22,7 @@ defmodule Giulia.Utils.Diff do
   - "-" for removed
   - "+" for added
   """
+  @spec unified(String.t(), String.t(), keyword()) :: [String.t()]
   def unified(old_content, new_content, opts \\ []) do
     context = Keyword.get(opts, :context, @default_context_lines)
     max_lines = Keyword.get(opts, :max_lines, @max_diff_lines)
@@ -57,6 +58,7 @@ defmodule Giulia.Utils.Diff do
   Options same as unified/3.
   Returns a string with ANSI color codes.
   """
+  @spec colorized(String.t(), String.t(), keyword()) :: String.t()
   def colorized(old_content, new_content, opts \\ []) do
     diff_lines = unified(old_content, new_content, opts)
 
@@ -72,6 +74,7 @@ defmodule Giulia.Utils.Diff do
   - max_lines: maximum lines to show (default: 50)
   - file_path: file path for header
   """
+  @spec preview_new(String.t(), keyword()) :: String.t()
   def preview_new(content, opts \\ []) do
     max_lines = Keyword.get(opts, :max_lines, @max_diff_lines)
     file_path = Keyword.get(opts, :file_path, "new file")

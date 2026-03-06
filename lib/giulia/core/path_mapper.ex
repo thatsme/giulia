@@ -189,12 +189,18 @@ defmodule Giulia.Core.PathMapper do
 
   # Legacy fallback for paths that don't match the main mapping
   defp legacy_host_to_container(normalized_path) do
-    legacy_mappings = [
-      {"C:/Users", "/users"},
-      {"D:/", "/d"},
-      {"/home", "/home"},
-      {"/Users", "/users"}
-    ]
+    runtime_mappings = Application.get_env(:giulia, :path_mappings, [])
+
+    legacy_mappings =
+      runtime_mappings ++
+        [
+          {"C:/Development/GitHub", "/projects"},
+          {"D:/Development/GitHub", "/projects"},
+          {"C:/Users", "/users"},
+          {"D:/Users", "/users"},
+          {"/home", "/home"},
+          {"/Users", "/users"}
+        ]
 
     Enum.find_value(legacy_mappings, normalized_path, fn {host, container} ->
       if String.starts_with?(normalized_path, host) do

@@ -13,6 +13,7 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   # ============================================================================
 
   @doc "Execute a batch find-replace across multiple files via BulkReplace module."
+  @spec execute_bulk_replace(map(), map(), map()) :: {:next, :step, map()}
   def execute_bulk_replace(params, response, state) do
     file_list = params["file_list"] || params[:file_list] || []
 
@@ -104,6 +105,7 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   # ============================================================================
 
   @doc "Execute an AST-based module/function/arity rename via RenameMFA module."
+  @spec execute_rename_mfa(map(), map(), map()) :: {:next, :step, map()}
   def execute_rename_mfa(params, response, state) do
     state =
       if not state.transaction.mode do
@@ -196,6 +198,7 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   # ============================================================================
 
   @doc "Handle commit_changes — route to Engine if staging buffer is non-empty."
+  @spec execute_commit_changes(map(), map(), map()) :: {:next, :step | {:commit_changes, map()}, map()}
   def execute_commit_changes(params, response, state) do
     if map_size(state.transaction.staging_buffer) == 0 do
       observation = "Nothing staged to commit. Use write_file or edit_file first."

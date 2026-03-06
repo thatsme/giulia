@@ -18,6 +18,7 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build the full system prompt with all context.
   """
+  @spec build_system_prompt(keyword()) :: String.t()
   def build_system_prompt(opts \\ []) do
     project_path = opts[:project_path] || get_project_path()
 
@@ -37,6 +38,7 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build a minimal system prompt (for small models with limited context).
   """
+  @spec build_minimal_prompt(keyword()) :: String.t()
   def build_minimal_prompt(_opts \\ []) do
     """
     #{constitution()}
@@ -50,6 +52,7 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build a correction message when a tool call fails validation.
   """
+  @spec build_correction_message(String.t(), term(), term()) :: String.t()
   def build_correction_message(tool_name, errors, valid_options \\ nil) do
     error_text = format_validation_errors(errors)
 
@@ -68,6 +71,7 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build a "stuck" intervention message when the model is looping.
   """
+  @spec build_intervention_message(non_neg_integer(), [String.t()], keyword()) :: String.t()
   def build_intervention_message(attempt_count, last_errors, opts \\ []) do
     project_path = opts[:project_path] || get_project_path()
 
@@ -88,6 +92,7 @@ defmodule Giulia.Context.Builder do
   @doc """
   Build an observation message after tool execution.
   """
+  @spec build_observation(String.t(), {:ok, term()} | {:error, term()}) :: String.t()
   def build_observation(tool_name, result) do
     case result do
       {:ok, output} ->

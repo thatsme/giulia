@@ -11,6 +11,7 @@ defmodule Giulia.Intelligence.EmbeddingServing do
 
   @model_repo "sentence-transformers/all-MiniLM-L6-v2"
 
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(_opts) do
     %{
       id: __MODULE__,
@@ -20,6 +21,7 @@ defmodule Giulia.Intelligence.EmbeddingServing do
     }
   end
 
+  @spec start_link(keyword()) :: GenServer.on_start() | :ignore
   def start_link(_opts) do
     Logger.info("EmbeddingServing: Loading #{@model_repo}...")
 
@@ -60,6 +62,7 @@ defmodule Giulia.Intelligence.EmbeddingServing do
   @doc """
   Check if the embedding serving is available.
   """
+  @spec available?() :: boolean()
   def available? do
     case Process.whereis(Giulia.EmbeddingServing) do
       nil -> false
@@ -70,5 +73,6 @@ defmodule Giulia.Intelligence.EmbeddingServing do
   @doc """
   Returns the model name used for embeddings.
   """
+  @spec model_name() :: String.t()
   def model_name, do: "all-MiniLM-L6-v2"
 end

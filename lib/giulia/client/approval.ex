@@ -5,11 +5,13 @@ defmodule Giulia.Client.Approval do
 
   alias Giulia.Client.HTTP
 
+  @spec prompt() :: boolean()
   def prompt do
     response = IO.gets("\e[1;33mApprove? [y/N]\e[0m ") |> String.trim() |> String.downcase()
     response in ["y", "yes"]
   end
 
+  @spec send_response(String.t(), boolean()) :: :ok
   def send_response(approval_id, approved) do
     # URL-encode the approval_id since it contains special chars (#, <, >, .)
     encoded_id = URI.encode(approval_id, &URI.char_unreserved?/1)

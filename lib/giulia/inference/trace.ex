@@ -10,6 +10,7 @@ defmodule Giulia.Inference.Trace do
   @doc """
   Start the trace storage.
   """
+  @spec start_link(keyword()) :: Agent.on_start()
   def start_link(_opts) do
     Agent.start_link(fn -> nil end, name: __MODULE__)
   end
@@ -17,6 +18,7 @@ defmodule Giulia.Inference.Trace do
   @doc """
   Store a trace from a completed orchestrator run.
   """
+  @spec store(map()) :: :ok
   def store(trace) when is_map(trace) do
     Agent.update(__MODULE__, fn _ ->
       Map.put(trace, :stored_at, DateTime.utc_now())
@@ -26,6 +28,7 @@ defmodule Giulia.Inference.Trace do
   @doc """
   Get the last stored trace.
   """
+  @spec get_last() :: map() | nil
   def get_last do
     Agent.get(__MODULE__, & &1)
   end
@@ -33,6 +36,7 @@ defmodule Giulia.Inference.Trace do
   @doc """
   Build a trace map from orchestrator state.
   """
+  @spec from_orchestrator_state(map()) :: map()
   def from_orchestrator_state(state) do
     %{
       task: state.task,

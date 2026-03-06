@@ -13,6 +13,7 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
   # ============================================================================
 
   @doc "Request user approval before executing a tool, then halt the loop."
+  @spec execute_with_approval(String.t(), map(), map(), map()) :: {:halt, map()}
   def execute_with_approval(tool_name, params, response, state) do
     Logger.info("Tool #{tool_name} requires approval - entering wait state")
 
@@ -74,6 +75,7 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
   # ============================================================================
 
   @doc "Handle an approved tool call — execute directly."
+  @spec handle_approved(map(), map(), (String.t(), map(), map(), map() -> tuple())) :: tuple()
   def handle_approved(pending, state, execute_direct_fn) do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.info("Approval granted for #{tool_name}")
@@ -90,6 +92,7 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
   end
 
   @doc "Handle a rejected tool call — inject feedback."
+  @spec handle_rejected(map(), map()) :: {:next, :step, map()}
   def handle_rejected(pending, state) do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.info("Approval rejected for #{tool_name}")
@@ -106,6 +109,7 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
   end
 
   @doc "Handle an approval timeout — inject timeout feedback."
+  @spec handle_timed_out(map(), term(), map()) :: {:next, :step, map()}
   def handle_timed_out(pending, reason, state) do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.warning("Approval timeout for #{tool_name}: #{inspect(reason)}")

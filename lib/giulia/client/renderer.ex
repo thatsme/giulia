@@ -8,6 +8,7 @@ defmodule Giulia.Client.Renderer do
   alias Giulia.Client.Output
   alias Giulia.Client.Approval
 
+  @spec execute_input(String.t(), String.t()) :: :ok
   def execute_input(input, host_path) do
     IO.puts("\n\e[36m┌─ Inference Loop ────────────────────────────┐\e[0m")
 

@@ -14,6 +14,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   # ============================================================================
 
   @doc "Build standard tool opts from state."
+  @spec build_tool_opts(map()) :: keyword()
   def build_tool_opts(state) do
     opts = []
 
@@ -43,6 +44,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   @doc "Resolve a tool path through the sandbox."
+  @spec resolve_tool_path(String.t() | nil, map()) :: String.t() | nil
   def resolve_tool_path(nil, _state), do: nil
 
   def resolve_tool_path(path, state) do
@@ -59,6 +61,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   @doc "Get working directory for display."
+  @spec get_working_directory(map()) :: String.t()
   def get_working_directory(state) do
     if state.project_path do
       PathMapper.to_host(state.project_path)
@@ -68,6 +71,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   @doc "Get constitution from ProjectContext pid."
+  @spec get_constitution(pid() | nil) :: String.t() | nil
   def get_constitution(nil), do: nil
 
   def get_constitution(pid) when is_pid(pid) do
@@ -83,6 +87,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   # ============================================================================
 
   @doc "Format params as a brief string."
+  @spec format_params_brief(map()) :: String.t()
   def format_params_brief(params) when is_map(params) do
     params
     |> Enum.take(2)
@@ -94,6 +99,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   @doc "Sanitize params for broadcasting (truncate large content)."
+  @spec sanitize_params_for_broadcast(map() | term()) :: map() | term()
   def sanitize_params_for_broadcast(params) when is_map(params) do
     params
     |> Enum.map(fn {k, v} ->
@@ -113,6 +119,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   # ============================================================================
 
   @doc "Extract the target file from state (task description + action history)."
+  @spec extract_target_file(map()) :: String.t() | nil
   def extract_target_file(state) do
     task_file = extract_file_from_text(state.task)
 
@@ -132,6 +139,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   end
 
   @doc "Read fresh content for a file path (uses Registry for sandbox)."
+  @spec read_fresh_content(String.t(), map()) :: String.t() | nil
   def read_fresh_content(file_path, state) do
     tool_opts = build_tool_opts(state)
 

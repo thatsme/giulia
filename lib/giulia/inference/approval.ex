@@ -31,6 +31,7 @@ defmodule Giulia.Inference.Approval do
   # Client API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -48,6 +49,7 @@ defmodule Giulia.Inference.Approval do
 
   This is the preferred method for the orchestrator to avoid deadlock.
   """
+  @spec request_approval_async(String.t(), String.t(), map(), String.t() | nil, pid(), keyword()) :: :ok
   def request_approval_async(approval_id, tool, params, preview, callback_pid, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     GenServer.cast(__MODULE__, {:request_approval_async, approval_id, tool, params, preview, callback_pid, timeout})
@@ -64,6 +66,7 @@ defmodule Giulia.Inference.Approval do
   - :rejected - User rejected the operation
   - {:timeout, reason} - Timed out waiting for response
   """
+  @spec request_approval(String.t(), String.t(), map(), String.t() | nil, keyword()) :: :approved | :rejected | {:timeout, term()}
   def request_approval(request_id, tool, params, preview, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     GenServer.call(__MODULE__, {:request_approval, request_id, tool, params, preview, timeout}, timeout + 5000)
@@ -74,6 +77,7 @@ defmodule Giulia.Inference.Approval do
 
   Called by HTTP endpoint when user decides.
   """
+  @spec respond(String.t(), boolean()) :: :ok
   def respond(request_id, approved?) do
     GenServer.cast(__MODULE__, {:respond, request_id, approved?})
   end
@@ -81,6 +85,7 @@ defmodule Giulia.Inference.Approval do
   @doc """
   Get info about a pending approval request.
   """
+  @spec get_pending(String.t()) :: {:ok, map()} | {:error, :not_found}
   def get_pending(request_id) do
     GenServer.call(__MODULE__, {:get_pending, request_id})
   end
@@ -88,6 +93,7 @@ defmodule Giulia.Inference.Approval do
   @doc """
   List all pending approval requests.
   """
+  @spec list_pending() :: [map()]
   def list_pending do
     GenServer.call(__MODULE__, :list_pending)
   end
@@ -95,6 +101,7 @@ defmodule Giulia.Inference.Approval do
   @doc """
   Cancel a pending approval request.
   """
+  @spec cancel(String.t()) :: :ok
   def cancel(request_id) do
     GenServer.cast(__MODULE__, {:cancel, request_id})
   end

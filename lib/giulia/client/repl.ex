@@ -8,6 +8,7 @@ defmodule Giulia.Client.REPL do
 
   @heredoc_delim ~s(""")
 
+  @spec start() :: :ok
   def start do
     Output.print_banner()
     host_path = Client.get_working_directory()

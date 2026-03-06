@@ -21,6 +21,7 @@ defmodule Giulia do
   @doc """
   Get the current project state.
   """
+  @spec status(String.t() | nil) :: map()
   def status(project_path \\ nil) do
     %{
       indexer: Indexer.status(),
@@ -32,6 +33,7 @@ defmodule Giulia do
   @doc """
   Switch the active provider.
   """
+  @spec use_provider(:anthropic | :ollama | :lm_studio) :: :ok
   def use_provider(provider) when provider in [:anthropic, :ollama, :lm_studio] do
     module =
       case provider do

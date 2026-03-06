@@ -17,6 +17,7 @@ defmodule Giulia.Inference.Escalation do
   @doc """
   Build the v2 Senior Architect prompt requesting hybrid <action> + <payload> format.
   """
+  @spec build_prompt(String.t() | nil, String.t() | nil, String.t()) :: String.t()
   def build_prompt(target_file, file_content, errors) do
     """
     You are the Senior Elixir Architect. Fix this compilation error.
@@ -61,6 +62,7 @@ defmodule Giulia.Inference.Escalation do
   Tries Groq first (LPU speed), falls back to Gemini.
   Returns `{:ok, provider_name, response}` or `{:error, reason}`.
   """
+  @spec call(String.t()) :: {:ok, String.t(), String.t()} | {:error, term()}
   def call(prompt) do
     messages = [
       %{
@@ -98,6 +100,7 @@ defmodule Giulia.Inference.Escalation do
   Gemini fallback for escalation.
   Returns `{:ok, provider_name, response}` or `{:error, reason}`.
   """
+  @spec try_gemini([map()]) :: {:ok, String.t(), String.t()} | {:error, term()}
   def try_gemini(messages) do
     case Giulia.Provider.Gemini.chat(messages, [], timeout: 60_000) do
       {:ok, response} ->
@@ -112,6 +115,7 @@ defmodule Giulia.Inference.Escalation do
   Parse legacy LINE:N / CODE: format from Senior Architect response.
   Returns `{:ok, line_num, fixed_line}` or `{:error, reason}`.
   """
+  @spec parse_line_fix(String.t()) :: {:ok, non_neg_integer(), String.t()} | {:error, atom()}
   def parse_line_fix(response) do
     cleaned =
       response
@@ -140,6 +144,7 @@ defmodule Giulia.Inference.Escalation do
   Apply a line fix: replace line N in file with fixed content.
   Returns `{:ok, result}` or `{:error, reason}`.
   """
+  @spec apply_line_fix(String.t() | nil, non_neg_integer(), String.t(), Giulia.Core.PathSandbox.t()) :: {:ok, String.t()} | {:error, String.t()}
   def apply_line_fix(file_path, line_num, fixed_line, sandbox) do
     safe_path =
       case Giulia.Core.PathSandbox.validate(sandbox, file_path) do
@@ -174,6 +179,7 @@ defmodule Giulia.Inference.Escalation do
   @doc """
   Add line numbers to file content for easier reference in prompts.
   """
+  @spec add_line_numbers(String.t() | nil) :: String.t()
   def add_line_numbers(nil), do: "(could not read file)"
 
   def add_line_numbers(content) do
