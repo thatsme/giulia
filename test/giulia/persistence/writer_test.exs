@@ -27,8 +27,9 @@ defmodule Giulia.Persistence.WriterTest do
 
       Writer.persist_ast(@test_dir, test_file, ast_data)
 
-      # Wait for debounce + flush
-      Process.sleep(200)
+      # Wait for debounce (100ms) + Task flush + CubDB write
+      # Under full test suite load, CubDB can be slow
+      Process.sleep(1000)
 
       # Verify data landed in CubDB
       assert CubDB.get(db, {:ast, test_file}) == ast_data
@@ -44,7 +45,7 @@ defmodule Giulia.Persistence.WriterTest do
       graph = Graph.new(type: :directed) |> Graph.add_vertex("A")
 
       Writer.persist_graph(@test_dir, graph)
-      Process.sleep(100)
+      Process.sleep(500)
 
       binary = CubDB.get(db, {:graph, :serialized})
       assert is_binary(binary)
@@ -55,12 +56,14 @@ defmodule Giulia.Persistence.WriterTest do
 
   describe "persist_metrics/2" do
     test "persists metric map" do
-      {:ok, db} = Store.open(@test_dir)
+      {:ok, _db} = Store.open(@test_dir)
       metrics = %{heatmap: %{}, dead_code: []}
 
       Writer.persist_metrics(@test_dir, metrics)
-      Process.sleep(100)
+      Process.sleep(1000)
 
+      # Re-fetch db pid to avoid stale reference after Task write
+      {:ok, db} = Store.get_db(@test_dir)
       assert CubDB.get(db, {:metrics, :cached}) == metrics
     end
   end

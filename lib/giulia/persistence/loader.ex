@@ -50,10 +50,20 @@ defmodule Giulia.Persistence.Loader do
             :not_cached
 
           binary when is_binary(binary) ->
-            graph = :erlang.binary_to_term(binary)
-            Giulia.Knowledge.Store.restore_graph(project_path, graph)
-            Logger.info("Restored knowledge graph from cache for #{project_path}")
-            :ok
+            try do
+              graph = :erlang.binary_to_term(binary)
+              Giulia.Knowledge.Store.restore_graph(project_path, graph)
+              Logger.info("Restored knowledge graph from cache for #{project_path}")
+              :ok
+            rescue
+              e ->
+                Logger.warning("Corrupt graph cache for #{project_path}: #{Exception.message(e)}")
+                :not_cached
+            end
+
+          _other ->
+            Logger.warning("Unexpected graph cache format for #{project_path}")
+            :not_cached
         end
 
       _ ->
@@ -77,6 +87,10 @@ defmodule Giulia.Persistence.Loader do
             Giulia.Knowledge.Store.restore_metrics(project_path, metrics)
             Logger.info("Restored metric cache from disk for #{project_path}")
             :ok
+
+          _other ->
+            Logger.warning("Unexpected metrics cache format for #{project_path}")
+            :not_cached
         end
 
       _ ->
@@ -103,6 +117,10 @@ defmodule Giulia.Persistence.Loader do
                   Giulia.Context.Store.put_embeddings(project_path, type, entries)
                   Logger.info("Restored #{type} embeddings from cache (#{length(entries)} entries)")
                   true
+
+                _other ->
+                  Logger.warning("Unexpected #{type} embedding cache format for #{project_path}")
+                  acc
               end
           end
 
@@ -144,6 +162,9 @@ defmodule Giulia.Persistence.Loader do
 
       stored_schema != current_schema ->
         {:incompatible, "schema v#{stored_schema} != v#{current_schema}"}
+
+      is_nil(stored_build) ->
+        {:incompatible, "no build number (incomplete metadata)"}
 
       is_integer(stored_build) and is_integer(current_build) and stored_build > current_build ->
         {:incompatible, "stored build #{stored_build} > current #{current_build} (downgrade)"}
