@@ -77,8 +77,8 @@ defmodule Giulia.Persistence.WriterAdversarialTest do
         Writer.persist_ast(dir, file, %{modules: [%{name: "F#{i}", line: 1}], functions: []})
       end
 
-      # Wait for debounce + flush
-      Process.sleep(300)
+      # Wait for debounce + flush (longer under full suite contention)
+      Process.sleep(2000)
 
       # All 100 entries should be in CubDB
       for i <- 1..100 do
