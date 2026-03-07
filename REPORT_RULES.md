@@ -46,8 +46,14 @@ change_risk = centrality * function_count * (1 + complexity_norm + coupling_norm
 Where:
 - `centrality` = in-degree (number of modules that depend on this one)
 - `function_count` = total public + private functions
-- `complexity_norm` = AST complexity / 100
+- `complexity_norm` = module-level AST complexity / 100 (counts control flow nodes across the whole file)
 - `coupling_norm` = max coupling to any single module / 50
+
+**Module-level vs per-function complexity**: Heatmap and change_risk use module-level complexity
+(total control flow nodes in the file). Per-function cognitive complexity (Sonar-style, nesting-aware)
+is available via `GET /api/index/complexity` and is included in `/api/index/functions` responses.
+Use per-function complexity in God Modules drill-downs (Section 5) to pinpoint WHERE complexity
+concentrates within a module.
 
 This is a multiplicative formula — a module with high centrality AND high function
 count AND high complexity will have an exponentially higher score than one with only
@@ -66,6 +72,7 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 |----------|-----------|----------------|
 | `GET /api/index/summary` | modules, functions, types, specs, structs, callbacks | Executive Summary |
 | `GET /api/index/status` | files_scanned, state, cache_status | Executive Summary |
+| `GET /api/index/complexity` | per-function cognitive complexity, sorted desc | God Modules drill-down |
 
 ### Stage 2: Knowledge Graph Topology (graph-backed)
 
@@ -177,6 +184,19 @@ Sorted by in-degree (fan-in). Shows which modules are most dangerous to modify.
 - Use `god_modules` endpoint
 - Add 1-sentence commentary per module: is it a refactoring target? Is the complexity by design?
 - Call out god modules with zero fan-in — they're high complexity but LOW risk to refactor (nothing depends on them)
+- **Per-function complexity drill-down**: For each god module, query
+  `GET /api/index/complexity?path=<path>&module=<name>&min=5&limit=3` to show the top 3
+  most cognitively complex functions. Present as a sub-table under each god module entry:
+
+  | Function | Arity | Cognitive Complexity |
+  |---|---|---|
+  | handle_call | 3 | 14 |
+  | do_scan | 1 | 9 |
+  | process_file | 2 | 7 |
+
+  This pinpoints WHERE the complexity lives — a 200-complexity module with one 45-score
+  function is a different beast than one with 20 functions averaging 10. Skip the sub-table
+  if no function scores >= 5 (the module's complexity is spread thin, not concentrated).
 
 ### Section 6: Blast Radius (Top 3 Risk Modules) — MANDATORY
 
