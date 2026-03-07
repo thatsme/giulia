@@ -17,6 +17,7 @@ defmodule Giulia.Core.ProjectContext do
 
   alias Giulia.Context.{Store, Indexer}
   alias Giulia.Core.PathSandbox
+  alias Giulia.Core.ProjectContext.{Constitution, History}
 
   defstruct [
     :path,
@@ -224,10 +225,10 @@ defmodule Giulia.Core.ProjectContext do
 
     # Load constitution
     constitution_path = Path.join(path, "GIULIA.md")
-    constitution = load_constitution(constitution_path)
+    constitution = Constitution.load(constitution_path)
 
     # Initialize history database
-    history_db = init_history_db(path)
+    history_db = History.init(path)
 
     state = %__MODULE__{
       path: path,
@@ -236,7 +237,7 @@ defmodule Giulia.Core.ProjectContext do
       sandbox: sandbox,
       history_db: history_db,
       started_at: DateTime.utc_now(),
-      current_provider: determine_provider(constitution),
+      current_provider: Constitution.determine_provider(constitution),
       dirty_files: MapSet.new(),
       verification_status: :clean,
       last_verified_at: nil
@@ -258,7 +259,7 @@ defmodule Giulia.Core.ProjectContext do
 
   @impl true
   def handle_call(:reload_constitution, _from, state) do
-    constitution = load_constitution(state.constitution_path)
+    constitution = Constitution.load(state.constitution_path)
     new_state = %{state | constitution: constitution}
     Logger.info("Reloaded constitution for #{state.path}")
     {:reply, :ok, new_state}
@@ -342,7 +343,7 @@ defmodule Giulia.Core.ProjectContext do
 
   @impl true
   def handle_call({:get_history, limit}, _from, state) do
-    history = fetch_history(state.history_db, limit)
+    history = History.fetch(state.history_db, limit)
     {:reply, history, state}
   end
 
@@ -386,7 +387,7 @@ defmodule Giulia.Core.ProjectContext do
 
   @impl true
   def handle_cast({:add_history, role, content}, state) do
-    insert_history(state.history_db, role, content)
+    History.insert(state.history_db, role, content)
     new_state = update_stat(state, :conversations)
     {:noreply, new_state}
   end
@@ -467,165 +468,8 @@ defmodule Giulia.Core.ProjectContext do
   def terminate(reason, state) do
     Logger.info("ProjectContext for #{state.path} terminating: #{inspect(reason)}")
     # Close history database if open
-    close_history_db(state.history_db)
+    History.close(state.history_db)
     :ok
-  end
-
-  # ============================================================================
-  # Private - Constitution
-  # ============================================================================
-
-  defp load_constitution(path) do
-    case File.read(path) do
-      {:ok, content} ->
-        parse_constitution(content)
-
-      {:error, reason} ->
-        Logger.warning("Could not load GIULIA.md: #{inspect(reason)}")
-        %{raw: nil, rules: [], taboos: [], patterns: []}
-    end
-  end
-
-  defp parse_constitution(content) do
-    # Extract structured data from GIULIA.md
-    %{
-      raw: content,
-      rules: extract_section(content, "Architectural Guidelines"),
-      taboos: extract_section(content, "Taboos"),
-      patterns: extract_section(content, "Preferred Patterns"),
-      tech_stack: extract_tech_stack(content)
-    }
-  end
-
-  defp extract_section(content, section_name) do
-    # Simple extraction - find section and get bullet points
-    regex = ~r/## #{section_name}\s*\n((?:[-*].*\n?)*)/
-
-    case Regex.run(regex, content) do
-      [_, bullets] ->
-        bullets
-        |> String.split("\n")
-        |> Enum.map(&String.trim/1)
-        |> Enum.filter(&String.starts_with?(&1, ["-", "*"]))
-        |> Enum.map(&String.replace_prefix(&1, "- ", ""))
-        |> Enum.map(&String.replace_prefix(&1, "* ", ""))
-
-      nil ->
-        []
-    end
-  end
-
-  defp extract_tech_stack(content) do
-    language = extract_field(content, "Language")
-    framework = extract_field(content, "Framework")
-    %{language: language, framework: framework}
-  end
-
-  defp extract_field(content, field) do
-    regex = ~r/\*\*#{field}\*\*:\s*(.+)/
-
-    case Regex.run(regex, content) do
-      [_, value] -> String.trim(value)
-      nil -> nil
-    end
-  end
-
-  defp determine_provider(constitution) do
-    # Check if constitution specifies a provider preference
-    # Default to cloud for now
-    case constitution[:tech_stack] do
-      %{framework: "Phoenix"} -> :cloud  # Phoenix needs full context
-      _ -> :auto  # Let router decide
-    end
-  end
-
-  # ============================================================================
-  # Private - History Database (SQLite)
-  # ============================================================================
-
-  defp init_history_db(project_path) do
-    db_path = Path.join([project_path, ".giulia", "history", "chat.db"])
-
-    # Ensure directory exists
-    db_path |> Path.dirname() |> File.mkdir_p()
-
-    case Exqlite.Sqlite3.open(db_path) do
-      {:ok, conn} ->
-        create_history_table(conn)
-        conn
-
-      {:error, reason} ->
-        Logger.error("Failed to open history DB: #{inspect(reason)}")
-        nil
-    end
-  end
-
-  defp create_history_table(nil), do: :ok
-
-  defp create_history_table(conn) do
-    sql = """
-    CREATE TABLE IF NOT EXISTS messages (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-
-    case Exqlite.Sqlite3.execute(conn, sql) do
-      :ok -> :ok
-      {:error, reason} -> Logger.error("Failed to create history table: #{inspect(reason)}")
-    end
-  end
-
-  defp insert_history(nil, _role, _content), do: :ok
-
-  defp insert_history(conn, role, content) do
-    sql = "INSERT INTO messages (role, content) VALUES (?1, ?2)"
-
-    case Exqlite.Sqlite3.prepare(conn, sql) do
-      {:ok, stmt} ->
-        :ok = Exqlite.Sqlite3.bind(stmt, [role, content])
-        Exqlite.Sqlite3.step(conn, stmt)
-        Exqlite.Sqlite3.release(conn, stmt)
-
-      {:error, reason} ->
-        Logger.error("Failed to insert history: #{inspect(reason)}")
-    end
-  end
-
-  defp fetch_history(nil, _limit), do: []
-
-  defp fetch_history(conn, limit) do
-    sql = "SELECT role, content, created_at FROM messages ORDER BY id DESC LIMIT ?1"
-
-    case Exqlite.Sqlite3.prepare(conn, sql) do
-      {:ok, stmt} ->
-        :ok = Exqlite.Sqlite3.bind(stmt, [limit])
-        results = fetch_all_rows(conn, stmt, [])
-        Exqlite.Sqlite3.release(conn, stmt)
-        Enum.reverse(results)
-
-      {:error, _} ->
-        []
-    end
-  end
-
-  defp fetch_all_rows(conn, stmt, acc) do
-    case Exqlite.Sqlite3.step(conn, stmt) do
-      {:row, [role, content, created_at]} ->
-        row = %{role: role, content: content, created_at: created_at}
-        fetch_all_rows(conn, stmt, [row | acc])
-
-      :done ->
-        acc
-    end
-  end
-
-  defp close_history_db(nil), do: :ok
-
-  defp close_history_db(conn) do
-    Exqlite.Sqlite3.close(conn)
   end
 
   # ============================================================================

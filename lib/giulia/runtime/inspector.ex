@@ -20,8 +20,6 @@ defmodule Giulia.Runtime.Inspector do
   @rpc_timeout 5_000
   @top_n 10
   @hot_spots_n 5
-  @trace_max_events 1_000
-  @trace_max_duration 5_000
 
   # ============================================================================
   # Connection
@@ -195,157 +193,12 @@ defmodule Giulia.Runtime.Inspector do
   end
 
   # ============================================================================
-  # Trace — Short-lived Per-module Call Frequency
+  # Trace (delegated to Inspector.Trace — Build 128)
   # ============================================================================
 
-  @doc """
-  Short-lived per-module function call tracing with kill switch.
-
-  Hard limits (non-negotiable):
-  - Max events: #{@trace_max_events}
-  - Max duration: #{@trace_max_duration}ms
-  - Whichever comes first wins
-
-  Only works on local node — tracing on remote nodes via :rpc is unsafe.
-  """
-  @spec trace(atom(), atom() | String.t(), non_neg_integer()) ::
-          {:ok, map()} | {:error, term()}
-  def trace(node_ref \\ :local, module, duration_ms \\ 5_000) do
-    node = resolve_node(node_ref)
-
-    # Clamp duration
-    actual_duration = min(duration_ms, @trace_max_duration)
-
-    # Resolve module atom
-    module_atom =
-      if is_binary(module) do
-        module
-        |> ensure_elixir_prefix()
-        |> String.to_existing_atom()
-      else
-        module
-      end
-
-    if node == node() do
-      trace_local(module_atom, actual_duration)
-    else
-      trace_remote(node, module_atom, actual_duration)
-    end
-  rescue
-    ArgumentError ->
-      {:error, {:unknown_module, module}}
-  end
-
-  # ============================================================================
-  # Local Trace Implementation
-  # ============================================================================
-
-  defp trace_local(module_atom, duration_ms) do
-    parent = self()
-    ref = make_ref()
-
-    # Spawn a collector process that receives trace messages
-    collector = spawn(fn -> trace_collector_loop(parent, ref, %{}, 0) end)
-
-    # Set up tracing — all calls to the target module
-    :erlang.trace(collector, true, [:receive])
-
-    # Match spec: trace all function calls in the module
-    match_spec = [{:_, [], [{:return_trace}]}]
-
-    try do
-      :erlang.trace_pattern({module_atom, :_, :_}, match_spec, [:local])
-      :erlang.trace(:all, true, [{:tracer, collector}, :call])
-
-      # Wait for duration or kill switch
-      Process.send_after(self(), {:trace_timeout, ref}, duration_ms)
-
-      receive do
-        {:trace_timeout, ^ref} -> :ok
-        {:trace_overflow, ^ref} -> :ok
-      end
-    after
-      # Always clean up tracing
-      :erlang.trace(:all, false, [:call])
-      :erlang.trace_pattern({module_atom, :_, :_}, false, [:local])
-    end
-
-    # Collect results from the collector process
-    send(collector, {:get_results, ref, self()})
-
-    receive do
-      {:trace_results, ^ref, counts, total, aborted} ->
-        calls =
-          counts
-          |> Enum.map(fn {{func, arity}, count} ->
-            %{function: func, arity: arity, count: count}
-          end)
-          |> Enum.sort_by(& &1.count, :desc)
-
-        result = %{
-          module: inspect(module_atom),
-          duration_ms: duration_ms,
-          aborted: aborted,
-          calls: calls,
-          total_calls: total,
-          calls_per_second: Float.round(total / (duration_ms / 1000), 1)
-        }
-
-        if aborted do
-          {:ok, Map.put(result, :reason, "High-frequency function detected (>#{@trace_max_events} events). Use sampling instead.")}
-        else
-          {:ok, result}
-        end
-    after
-      2_000 ->
-        {:error, :trace_collector_timeout}
-    end
-  end
-
-  defp trace_collector_loop(parent, ref, counts, total) do
-    if total >= @trace_max_events do
-      send(parent, {:trace_overflow, ref})
-      trace_collector_wait(counts, total, true, ref)
-    else
-      receive do
-        {:trace, _pid, :call, {_mod, func, args}} ->
-          arity = length(args)
-          key = {func, arity}
-          new_counts = Map.update(counts, key, 1, &(&1 + 1))
-          trace_collector_loop(parent, ref, new_counts, total + 1)
-
-        {:get_results, ^ref, reply_to} ->
-          send(reply_to, {:trace_results, ref, counts, total, false})
-
-        _other ->
-          trace_collector_loop(parent, ref, counts, total)
-      after
-        10_000 ->
-          send(parent, {:trace_results, ref, counts, total, false})
-      end
-    end
-  end
-
-  defp trace_collector_wait(counts, total, aborted, ref) do
-    receive do
-      {:get_results, ^ref, reply_to} ->
-        send(reply_to, {:trace_results, ref, counts, total, aborted})
-
-      {:trace, _, :call, _} ->
-        # Discard overflow events
-        trace_collector_wait(counts, total, aborted, ref)
-
-      _other ->
-        trace_collector_wait(counts, total, aborted, ref)
-    after
-      10_000 -> :ok
-    end
-  end
-
-  defp trace_remote(_node, _module_atom, _duration_ms) do
-    # Remote tracing is intentionally not supported — too dangerous
-    {:error, :remote_trace_not_supported}
-  end
+  defdelegate trace(node_ref \\ :local, module, duration_ms \\ 5_000),
+    to: Giulia.Runtime.Inspector.Trace,
+    as: :run
 
   # ============================================================================
   # Private Helpers
@@ -536,6 +389,4 @@ defmodule Giulia.Runtime.Inspector do
     _ -> nil
   end
 
-  defp ensure_elixir_prefix("Elixir." <> _ = name), do: name
-  defp ensure_elixir_prefix(name), do: "Elixir." <> name
 end
