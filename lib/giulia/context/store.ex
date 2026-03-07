@@ -24,7 +24,7 @@ defmodule Giulia.Context.Store do
   @type embedding_type :: :module | :function
   @type embedding_entry :: %{id: term(), vector: binary(), metadata: map()}
   @type module_entry :: %{name: String.t(), file: String.t(), line: non_neg_integer()}
-  @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: atom(), file: String.t(), line: non_neg_integer()}
+  @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: atom(), file: String.t(), line: non_neg_integer(), complexity: non_neg_integer()}
   @type store_stats :: %{ast_files: non_neg_integer(), total_entries: non_neg_integer()}
 
   # ============================================================================

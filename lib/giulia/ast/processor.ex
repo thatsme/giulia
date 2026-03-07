@@ -33,7 +33,7 @@ defmodule Giulia.AST.Processor do
         }
 
   @type module_info :: %{name: String.t(), line: non_neg_integer(), moduledoc: String.t() | nil}
-  @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp | :defmacro | :defmacrop | :defdelegate | :defguard | :defguardp, line: non_neg_integer()}
+  @type function_info :: %{name: atom(), arity: non_neg_integer(), type: :def | :defp | :defmacro | :defmacrop | :defdelegate | :defguard | :defguardp, line: non_neg_integer(), complexity: non_neg_integer()}
   @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
   @type type_info :: %{name: atom(), arity: non_neg_integer(), visibility: :type | :typep | :opaque, line: non_neg_integer(), definition: String.t()}
   @type spec_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}
@@ -125,8 +125,14 @@ defmodule Giulia.AST.Processor do
   @doc "Count source lines."
   defdelegate count_lines(source), to: Giulia.AST.Analysis
 
-  @doc "Estimate code complexity based on control flow."
+  @doc "Estimate code complexity based on control flow (module-level, legacy)."
   defdelegate estimate_complexity(ast), to: Giulia.AST.Analysis
+
+  @doc "Compute per-function cognitive complexity for all functions in a file AST."
+  defdelegate compute_function_complexities(ast), to: Giulia.AST.Complexity, as: :compute_all
+
+  @doc "Compute cognitive complexity for a single function body AST."
+  defdelegate cognitive_complexity(ast), to: Giulia.AST.Complexity
 
   @doc "Quick test function to verify extraction works."
   defdelegate test_extraction(), to: Giulia.AST.Analysis

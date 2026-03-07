@@ -7,7 +7,7 @@ defmodule Giulia.AST.Analysis do
   `Giulia.AST.Processor.parse_file/1` for file reading.
   """
 
-  alias Giulia.AST.Extraction
+  alias Giulia.AST.{Complexity, Extraction}
 
   # ============================================================================
   # Core Analysis
@@ -44,8 +44,17 @@ defmodule Giulia.AST.Analysis do
     modules = Extraction.extract_modules(ast)
     Logger.info("ANALYZE: got #{length(modules)} modules")
 
-    functions = Extraction.extract_functions(ast)
-    Logger.info("ANALYZE: got #{length(functions)} functions")
+    raw_functions = Extraction.extract_functions(ast)
+    Logger.info("ANALYZE: got #{length(raw_functions)} functions")
+
+    # Enrich functions with per-function cognitive complexity
+    complexity_map = Complexity.compute_all(ast)
+
+    functions =
+      Enum.map(raw_functions, fn func ->
+        complexity = Map.get(complexity_map, {func.name, func.arity}, 0)
+        Map.put(func, :complexity, complexity)
+      end)
 
     types = Extraction.extract_types(ast)
     specs = Extraction.extract_specs(ast)

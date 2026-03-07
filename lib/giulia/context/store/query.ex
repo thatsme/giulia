@@ -112,7 +112,8 @@ defmodule Giulia.Context.Store.Query do
             arity: func.arity,
             type: func.type,
             file: path,
-            line: func.line
+            line: func.line,
+            complexity: Map.get(func, :complexity, 0)
           }
         end)
       else

@@ -203,7 +203,48 @@ defmodule Giulia.Daemon.Routers.Index do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/index/complexity — Per-function cognitive complexity ranking
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Rank functions by cognitive complexity (Sonar-style, nesting-aware)",
+    endpoint: "GET /api/index/complexity",
+    params: %{path: :required, module: :optional, min: :optional, limit: :optional},
+    returns: "JSON list of functions sorted by complexity descending",
+    category: "index"
+  }
+  get "/complexity" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        module_filter = conn.query_params["module"]
+        min_complexity = parse_int(conn.query_params["min"], 0)
+        result_limit = parse_int(conn.query_params["limit"], 50)
+
+        functions =
+          Giulia.Context.Store.list_functions(project_path, module_filter)
+          |> Enum.filter(fn f -> f.complexity >= min_complexity end)
+          |> Enum.sort_by(& &1.complexity, :desc)
+          |> Enum.take(result_limit)
+
+        send_json(conn, 200, %{
+          functions: functions,
+          count: length(functions),
+          module: module_filter,
+          min_complexity: min_complexity
+        })
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
+  end
+
+  defp parse_int(nil, default), do: default
+  defp parse_int(str, default) do
+    case Integer.parse(str) do
+      {n, _} -> n
+      :error -> default
+    end
   end
 end
