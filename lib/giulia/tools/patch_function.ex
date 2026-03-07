@@ -31,15 +31,18 @@ defmodule Giulia.Tools.PatchFunction do
   end
 
   @impl true
+  @spec name() :: String.t()
   def name, do: "patch_function"
 
   @impl true
+  @spec description() :: String.t()
   def description do
     "Replace a function using AST patching. Preferred over edit_file for function replacement. " <>
     "Uses Sourceror to find the function by name/arity and replace it, preserving file formatting."
   end
 
   @impl true
+  @spec parameters() :: map()
   def parameters do
     %{
       type: "object",
@@ -65,6 +68,7 @@ defmodule Giulia.Tools.PatchFunction do
     }
   end
 
+  @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(params) do
     %__MODULE__{}
     |> cast(params, [:module, :function_name, :arity, :code])
@@ -72,6 +76,7 @@ defmodule Giulia.Tools.PatchFunction do
   end
 
   @impl true
+  @spec execute(map() | %__MODULE__{}, keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{} = params, opts) do

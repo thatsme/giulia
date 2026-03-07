@@ -26,12 +26,15 @@ defmodule Giulia.Tools.SearchCode do
   end
 
   @impl true
+  @spec name() :: String.t()
   def name, do: "search_code"
 
   @impl true
+  @spec description() :: String.t()
   def description, do: "Search for a pattern in project source files. Returns matching lines with file paths."
 
   @impl true
+  @spec parameters() :: map()
   def parameters do
     %{
       type: "object",
@@ -61,6 +64,7 @@ defmodule Giulia.Tools.SearchCode do
     }
   end
 
+  @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(params) do
     %__MODULE__{}
     |> cast(params, [:pattern, :file_pattern, :case_sensitive, :include_deps, :max_results])
@@ -68,6 +72,7 @@ defmodule Giulia.Tools.SearchCode do
   end
 
   @impl true
+  @spec execute(map() | %__MODULE__{}, keyword()) :: {:ok, String.t()} | {:error, :invalid_params}
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{} = search, opts) do

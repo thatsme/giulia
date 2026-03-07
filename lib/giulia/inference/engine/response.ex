@@ -8,7 +8,6 @@ defmodule Giulia.Inference.Engine.Response do
 
   require Logger
 
-  alias Giulia.Prompt.Builder
   alias Giulia.StructuredOutput
   alias Giulia.Inference.{ContextBuilder, Events, ResponseParser, State, ToolDispatch}
   alias Giulia.Inference.Engine.Helpers

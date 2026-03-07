@@ -34,6 +34,7 @@ defmodule Giulia.Provider.LMStudio do
   Auto-detect the model loaded in LM Studio by querying GET /v1/models.
   Returns the first model ID, or nil if unreachable.
   """
+  @spec detect_model() :: String.t() | nil
   def detect_model do
     models_url = Giulia.Core.PathMapper.lm_studio_models_url()
 
@@ -57,11 +58,13 @@ defmodule Giulia.Provider.LMStudio do
   end
 
   @impl true
+  @spec chat(list(map()), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts \\ []) do
     chat(messages, [], opts)
   end
 
   @impl true
+  @spec chat(list(map()), list(map()), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, tools, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
     model = resolve_model(opts)
@@ -97,6 +100,7 @@ defmodule Giulia.Provider.LMStudio do
   end
 
   @impl true
+  @spec stream(list(map()), keyword()) :: {:ok, Enumerable.t()}
   def stream(messages, opts) do
     url = opts[:base_url] || Application.get_env(:giulia, :lm_studio_url) || default_url()
     model = resolve_model(opts)
@@ -164,6 +168,7 @@ defmodule Giulia.Provider.LMStudio do
   end
 
   @doc false
+  @spec parse_response(map()) :: map()
   def parse_response(%{"choices" => [choice | _]}) do
     message = choice["message"]
     tool_calls = parse_tool_calls(message["tool_calls"])
