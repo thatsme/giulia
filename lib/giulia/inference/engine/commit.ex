@@ -11,7 +11,6 @@ defmodule Giulia.Inference.Engine.Commit do
   alias Giulia.Context.Store
   alias Giulia.Tools.Registry
   alias Giulia.Inference.{ContextBuilder, Events, State, Transaction, Verification}
-  alias Giulia.Inference.Engine.Helpers
 
   @doc """
   Run the commit pipeline: backup → write → compile → integrity → regress → success/rollback.

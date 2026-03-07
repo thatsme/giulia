@@ -6,7 +6,7 @@ defmodule Giulia.Inference.ToolDispatch.Guards do
 
   require Logger
 
-  alias Giulia.Inference.{ContextBuilder, Events, State, Transaction}
+  alias Giulia.Inference.{ContextBuilder, State, Transaction}
 
   # Subset of write tools that are staged when transaction_mode is active
   @stageable_tools ["write_file", "edit_file", "write_function", "patch_function"]

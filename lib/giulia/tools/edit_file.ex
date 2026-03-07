@@ -27,12 +27,15 @@ defmodule Giulia.Tools.EditFile do
   end
 
   @impl true
+  @spec name() :: String.t()
   def name, do: "edit_file"
 
   @impl true
+  @spec description() :: String.t()
   def description, do: "Replace specific text in a file. old_text must match exactly."
 
   @impl true
+  @spec parameters() :: map()
   def parameters do
     %{
       type: "object",
@@ -54,6 +57,7 @@ defmodule Giulia.Tools.EditFile do
     }
   end
 
+  @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(params) do
     %__MODULE__{}
     |> cast(params, [:file, :old_text, :new_text])
@@ -61,6 +65,7 @@ defmodule Giulia.Tools.EditFile do
   end
 
   @impl true
+  @spec execute(map() | %__MODULE__{}, keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{file: file, old_text: old_text, new_text: new_text}, opts) do
