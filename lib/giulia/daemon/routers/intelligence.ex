@@ -120,6 +120,34 @@ defmodule Giulia.Daemon.Routers.Intelligence do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/intelligence/report_rules — Report generation rules
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get canonical report generation rules (section order, scoring formulas, idiom rules)",
+    endpoint: "GET /api/intelligence/report_rules",
+    params: %{},
+    returns: "Markdown text of REPORT_RULES.md — the mandatory procedure for generating analysis reports",
+    category: "intelligence"
+  }
+  get "/report_rules" do
+    rules_path = Path.join(:code.priv_dir(:giulia), "REPORT_RULES.md")
+
+    case File.read(rules_path) do
+      {:ok, content} ->
+        send_json(conn, 200, %{rules: content, format: "markdown"})
+
+      {:error, _} ->
+        # Fallback: try project root
+        fallback = Path.join(Application.app_dir(:giulia), "../../REPORT_RULES.md") |> Path.expand()
+
+        case File.read(fallback) do
+          {:ok, content} -> send_json(conn, 200, %{rules: content, format: "markdown"})
+          {:error, _} -> send_json(conn, 404, %{error: "REPORT_RULES.md not found"})
+        end
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end

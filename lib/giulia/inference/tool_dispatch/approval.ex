@@ -6,7 +6,8 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
 
   require Logger
 
-  alias Giulia.Inference.{Approval, ContextBuilder, Events, State}
+  alias Giulia.Inference.{Approval, ContextBuilder, State}
+  alias Giulia.Inference.Engine.Helpers
 
   # ============================================================================
   # Approval Flow
@@ -45,9 +46,7 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
         broadcast_payload
       end
 
-    if state.request_id do
-      Events.broadcast(state.request_id, broadcast_payload)
-    end
+    Helpers.maybe_broadcast(state, broadcast_payload)
 
     Approval.request_approval_async(
       approval_id,
@@ -80,13 +79,11 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.info("Approval granted for #{tool_name}")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :approval_granted,
-        approval_id: pending.approval_id,
-        tool: tool_name
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :approval_granted,
+      approval_id: pending.approval_id,
+      tool: tool_name
+    })
 
     execute_direct_fn.(tool_name, params, response, state)
   end
@@ -97,13 +94,11 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.info("Approval rejected for #{tool_name}")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :approval_rejected,
-        approval_id: pending.approval_id,
-        tool: tool_name
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :approval_rejected,
+      approval_id: pending.approval_id,
+      tool: tool_name
+    })
 
     handle_rejection(tool_name, params, response, state)
   end
@@ -114,13 +109,11 @@ defmodule Giulia.Inference.ToolDispatch.Approval do
     %{tool: tool_name, params: params, response: response} = pending
     Logger.warning("Approval timeout for #{tool_name}: #{inspect(reason)}")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :approval_timeout,
-        approval_id: pending.approval_id,
-        tool: tool_name
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :approval_timeout,
+      approval_id: pending.approval_id,
+      tool: tool_name
+    })
 
     handle_timeout(tool_name, params, response, state)
   end

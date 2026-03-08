@@ -10,7 +10,8 @@ defmodule Giulia.Inference.Engine.Commit do
 
   alias Giulia.Context.Store
   alias Giulia.Tools.Registry
-  alias Giulia.Inference.{ContextBuilder, Events, State, Transaction, Verification}
+  alias Giulia.Inference.{ContextBuilder, State, Transaction, Verification}
+  alias Giulia.Inference.Engine.Helpers
 
   @doc """
   Run the commit pipeline: backup → write → compile → integrity → regress → success/rollback.
@@ -25,14 +26,12 @@ defmodule Giulia.Inference.Engine.Commit do
     Logger.info("COMMIT: #{message}")
     Logger.info("COMMIT: Flushing #{file_count} file(s) to disk")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :commit_started,
-        file_count: file_count,
-        files: staged_files,
-        message: message
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :commit_started,
+      file_count: file_count,
+      files: staged_files,
+      message: message
+    })
 
     # Phase 1: Ensure backups are current
     tx =
@@ -56,14 +55,12 @@ defmodule Giulia.Inference.Engine.Commit do
 
       error_msg = "COMMIT FAILED (write phase): #{inspect(write_failures)}"
 
-      if state.request_id do
-        Events.broadcast(state.request_id, %{
-          type: :commit_rollback,
-          reason: "write_failure",
-          files: staged_files,
-          message: error_msg
-        })
-      end
+      Helpers.maybe_broadcast(state, %{
+        type: :commit_rollback,
+        reason: "write_failure",
+        files: staged_files,
+        message: error_msg
+      })
 
       messages = state.messages ++ [%{role: "user", content: error_msg}]
       state = State.set_messages(state, messages)
@@ -73,9 +70,7 @@ defmodule Giulia.Inference.Engine.Commit do
       Logger.info("COMMIT: Compile phase")
       tool_opts = ContextBuilder.build_tool_opts(state)
 
-      if state.request_id do
-        Events.broadcast(state.request_id, %{type: :commit_compiling})
-      end
+      Helpers.maybe_broadcast(state, %{type: :commit_compiling})
 
       case Registry.execute("run_mix", %{"command" => "compile"}, tool_opts) do
         {:ok, output} ->
@@ -83,18 +78,14 @@ defmodule Giulia.Inference.Engine.Commit do
             :success ->
               Logger.info("COMMIT: Compile passed, running integrity check")
 
-              if state.request_id do
-                Events.broadcast(state.request_id, %{type: :commit_compile_passed})
-              end
+              Helpers.maybe_broadcast(state, %{type: :commit_compile_passed})
 
               commit_integrity_check(staged_files, params, state)
 
             {:warnings, _warnings} ->
               Logger.info("COMMIT: Compile passed with warnings, running integrity check")
 
-              if state.request_id do
-                Events.broadcast(state.request_id, %{type: :commit_compile_passed, warnings: true})
-              end
+              Helpers.maybe_broadcast(state, %{type: :commit_compile_passed, warnings: true})
 
               commit_integrity_check(staged_files, params, state)
 
@@ -119,15 +110,13 @@ defmodule Giulia.Inference.Engine.Commit do
               Use bulk_replace multiple times — once per pattern — before committing.
               """
 
-              if state.request_id do
-                Events.broadcast(state.request_id, %{
-                  type: :commit_rollback,
-                  reason: "compile_failure",
-                  message: "Compilation failed — all changes rolled back",
-                  files: staged_files,
-                  errors: String.slice(errors, 0, 500)
-                })
-              end
+              Helpers.maybe_broadcast(state, %{
+                type: :commit_rollback,
+                reason: "compile_failure",
+                message: "Compilation failed — all changes rolled back",
+                files: staged_files,
+                errors: String.slice(errors, 0, 500)
+              })
 
               messages = state.messages ++ [%{role: "user", content: error_msg}]
               state = State.set_messages(state, messages)
@@ -163,17 +152,13 @@ defmodule Giulia.Inference.Engine.Commit do
 
     Giulia.Knowledge.Store.rebuild(state.project_path, Giulia.Context.Store.all_asts(state.project_path))
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{type: :commit_integrity_checking})
-    end
+    Helpers.maybe_broadcast(state, %{type: :commit_integrity_checking})
 
     case Giulia.Knowledge.Store.check_all_behaviours(state.project_path) do
       {:ok, :consistent} ->
         Logger.info("COMMIT: Integrity check passed, running auto-regression")
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{type: :commit_integrity_passed})
-        end
+        Helpers.maybe_broadcast(state, %{type: :commit_integrity_passed})
 
         commit_auto_regress(staged_files, params, state)
 
@@ -196,15 +181,13 @@ defmodule Giulia.Inference.Engine.Commit do
         Use get_impact_map to find all affected modules, then bulk_replace to fix consistently.
         """
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :architectural_fracture,
-            reason: "behaviour_implementer_mismatch",
-            message: "Behaviour-implementer mismatch — all changes rolled back",
-            files: staged_files,
-            fractures: report
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :architectural_fracture,
+          reason: "behaviour_implementer_mismatch",
+          message: "Behaviour-implementer mismatch — all changes rolled back",
+          files: staged_files,
+          fractures: report
+        })
 
         messages = state.messages ++ [%{role: "user", content: error_msg}]
         state = State.set_messages(state, messages)
@@ -234,12 +217,10 @@ defmodule Giulia.Inference.Engine.Commit do
     if all_test_targets != [] do
       Logger.info("COMMIT: Running #{length(all_test_targets)} regression test file(s)")
 
-      if state.request_id do
-        Events.broadcast(state.request_id, %{
-          type: :commit_testing,
-          test_count: length(all_test_targets)
-        })
-      end
+      Helpers.maybe_broadcast(state, %{
+        type: :commit_testing,
+        test_count: length(all_test_targets)
+      })
 
       test_results =
         Enum.map(all_test_targets, fn test_path ->
@@ -275,14 +256,12 @@ defmodule Giulia.Inference.Engine.Commit do
         Use bulk_replace for batch operations, then commit_changes to verify again.
         """
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :commit_rollback,
-            reason: "test_failure",
-            files: staged_files,
-            message: "Auto-regression failed — all changes rolled back"
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :commit_rollback,
+          reason: "test_failure",
+          files: staged_files,
+          message: "Auto-regression failed — all changes rolled back"
+        })
 
         messages = state.messages ++ [%{role: "user", content: error_msg}]
         state = State.set_messages(state, messages)
@@ -299,14 +278,12 @@ defmodule Giulia.Inference.Engine.Commit do
 
     Logger.info("COMMIT: Success! #{file_count} file(s) committed")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :commit_success,
-        file_count: file_count,
-        files: Map.keys(tx.staging_buffer),
-        message: "All #{file_count} file(s) verified and written to disk"
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :commit_success,
+      file_count: file_count,
+      files: Map.keys(tx.staging_buffer),
+      message: "All #{file_count} file(s) verified and written to disk"
+    })
 
     observation = Transaction.success_report(tx)
 

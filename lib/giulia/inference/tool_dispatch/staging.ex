@@ -6,7 +6,8 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
 
   require Logger
 
-  alias Giulia.Inference.{ContextBuilder, Events, State, Transaction}
+  alias Giulia.Inference.{ContextBuilder, State, Transaction}
+  alias Giulia.Inference.Engine.Helpers
   alias Giulia.Prompt.Builder
 
   # ============================================================================
@@ -17,15 +18,13 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
   @spec execute_staged(String.t(), map(), map(), map()) :: {:next, :step, map()}
   def execute_staged(tool_name, params, response, state) do
     # BROADCAST
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :tool_call,
-        iteration: State.iteration(state),
-        tool: tool_name,
-        params: ContextBuilder.sanitize_params_for_broadcast(params),
-        staged: true
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :tool_call,
+      iteration: State.iteration(state),
+      tool: tool_name,
+      params: ContextBuilder.sanitize_params_for_broadcast(params),
+      staged: true
+    })
 
     Logger.info("=== STAGED TOOL CALL [#{State.iteration(state)}] ===")
     Logger.info("Tool: #{tool_name} (transaction mode)")
@@ -71,15 +70,13 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
     Logger.info("Staged result: #{result_preview}")
     Logger.info("=== END STAGED TOOL CALL ===")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :tool_result,
-        tool: tool_name,
-        success: match?({:ok, _}, result),
-        preview: result_preview,
-        staged: true
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :tool_result,
+      tool: tool_name,
+      success: match?({:ok, _}, result),
+      preview: result_preview,
+      staged: true
+    })
 
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
 
@@ -119,23 +116,21 @@ defmodule Giulia.Inference.ToolDispatch.Staging do
 
         result = {:ok, "[STAGED VERSION — not yet on disk]\n#{staged_content}"}
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :tool_call,
-            iteration: State.iteration(state),
-            tool: "read_file",
-            params: ContextBuilder.sanitize_params_for_broadcast(params),
-            staged: true
-          })
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_call,
+          iteration: State.iteration(state),
+          tool: "read_file",
+          params: ContextBuilder.sanitize_params_for_broadcast(params),
+          staged: true
+        })
 
-          Events.broadcast(state.request_id, %{
-            type: :tool_result,
-            tool: "read_file",
-            success: true,
-            preview: "[STAGED] #{String.slice(staged_content, 0, 100)}",
-            staged: true
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_result,
+          tool: "read_file",
+          success: true,
+          preview: "[STAGED] #{String.slice(staged_content, 0, 100)}",
+          staged: true
+        })
 
         assistant_msg =
           response.content || Jason.encode!(%{tool: "read_file", parameters: params})

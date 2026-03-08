@@ -26,7 +26,7 @@ defmodule Giulia.Inference.Engine do
   alias Giulia.StructuredOutput.Parser
   alias Giulia.Core.ProjectContext
   alias Giulia.Inference.{
-    ContextBuilder, Escalation, Events, State, Verification
+    ContextBuilder, Escalation, State, Verification
   }
   alias Giulia.Inference.Engine.{Commit, Helpers, Startup, Step}
 
@@ -118,12 +118,10 @@ defmodule Giulia.Inference.Engine do
 
     senior_prompt = Escalation.build_prompt(target_file, file_content, errors)
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :escalation_started,
-        message: "Senior Architect analyzing error (v2 hybrid)..."
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :escalation_started,
+      message: "Senior Architect analyzing error (v2 hybrid)..."
+    })
 
     case Escalation.call(senior_prompt) do
       {:ok, provider_name, response_text} ->
@@ -147,13 +145,11 @@ defmodule Giulia.Inference.Engine do
               {:ok, success_msg} ->
                 Logger.info("SENIOR ARCHITECT FIX APPLIED: #{success_msg}")
 
-                if state.request_id do
-                  Events.broadcast(state.request_id, %{
-                    type: :escalation_complete,
-                    provider: provider_name,
-                    message: "#{provider_name} applied #{tool_name}: #{success_msg}"
-                  })
-                end
+                Helpers.maybe_broadcast(state, %{
+                  type: :escalation_complete,
+                  provider: provider_name,
+                  message: "#{provider_name} applied #{tool_name}: #{success_msg}"
+                })
 
                 observation =
                   "Observation: Senior Architect fixed the build error using #{tool_name}. Build is now green."
@@ -190,12 +186,10 @@ defmodule Giulia.Inference.Engine do
       {:error, reason} ->
         Logger.error("Senior Architect escalation failed: #{inspect(reason)}")
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :escalation_failed,
-            message: "Could not reach Senior Architect: #{inspect(reason)}"
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :escalation_failed,
+          message: "Could not reach Senior Architect: #{inspect(reason)}"
+        })
 
         error_msg = """
         ESCALATION FAILED - Continuing with local model.
@@ -219,13 +213,11 @@ defmodule Giulia.Inference.Engine do
   def dispatch({:verify, tool_name, result}, state) do
     Logger.info("Auto-verifying after #{tool_name}")
 
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :verification_started,
-        tool: tool_name,
-        message: "Running mix compile..."
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :verification_started,
+      tool: tool_name,
+      message: "Running mix compile..."
+    })
 
     tool_opts = ContextBuilder.build_tool_opts(state)
 
@@ -236,13 +228,11 @@ defmodule Giulia.Inference.Engine do
             Logger.info("Verification passed")
             if state.project_pid, do: ProjectContext.mark_clean(state.project_pid)
 
-            if state.request_id do
-              Events.broadcast(state.request_id, %{
-                type: :verification_passed,
-                tool: tool_name,
-                message: "Build successful"
-              })
-            end
+            Helpers.maybe_broadcast(state, %{
+              type: :verification_passed,
+              tool: tool_name,
+              message: "Build successful"
+            })
 
             state = State.set_pending_verification(state, false)
             {:next, {:auto_regress, tool_name, result, nil}, state}
@@ -251,14 +241,12 @@ defmodule Giulia.Inference.Engine do
             Logger.info("Verification passed with warnings")
             if state.project_pid, do: ProjectContext.mark_clean(state.project_pid)
 
-            if state.request_id do
-              Events.broadcast(state.request_id, %{
-                type: :verification_passed,
-                tool: tool_name,
-                message: "Build successful (with warnings)",
-                warnings: String.slice(warnings, 0, 200)
-              })
-            end
+            Helpers.maybe_broadcast(state, %{
+              type: :verification_passed,
+              tool: tool_name,
+              message: "Build successful (with warnings)",
+              warnings: String.slice(warnings, 0, 200)
+            })
 
             state = State.set_pending_verification(state, false)
             {:next, {:auto_regress, tool_name, result, warnings}, state}
@@ -271,14 +259,12 @@ defmodule Giulia.Inference.Engine do
             new_syntax_failures = State.syntax_failures(state)
             Logger.info("Syntax failure count: #{new_syntax_failures}")
 
-            if state.request_id do
-              Events.broadcast(state.request_id, %{
-                type: :verification_failed,
-                tool: tool_name,
-                message: "BUILD BROKEN - Model must fix (attempt #{new_syntax_failures})",
-                errors: String.slice(errors, 0, 500)
-              })
-            end
+            Helpers.maybe_broadcast(state, %{
+              type: :verification_failed,
+              tool: tool_name,
+              message: "BUILD BROKEN - Model must fix (attempt #{new_syntax_failures})",
+              errors: String.slice(errors, 0, 500)
+            })
 
             total_failures = new_syntax_failures + State.consecutive_failures(state)
 
@@ -287,12 +273,10 @@ defmodule Giulia.Inference.Engine do
                 "HYBRID ESCALATION: Local model failed #{new_syntax_failures} times, calling Sonnet"
               )
 
-              if state.request_id do
-                Events.broadcast(state.request_id, %{
-                  type: :escalation_triggered,
-                  message: "Calling Senior Architect for assistance..."
-                })
-              end
+              Helpers.maybe_broadcast(state, %{
+                type: :escalation_triggered,
+                message: "Calling Senior Architect for assistance..."
+              })
 
               state = state
                 |> State.set_last_compile_error(errors)
@@ -375,13 +359,11 @@ defmodule Giulia.Inference.Engine do
         "AUTO-REGRESSION: Running #{length(test_targets)} targeted test file(s) for #{module_name}"
       )
 
-      if state.request_id do
-        Events.broadcast(state.request_id, %{
-          type: :auto_regression_started,
-          module: module_name,
-          test_files: test_targets
-        })
-      end
+      Helpers.maybe_broadcast(state, %{
+        type: :auto_regression_started,
+        module: module_name,
+        test_files: test_targets
+      })
 
       tool_opts = ContextBuilder.build_tool_opts(state)
 
@@ -406,13 +388,11 @@ defmodule Giulia.Inference.Engine do
       if failures == [] do
         Logger.info("AUTO-REGRESSION: All #{length(test_targets)} test files passed")
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :auto_regression_passed,
-            module: module_name,
-            test_count: length(test_targets)
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :auto_regression_passed,
+          module: module_name,
+          test_count: length(test_targets)
+        })
 
         test_summary =
           Enum.map_join(test_results, "\n", fn {path, _, output} ->
@@ -424,13 +404,11 @@ defmodule Giulia.Inference.Engine do
         Logger.warning("AUTO-REGRESSION: #{length(failures)} test file(s) failed")
         state = State.set_test_status(state, :red)
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :auto_regression_failed,
-            module: module_name,
-            failed_count: length(failures)
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :auto_regression_failed,
+          module: module_name,
+          failed_count: length(failures)
+        })
 
         failure_details =
           Enum.map_join(failures, "\n\n", fn {path, _, output} ->
@@ -478,13 +456,11 @@ defmodule Giulia.Inference.Engine do
           {:ok, result} ->
             Logger.info("LEGACY FIX APPLIED: #{result}")
 
-            if state.request_id do
-              Events.broadcast(state.request_id, %{
-                type: :escalation_complete,
-                provider: provider_name,
-                message: "#{provider_name} fixed line #{line_num} (legacy format)"
-              })
-            end
+            Helpers.maybe_broadcast(state, %{
+              type: :escalation_complete,
+              provider: provider_name,
+              message: "#{provider_name} fixed line #{line_num} (legacy format)"
+            })
 
             state = state |> State.mark_escalated() |> State.set_syntax_failures(0) |> State.set_status(:thinking)
             {:next, {:verify, "write_file", {:ok, result}}, state}

@@ -11,7 +11,7 @@ defmodule Giulia.Inference.Engine.Startup do
   alias Giulia.Provider.Router
   alias Giulia.Prompt.Builder
   alias Giulia.Context.Store
-  alias Giulia.Inference.{ContextBuilder, Events, State, Verification}
+  alias Giulia.Inference.{ContextBuilder, State, Verification}
   alias Giulia.Inference.Engine.Helpers
 
   @doc """
@@ -26,8 +26,8 @@ defmodule Giulia.Inference.Engine.Startup do
     baseline_status = check_baseline(state)
     state = State.set_baseline(state, baseline_status)
 
-    if baseline_status == :dirty and state.request_id do
-      Events.broadcast(state.request_id, %{
+    if baseline_status == :dirty do
+      Helpers.maybe_broadcast(state, %{
         type: :baseline_warning,
         message: "Project has pre-existing compilation errors. Will attempt to work around them."
       })
@@ -48,14 +48,12 @@ defmodule Giulia.Inference.Engine.Startup do
           model_tier = Builder.detect_model_tier()
           detected_name = Application.get_env(:giulia, :detected_model_name, "unknown")
 
-          if state.request_id do
-            Events.broadcast(state.request_id, %{
-              type: :model_detected,
-              model: detected_name,
-              tier: model_tier,
-              message: "Model: #{detected_name} (#{model_tier} tier)"
-            })
-          end
+          Helpers.maybe_broadcast(state, %{
+            type: :model_detected,
+            model: detected_name,
+            tier: model_tier,
+            message: "Model: #{detected_name} (#{model_tier} tier)"
+          })
 
           messages = ContextBuilder.build_initial_messages(prompt, state, final_module)
 

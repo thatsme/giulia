@@ -28,15 +28,17 @@ defmodule Giulia.Inference.Engine.Helpers do
   end
 
   @doc """
+  Broadcast an SSE event if the state has a request_id. No-op otherwise.
+  """
+  @spec maybe_broadcast(State.t(), map()) :: :ok
+  def maybe_broadcast(%{request_id: nil}, _event), do: :ok
+  def maybe_broadcast(%{request_id: id}, event), do: Events.broadcast(id, event)
+
+  @doc """
   Broadcast escalation failure via SSE events.
   """
   def broadcast_escalation_failed(state, message) do
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :escalation_failed,
-        message: message
-      })
-    end
+    maybe_broadcast(state, %{type: :escalation_failed, message: message})
   end
 
   @doc """

@@ -7,7 +7,8 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
 
   require Logger
 
-  alias Giulia.Inference.{ContextBuilder, Events, State}
+  alias Giulia.Inference.{ContextBuilder, State}
+  alias Giulia.Inference.Engine.Helpers
   alias Giulia.Prompt.Builder
   alias Giulia.Tools.Registry
   alias Giulia.Context.Store
@@ -23,16 +24,12 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
   @spec execute_normal(String.t(), map(), map(), map()) :: {:next, atom() | tuple(), map()}
   def execute_normal(tool_name, params, response, state) do
     # BROADCAST: Tool call starting
-    if state.request_id do
-      Logger.info("INFERENCE BROADCAST: tool_call #{tool_name} to #{state.request_id}")
-
-      Events.broadcast(state.request_id, %{
-        type: :tool_call,
-        iteration: State.iteration(state),
-        tool: tool_name,
-        params: ContextBuilder.sanitize_params_for_broadcast(params)
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :tool_call,
+      iteration: State.iteration(state),
+      tool: tool_name,
+      params: ContextBuilder.sanitize_params_for_broadcast(params)
+    })
 
     Logger.info("=== TOOL CALL [#{State.iteration(state)}] ===")
     Logger.info("Tool: #{tool_name}")
@@ -87,14 +84,12 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
     result = maybe_inject_readback(tool_name, params, result, tool_opts)
 
     # BROADCAST: Tool result
-    if state.request_id do
-      Events.broadcast(state.request_id, %{
-        type: :tool_result,
-        tool: tool_name,
-        success: match?({:ok, _}, result),
-        preview: result_preview
-      })
-    end
+    Helpers.maybe_broadcast(state, %{
+      type: :tool_result,
+      tool: tool_name,
+      success: match?({:ok, _}, result),
+      preview: result_preview
+    })
 
     # Record in history
     assistant_msg = response.content || Jason.encode!(%{tool: tool_name, parameters: params})
