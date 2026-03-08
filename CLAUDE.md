@@ -344,6 +344,10 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 - `GIULIA_DAEMON_MODE` - Set to "true" to force daemon mode
 - `GIULIA_CLIENT_MODE` - Set to "true" to force client mode
 - `GIULIA_COOKIE` - Erlang distribution cookie for remote node auth (default: `giulia_dev`)
+- `GIULIA_ROLE` - Container role: `worker`, `monitor`, or `standalone` (default: `standalone`)
+- `GIULIA_CONNECT_NODE` - Target node for auto-connect (e.g., `worker@giulia-worker`). Monitor mode only.
+- `GIULIA_WORKER_NODE_NAME` - Worker Erlang node name (default: `worker@giulia-worker`)
+- `GIULIA_MONITOR_NODE_NAME` - Monitor Erlang node name (default: `monitor@giulia-monitor`)
 
 ## Docker Run Command (EXACT)
 

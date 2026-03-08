@@ -6,17 +6,27 @@ defmodule Giulia.Runtime.Collector do
   results in an ETS ring buffer. Enables trend detection, alert
   generation, and temporal queries ("memory grew 40% in 10 minutes").
 
-  Default: 20 entries at 60s interval = 20 minutes of high-resolution data.
-  Configurable up to 600 entries (10 hours).
+  ## Multi-Node Support
 
-  Each entry: `{timestamp, pulse_map, top_processes_snapshot}`
+  Watches one or more BEAM nodes. Default: `[:local]` (self only).
+  Call `watch_node/1` to add a remote node (e.g., after AutoConnect
+  establishes a distributed Erlang connection).
+
+  ## Burst Detection (Monitor Mode)
+
+  When watching a remote node, the Collector detects activity bursts
+  (e.g., a scan starting on the worker) by monitoring reductions/s.
+  On spike detection, switches to high-frequency sampling (500ms).
+  When activity drops, emits a `:profile_ready` notification.
+
+  State machine: IDLE (poll 5s) -> CAPTURING (sample 500ms) -> back to IDLE.
 
   ## Performance
 
   `pulse/1` is cheap (5 BIFs). `top_processes/2` is expensive (iterates
-  every PID). To avoid burning CPU during idle periods, top_processes is
-  only collected every `@heavy_tick_interval` ticks (~4 minutes).
-  On-demand queries via `/api/runtime/top_processes` are unaffected.
+  every PID). During idle mode, top_processes is only collected every
+  `@heavy_tick_interval` ticks (~4 minutes). During capture mode,
+  top_processes is collected every tick (500ms — need full data).
   """
 
   use GenServer
@@ -25,12 +35,19 @@ defmodule Giulia.Runtime.Collector do
 
   require Logger
 
-  @default_interval 60_000
-  @default_buffer_size 20
+  @default_idle_interval 5_000
+  @default_capture_interval 500
+  @default_buffer_size 600
   @ets_table :giulia_runtime_snapshots
 
-  # Collect top_processes every Nth tick (expensive: iterates all PIDs)
+  # Collect top_processes every Nth tick during idle (expensive: iterates all PIDs)
   @heavy_tick_interval 4
+
+  # Burst detection: switch to capturing when reductions/s exceeds 3x baseline
+  @burst_spike_multiplier 3
+  # Return to idle when activity drops below 1.5x baseline for N consecutive samples
+  @burst_drop_multiplier 1.5
+  @burst_drop_consecutive 3
 
   # Alert thresholds
   @high_memory_mb 512
@@ -47,11 +64,20 @@ defmodule Giulia.Runtime.Collector do
   end
 
   @doc """
+  Add a remote node to the watch list. Called by AutoConnect after
+  establishing a distributed Erlang connection.
+  """
+  @spec watch_node(atom()) :: :ok
+  def watch_node(node_atom) when is_atom(node_atom) do
+    GenServer.cast(__MODULE__, {:watch_node, node_atom})
+  end
+
+  @doc """
   Returns the last N snapshots for a node.
   """
   @spec history(atom(), keyword()) :: list(map())
   def history(node_ref \\ :local, opts \\ []) do
-    last_n = Keyword.get(opts, :last, @default_buffer_size)
+    last_n = Keyword.get(opts, :last, 20)
 
     @ets_table
     |> ets_safe_tab()
@@ -77,7 +103,7 @@ defmodule Giulia.Runtime.Collector do
   """
   @spec trend(atom(), atom()) :: list(map())
   def trend(node_ref \\ :local, metric \\ :memory) do
-    snapshots = history(node_ref, last: @default_buffer_size)
+    snapshots = history(node_ref, last: 20)
 
     Enum.map(snapshots, fn snapshot ->
       value = extract_metric(snapshot, metric)
@@ -111,13 +137,22 @@ defmodule Giulia.Runtime.Collector do
     end
   end
 
+  @doc """
+  Returns the current collector mode (:idle or :capturing) and watched nodes.
+  """
+  @spec status() :: map()
+  def status do
+    GenServer.call(__MODULE__, :status)
+  end
+
   # ============================================================================
   # GenServer Callbacks
   # ============================================================================
 
   @impl true
   def init(opts) do
-    interval = Keyword.get(opts, :interval_ms, @default_interval)
+    idle_interval = Keyword.get(opts, :idle_interval_ms, @default_idle_interval)
+    capture_interval = Keyword.get(opts, :capture_interval_ms, @default_capture_interval)
     buffer_size = Keyword.get(opts, :buffer_size, @default_buffer_size)
     node_ref = Keyword.get(opts, :node, :local)
 
@@ -127,10 +162,19 @@ defmodule Giulia.Runtime.Collector do
     end
 
     state = %{
-      interval: interval,
+      idle_interval: idle_interval,
+      capture_interval: capture_interval,
       buffer_size: buffer_size,
-      node: node_ref,
-      tick_count: 0
+      nodes: [node_ref],
+      tick_count: 0,
+      # Burst detection state
+      mode: :idle,
+      baseline_reductions: nil,
+      last_reductions: %{},
+      drop_count: 0,
+      burst_snapshots: [],
+      # Profile callback (set by Monitor GenServer)
+      profile_callback: nil
     }
 
     # Start first collection after a short delay (let the system stabilize)
@@ -140,11 +184,27 @@ defmodule Giulia.Runtime.Collector do
   end
 
   @impl true
-  def handle_info(:collect, state) do
-    state = do_collect(state)
+  def handle_cast({:watch_node, node_atom}, state) do
+    if node_atom in state.nodes do
+      {:noreply, state}
+    else
+      Logger.info("Collector: now watching node #{node_atom}")
+      {:noreply, %{state | nodes: state.nodes ++ [node_atom]}}
+    end
+  end
 
-    # Schedule next collection
-    Process.send_after(self(), :collect, state.interval)
+  @impl true
+  def handle_call(:status, _from, state) do
+    {:reply, %{mode: state.mode, nodes: state.nodes, tick_count: state.tick_count}, state}
+  end
+
+  @impl true
+  def handle_info(:collect, state) do
+    state = do_collect_all(state)
+
+    # Schedule next collection based on mode
+    interval = if state.mode == :capturing, do: state.capture_interval, else: state.idle_interval
+    Process.send_after(self(), :collect, interval)
 
     {:noreply, state}
   end
@@ -155,17 +215,23 @@ defmodule Giulia.Runtime.Collector do
   # Collection Logic
   # ============================================================================
 
-  defp do_collect(state) do
-    node_ref = state.node
-    heavy_tick? = rem(state.tick_count, @heavy_tick_interval) == 0
+  defp do_collect_all(state) do
+    Enum.reduce(state.nodes, state, fn node_ref, acc ->
+      do_collect(acc, node_ref)
+    end)
+  end
+
+  defp do_collect(state, node_ref) do
+    # During capture mode, always collect top_processes (need full data)
+    # During idle mode, only on heavy ticks (expensive)
+    heavy_tick? = state.mode == :capturing or rem(state.tick_count, @heavy_tick_interval) == 0
 
     case Inspector.pulse(node_ref) do
       {:ok, pulse} ->
-        # top_processes is expensive (iterates all PIDs) — only collect on heavy ticks
         top_procs =
           if heavy_tick? do
             case Inspector.top_processes(node_ref, :reductions) do
-              {:ok, procs} -> Enum.take(procs, 5)
+              {:ok, procs} -> Enum.take(procs, 10)
               _ -> []
             end
           else
@@ -187,6 +253,14 @@ defmodule Giulia.Runtime.Collector do
         # Trim old entries beyond buffer_size
         trim_buffer(node_key, state.buffer_size)
 
+        # Burst detection (only for remote nodes, not :local)
+        state =
+          if node_ref != :local and node_ref != node() do
+            detect_burst(state, node_ref, pulse, snapshot)
+          else
+            state
+          end
+
         %{state | tick_count: state.tick_count + 1}
 
       {:error, reason} ->
@@ -194,6 +268,66 @@ defmodule Giulia.Runtime.Collector do
         state
     end
   end
+
+  # ============================================================================
+  # Burst Detection
+  # ============================================================================
+
+  defp detect_burst(state, node_ref, pulse, snapshot) do
+    current_reductions = get_in(pulse, [:beam, :reductions]) || 0
+    last_reductions = Map.get(state.last_reductions, node_ref, current_reductions)
+    reductions_delta = current_reductions - last_reductions
+
+    state = put_in(state.last_reductions[node_ref], current_reductions)
+
+    case state.mode do
+      :idle ->
+        # Update baseline (rolling average of idle reductions/s)
+        baseline = state.baseline_reductions || max(reductions_delta, 1)
+        new_baseline = trunc(baseline * 0.8 + reductions_delta * 0.2)
+        state = %{state | baseline_reductions: new_baseline}
+
+        # Check for spike
+        if reductions_delta > baseline * @burst_spike_multiplier and baseline > 0 do
+          Logger.info("Collector: burst detected on #{node_ref} — reductions/s #{reductions_delta} vs baseline #{baseline}. Switching to capture mode.")
+          %{state | mode: :capturing, drop_count: 0, burst_snapshots: [snapshot]}
+        else
+          state
+        end
+
+      :capturing ->
+        # Accumulate burst snapshots
+        state = %{state | burst_snapshots: state.burst_snapshots ++ [snapshot]}
+
+        # Check if activity dropped back to baseline
+        baseline = state.baseline_reductions || 1
+
+        if reductions_delta < baseline * @burst_drop_multiplier do
+          new_drop_count = state.drop_count + 1
+
+          if new_drop_count >= @burst_drop_consecutive do
+            Logger.info("Collector: burst ended on #{node_ref} — #{length(state.burst_snapshots)} snapshots captured. Producing profile.")
+
+            # Notify profile callback if set
+            if state.profile_callback do
+              send(state.profile_callback, {:profile_ready, node_ref, state.burst_snapshots})
+            end
+
+            # Reset to idle
+            %{state | mode: :idle, drop_count: 0, burst_snapshots: [], baseline_reductions: nil}
+          else
+            %{state | drop_count: new_drop_count}
+          end
+        else
+          # Activity still high, reset drop counter
+          %{state | drop_count: 0}
+        end
+    end
+  end
+
+  # ============================================================================
+  # Buffer Management
+  # ============================================================================
 
   defp trim_buffer(node_key, max_size) do
     entries =
@@ -257,7 +391,6 @@ defmodule Giulia.Runtime.Collector do
       end
 
     # Message queue alert (check top processes for queue buildup)
-    # Find the most recent snapshot that has top_processes data (heavy tick)
     top_procs =
       snapshots
       |> Enum.reverse()

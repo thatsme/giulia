@@ -55,6 +55,7 @@ defmodule Giulia.Application do
 
   defp start_daemon_mode do
     port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
+    role = Giulia.Role.role()
 
     base_children = [
       # Registry for named process lookup
@@ -76,31 +77,49 @@ defmodule Giulia.Application do
       Giulia.Context.Indexer,
 
       # Knowledge graph (depends on Store + Indexer)
-      Giulia.Knowledge.Store,
+      Giulia.Knowledge.Store
+    ]
 
-      # Embedding model serving (optional — returns :ignore if model fails to load)
-      Giulia.Intelligence.EmbeddingServing,
+    # Heavy children — skipped in monitor mode to save ~200MB RAM
+    # (EmbeddingServing loads a ~90MB transformer model the monitor never uses)
+    heavy_children =
+      if role == :monitor do
+        []
+      else
+        [
+          # Embedding model serving (optional — returns :ignore if model fails to load)
+          Giulia.Intelligence.EmbeddingServing,
 
-      # Semantic search index (depends on Store + EmbeddingServing)
-      Giulia.Intelligence.SemanticIndex,
+          # Semantic search index (depends on Store + EmbeddingServing)
+          Giulia.Intelligence.SemanticIndex
+        ]
+      end
 
-      # Dynamic supervisor for provider connections
-      {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
+    inference_children =
+      if role == :monitor do
+        []
+      else
+        [
+          # Dynamic supervisor for provider connections
+          {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Provider.Supervisor},
 
-      # Trace storage for debugging inference runs
-      Giulia.Inference.Trace,
+          # Trace storage for debugging inference runs
+          Giulia.Inference.Trace,
 
-      # Event broadcaster for SSE streaming
-      Giulia.Inference.Events,
+          # Event broadcaster for SSE streaming
+          Giulia.Inference.Events,
 
+          # Approval manager for interactive consent gate
+          Giulia.Inference.Approval,
+
+          # Inference subsystem (pools with back-pressure)
+          Giulia.Inference.Supervisor
+        ]
+      end
+
+    tail_children = [
       # Logic Monitor event buffer (Build 95)
       Giulia.Monitor.Store,
-
-      # Approval manager for interactive consent gate
-      Giulia.Inference.Approval,
-
-      # Inference subsystem (pools with back-pressure)
-      Giulia.Inference.Supervisor,
 
       # Dynamic supervisor for per-project contexts
       {DynamicSupervisor, strategy: :one_for_one, name: Giulia.Core.ProjectSupervisor},
@@ -109,15 +128,20 @@ defmodule Giulia.Application do
       Giulia.Core.ContextManager,
 
       # Runtime collector (periodic BEAM health snapshots)
-      Giulia.Runtime.Collector
+      Giulia.Runtime.Collector,
+
+      # Auto-connect to target node (returns :ignore if GIULIA_CONNECT_NODE unset)
+      {Giulia.Runtime.AutoConnect, []}
     ]
+
+    all_children = base_children ++ heavy_children ++ inference_children ++ tail_children
 
     # Skip HTTP endpoint in test env (port already in use by the running daemon)
     children =
       if Mix.env() == :test do
-        base_children
+        all_children
       else
-        base_children ++ [{Bandit, plug: Giulia.Daemon.Endpoint, port: port}]
+        all_children ++ [{Bandit, plug: Giulia.Daemon.Endpoint, port: port}]
       end
 
     opts = [strategy: :one_for_one, name: Giulia.Supervisor]
