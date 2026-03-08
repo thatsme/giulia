@@ -286,6 +286,12 @@ Function-level edges: <count> MFA→MFA call edges
   delegate functions (`defdelegate`), or simple CRUD wrappers are expected to cluster —
   they share structural patterns, not duplicated logic. Flag these as "structural similarity,
   not duplication" when the cluster members are all accessors/delegates.
+- **Mega-clusters with low similarity (< 20%)**: These are threshold artifacts — the algorithm
+  groups everything sharing basic language structure (def heads, pipe chains, pattern matches)
+  into one cluster. Explain WHY it's noise: "N members at X% similarity means the cluster
+  captures nearly all functions sharing basic Elixir structure — threshold artifact, not
+  meaningful duplication." Never dismiss with just "noise" or "ignore" — the reader needs to
+  understand the mechanism.
 - If EmbeddingServing is unavailable (503), note: "Semantic duplicates unavailable — EmbeddingServing not loaded"
 
 ### Section 12: Architecture Health
@@ -325,6 +331,13 @@ Synthesize findings into concrete, prioritized recommendations.
 - **P1**: High-risk gaps — unprotected hubs, god modules with high fan-in
 - **P2**: Improvement opportunities — god module splits, coupling reduction, dead code
 - **P3**: Polish — spec coverage for non-hub modules, doc coverage
+
+**Priority ordering within P1 — fan-in dominates:**
+A hub module with high fan-in and low doc/spec coverage ALWAYS outranks a low-fan-in module
+with zero coverage. The risk multiplier is dependents, not the coverage percentage itself.
+Concretely: a 17-dependent module at 4% doc coverage is more dangerous than a 3-dependent
+module at 0% spec coverage — because 17 consumers are flying blind vs 3. Sort P1 items by
+`in_degree * (1 - coverage_ratio)` descending, not by coverage percentage ascending.
 
 **Rules:**
 - Each recommendation must reference specific data from the report (module name, score, metric)
