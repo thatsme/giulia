@@ -72,23 +72,22 @@ defmodule Giulia.Inference.ContextBuilder do
 
   defp build_direct_test_hint(nil, _state), do: ""
 
-  defp build_direct_test_hint(target_file, state) do
+  defp build_direct_test_hint(_target_file, %{project_path: nil}), do: ""
+
+  defp build_direct_test_hint(target_file, %{project_path: project_path}) do
     test_path = Giulia.Tools.RunTests.suggest_test_file(target_file)
+    sandbox = PathSandbox.new(project_path)
 
-    resolved =
-      if state.project_path do
-        sandbox = PathSandbox.new(state.project_path)
-
-        case PathSandbox.validate(sandbox, test_path) do
-          {:ok, resolved} -> resolved
-          {:error, _} -> nil
+    case PathSandbox.validate(sandbox, test_path) do
+      {:ok, resolved} when is_binary(resolved) ->
+        if File.exists?(resolved) do
+          "Note: Tests exist at #{test_path}. You may run them with run_tests to verify behavior.\n"
+        else
+          ""
         end
-      end
 
-    if resolved && File.exists?(resolved) do
-      "Note: Tests exist at #{test_path}. You may run them with run_tests to verify behavior.\n"
-    else
-      ""
+      _ ->
+        ""
     end
   end
 

@@ -73,6 +73,15 @@ defmodule Giulia.Runtime.Collector do
   end
 
   @doc """
+  Set the PID that receives `{:profile_ready, node, snapshots}` after a burst.
+  Called by Monitor GenServer during WATCH phase setup.
+  """
+  @spec set_profile_callback(pid()) :: :ok
+  def set_profile_callback(pid) when is_pid(pid) do
+    GenServer.cast(__MODULE__, {:set_profile_callback, pid})
+  end
+
+  @doc """
   Returns the last N snapshots for a node.
   """
   @spec history(atom(), keyword()) :: list(map())
@@ -191,6 +200,12 @@ defmodule Giulia.Runtime.Collector do
       Logger.info("Collector: now watching node #{node_atom}")
       {:noreply, %{state | nodes: state.nodes ++ [node_atom]}}
     end
+  end
+
+  @impl true
+  def handle_cast({:set_profile_callback, pid}, state) do
+    Logger.info("Collector: profile callback set to #{inspect(pid)}")
+    {:noreply, %{state | profile_callback: pid}}
   end
 
   @impl true

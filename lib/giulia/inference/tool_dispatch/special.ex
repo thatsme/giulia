@@ -6,7 +6,8 @@ defmodule Giulia.Inference.ToolDispatch.Special do
 
   require Logger
 
-  alias Giulia.Inference.{BulkReplace, ContextBuilder, Events, RenameMFA, State}
+  alias Giulia.Inference.{BulkReplace, ContextBuilder, RenameMFA, State}
+  alias Giulia.Inference.Engine.Helpers
 
   # ============================================================================
   # Bulk Replace
@@ -21,12 +22,10 @@ defmodule Giulia.Inference.ToolDispatch.Special do
       if not state.transaction.mode and file_list != [] do
         Logger.info("BULK_REPLACE: Auto-enabling transaction mode for batch operation")
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :transaction_auto_enabled,
-            reason: "bulk_replace across #{length(file_list)} files"
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :transaction_auto_enabled,
+          reason: "bulk_replace across #{length(file_list)} files"
+        })
 
         State.set_transaction(state, %{state.transaction | mode: true})
       else
@@ -41,24 +40,22 @@ defmodule Giulia.Inference.ToolDispatch.Special do
 
     case BulkReplace.execute(params, state.transaction, opts) do
       {:ok, observation, new_tx, modified_files, meta} ->
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :tool_call,
-            iteration: State.iteration(state),
-            tool: "bulk_replace",
-            params: %{pattern: meta.pattern, replacement: meta.replacement,
-                       files: meta.file_count},
-            staged: true
-          })
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_call,
+          iteration: State.iteration(state),
+          tool: "bulk_replace",
+          params: %{pattern: meta.pattern, replacement: meta.replacement,
+                     files: meta.file_count},
+          staged: true
+        })
 
-          Events.broadcast(state.request_id, %{
-            type: :tool_result,
-            tool: "bulk_replace",
-            success: meta.total_replacements > 0,
-            preview: "#{length(meta.staged)} files staged, #{meta.total_replacements} replacements",
-            staged: true
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_result,
+          tool: "bulk_replace",
+          success: meta.total_replacements > 0,
+          preview: "#{length(meta.staged)} files staged, #{meta.total_replacements} replacements",
+          staged: true
+        })
 
         assistant_msg =
           response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
@@ -115,12 +112,10 @@ defmodule Giulia.Inference.ToolDispatch.Special do
         new_name = params["new_name"] || params[:new_name]
         Logger.info("RENAME_MFA: Auto-enabling transaction mode")
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :transaction_auto_enabled,
-            reason: "rename_mfa: #{module}.#{old_name}/#{arity} → #{new_name}"
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :transaction_auto_enabled,
+          reason: "rename_mfa: #{module}.#{old_name}/#{arity} → #{new_name}"
+        })
 
         State.set_transaction(state, %{state.transaction | mode: true})
       else
@@ -135,24 +130,22 @@ defmodule Giulia.Inference.ToolDispatch.Special do
 
     case RenameMFA.execute(params, state.transaction, opts) do
       {:ok, observation, new_tx, modified_files, meta} ->
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :tool_call,
-            iteration: State.iteration(state),
-            tool: "rename_mfa",
-            params: %{module: meta.module, old_name: meta.old_name,
-                       new_name: meta.new_name, arity: meta.arity},
-            staged: true
-          })
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_call,
+          iteration: State.iteration(state),
+          tool: "rename_mfa",
+          params: %{module: meta.module, old_name: meta.old_name,
+                     new_name: meta.new_name, arity: meta.arity},
+          staged: true
+        })
 
-          Events.broadcast(state.request_id, %{
-            type: :tool_result,
-            tool: "rename_mfa",
-            success: meta.total_changes > 0,
-            preview: "#{length(meta.staged)} files, #{meta.total_changes} renames",
-            staged: true
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :tool_result,
+          tool: "rename_mfa",
+          success: meta.total_changes > 0,
+          preview: "#{length(meta.staged)} files, #{meta.total_changes} renames",
+          staged: true
+        })
 
         assistant_msg = response.content || Jason.encode!(%{tool: "rename_mfa", parameters: params})
 

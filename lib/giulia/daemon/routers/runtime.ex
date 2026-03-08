@@ -181,6 +181,58 @@ defmodule Giulia.Daemon.Routers.Runtime do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profiles — List saved burst profiles
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "List saved burst performance profiles from the monitor",
+    endpoint: "GET /api/runtime/profiles",
+    params: %{last: :optional},
+    returns: "JSON list of profiles with peak metrics, hot modules, bottleneck analysis",
+    category: "runtime"
+  }
+  get "/profiles" do
+    last_n = parse_int_param(conn.query_params["last"], 10)
+    profiles = Giulia.Runtime.Monitor.profiles(last: last_n)
+    send_json(conn, 200, %{profiles: profiles, count: length(profiles)})
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profile/latest — Most recent burst profile
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get the most recent burst performance profile",
+    endpoint: "GET /api/runtime/profile/latest",
+    params: %{},
+    returns: "JSON profile with peak metrics, hot modules, bottleneck analysis (or null)",
+    category: "runtime"
+  }
+  get "/profile/latest" do
+    case Giulia.Runtime.Monitor.latest_profile() do
+      nil -> send_json(conn, 200, %{profile: nil, message: "No profiles captured yet"})
+      profile -> send_json(conn, 200, %{profile: profile})
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profile/:id — Profile by index (0 = most recent)
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get a specific burst profile by index (0 = most recent)",
+    endpoint: "GET /api/runtime/profile/:id",
+    params: %{id: :required},
+    returns: "JSON profile or 404 if not found",
+    category: "runtime"
+  }
+  get "/profile/:id" do
+    index = parse_int_param(id, 0)
+
+    case Giulia.Runtime.Monitor.get_profile(index) do
+      nil -> send_json(conn, 404, %{error: "Profile not found at index #{index}"})
+      profile -> send_json(conn, 200, %{profile: profile})
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end

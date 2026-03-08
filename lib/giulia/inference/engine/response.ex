@@ -9,7 +9,7 @@ defmodule Giulia.Inference.Engine.Response do
   require Logger
 
   alias Giulia.StructuredOutput
-  alias Giulia.Inference.{ContextBuilder, Events, ResponseParser, State, ToolDispatch}
+  alias Giulia.Inference.{ContextBuilder, ResponseParser, State, ToolDispatch}
   alias Giulia.Inference.Engine.Helpers
 
   @doc """
@@ -128,14 +128,12 @@ defmodule Giulia.Inference.Engine.Response do
           "GOAL TRACKER: Model tried to respond after touching #{touched}/#{im.count} dependents of #{im.module} (block #{block_count})"
         )
 
-        if state.request_id do
-          Events.broadcast(state.request_id, %{
-            type: :goal_tracker_block,
-            module: im.module,
-            dependents: im.count,
-            modified: touched
-          })
-        end
+        Helpers.maybe_broadcast(state, %{
+          type: :goal_tracker_block,
+          module: im.module,
+          dependents: im.count,
+          modified: touched
+        })
 
         if block_count >= 4 do
           Logger.warning(

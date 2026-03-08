@@ -15,60 +15,40 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
 
   @doc "Build standard tool opts from state."
   @spec build_tool_opts(map()) :: keyword()
-  def build_tool_opts(state) do
-    opts = []
+  def build_tool_opts(%{project_path: nil}), do: []
 
-    opts =
-      if state.project_path do
-        Keyword.put(opts, :project_path, state.project_path)
-      else
-        opts
-      end
+  def build_tool_opts(%{project_path: path, project_pid: pid}) do
+    sandbox = PathSandbox.new(path)
 
-    opts =
-      if state.project_pid do
-        Keyword.put(opts, :project_pid, state.project_pid)
-      else
-        opts
-      end
-
-    opts =
-      if state.project_path do
-        sandbox = PathSandbox.new(state.project_path)
-        Keyword.put(opts, :sandbox, sandbox)
-      else
-        opts
-      end
-
-    opts
+    [project_path: path, sandbox: sandbox]
+    |> maybe_put(:project_pid, pid)
   end
+
+  def build_tool_opts(%{project_path: _path} = state) do
+    build_tool_opts(Map.put_new(state, :project_pid, nil))
+  end
+
+  defp maybe_put(opts, _key, nil), do: opts
+  defp maybe_put(opts, key, value), do: Keyword.put(opts, key, value)
 
   @doc "Resolve a tool path through the sandbox."
   @spec resolve_tool_path(String.t() | nil, map()) :: String.t() | nil
   def resolve_tool_path(nil, _state), do: nil
+  def resolve_tool_path(path, %{project_path: nil}), do: path
 
-  def resolve_tool_path(path, state) do
-    if state.project_path do
-      sandbox = PathSandbox.new(state.project_path)
+  def resolve_tool_path(path, %{project_path: project_path}) do
+    sandbox = PathSandbox.new(project_path)
 
-      case PathSandbox.validate(sandbox, path) do
-        {:ok, resolved} -> resolved
-        {:error, _} -> path
-      end
-    else
-      path
+    case PathSandbox.validate(sandbox, path) do
+      {:ok, resolved} -> resolved
+      {:error, _} -> path
     end
   end
 
   @doc "Get working directory for display."
   @spec get_working_directory(map()) :: String.t()
-  def get_working_directory(state) do
-    if state.project_path do
-      PathMapper.to_host(state.project_path)
-    else
-      File.cwd!()
-    end
-  end
+  def get_working_directory(%{project_path: nil}), do: File.cwd!()
+  def get_working_directory(%{project_path: path}), do: PathMapper.to_host(path)
 
   @doc "Get constitution from ProjectContext pid."
   @spec get_constitution(pid() | nil) :: String.t() | nil

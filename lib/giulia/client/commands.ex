@@ -82,10 +82,10 @@ defmodule Giulia.Client.Commands do
     case HTTP.get("/api/index/modules") do
       {:ok, %{"modules" => modules, "count" => count}} ->
         IO.puts("\nIndexed Modules (#{count}):\n")
-        Enum.each(modules, fn mod ->
+        for mod <- modules do
           IO.puts("  #{mod["name"]}")
           IO.puts("    File: #{mod["file"]}:#{mod["line"]}")
-        end)
+        end
         IO.puts("")
 
       {:error, reason} ->
@@ -97,15 +97,13 @@ defmodule Giulia.Client.Commands do
     case HTTP.get("/api/index/functions") do
       {:ok, %{"functions" => functions, "count" => count}} ->
         IO.puts("\nIndexed Functions (#{count}):\n")
-        functions
-        |> Enum.group_by(& &1["module"])
-        |> Enum.each(fn {module, funcs} ->
+        for {module, funcs} <- Enum.group_by(functions, & &1["module"]) do
           IO.puts("  #{module}:")
-          Enum.each(funcs, fn f ->
+          for f <- funcs do
             visibility = if f["type"] == "def", do: "pub", else: "priv"
             IO.puts("    #{f["name"]}/#{f["arity"]} [#{visibility}]")
-          end)
-        end)
+          end
+        end
         IO.puts("")
 
       {:error, reason} ->

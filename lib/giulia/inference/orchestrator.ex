@@ -197,13 +197,12 @@ defmodule Giulia.Inference.Orchestrator do
     GenServer.reply(from, result)
   end
 
+  defp reset_state(%{task: nil} = state), do: State.reset(state)
+
   defp reset_state(state) do
     # Save trace before resetting (for debugging via /api/agent/last_trace)
-    if state.task do
-      trace = Trace.from_orchestrator_state(state)
-      Trace.store(trace)
-    end
-
+    trace = Trace.from_orchestrator_state(state)
+    Trace.store(trace)
     State.reset(state)
   end
 end
