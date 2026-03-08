@@ -146,6 +146,12 @@ defmodule Giulia.Persistence.Store do
   end
 
   defp cubdb_dir(project_path) do
-    Path.join([project_path, ".giulia", "cache", "cubdb"])
+    role = Giulia.Role.role()
+
+    if role == :standalone do
+      Path.join([project_path, ".giulia", "cache", "cubdb"])
+    else
+      Path.join([project_path, ".giulia", "cache", "cubdb_#{role}"])
+    end
   end
 end
