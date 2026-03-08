@@ -1,64 +1,82 @@
-# Giulia Docker Compose Configuration
+# Giulia Docker Compose Configuration — Monitor/Worker Architecture
+#
+# Two containers from the same image:
+#   giulia-worker  (port 4000) — does heavy work (scans, graphs, embeddings)
+#   giulia-monitor (port 4001) — watches worker via distributed Erlang
 #
 # Usage:
-#   docker compose up -d       # Start daemon in background
-#   docker compose logs -f     # Watch logs
-#   docker compose down        # Stop daemon
+#   docker compose up -d                    # Start both containers
+#   docker compose up -d giulia-worker      # Start worker only (standalone)
+#   docker compose logs -f giulia-monitor   # Watch monitor logs
+#   docker compose down                     # Stop all
 #
-# No OTP release — runs directly with mix. Simple, debuggable, no boot file drama.
+# Single-container (backward compatible):
+#   docker compose up -d giulia-worker      # Same as old giulia-daemon
+
+x-common-env: &common-env
+  GIULIA_HOME: /data
+  GIULIA_IN_CONTAINER: "true"
+  GIULIA_COOKIE: ${GIULIA_COOKIE:-giulia_dev}
+  MIX_ENV: dev
+  MIX_BUILD_PATH: /tmp/giulia_build
+  MIX_DEPS_PATH: /tmp/giulia_deps
+  XLA_TARGET: cpu
+  GIULIA_HOST_PROJECTS_PATH: ${GIULIA_HOST_PROJECTS_PATH:-D:/Development/GitHub}
+  GIULIA_PATH_MAPPING: ${GIULIA_PATH_MAPPING:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  LM_STUDIO_URL: ${LM_STUDIO_URL:-http://192.168.33.1:1234/v1/chat/completions}
+
+x-common-volumes: &common-volumes
+  - giulia_data:/data
+  - giulia_build:/tmp/giulia_build
+  - giulia_deps:/tmp/giulia_deps
+  - giulia_models:/root/.cache
+  - ${GIULIA_PROJECTS_PATH:-D:/Development/GitHub}:/projects:rw
+  - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
+
+x-common-deploy: &common-deploy
+  resources:
+    limits:
+      memory: 4G
+    reservations:
+      memory: 1G
+
+x-common-logging: &common-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
 
 services:
-  giulia-daemon:
+  # ============================================================================
+  # Worker — does heavy static analysis work (scans projectX, builds graphs)
+  # This is the main Giulia daemon. Equivalent to the old giulia-daemon service.
+  # ============================================================================
+  giulia-worker:
     image: giulia/core:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: giulia-daemon
-    hostname: giulia-daemon
-
+    container_name: giulia-worker
+    hostname: giulia-worker
     restart: unless-stopped
 
-    # Run with distributed Erlang enabled for runtime introspection
-    # --name sets the node name, --cookie sets the auth cookie
-    # --erl sets the distribution port range (for Docker port mapping)
     command: >-
       /bin/sh -c "cd /app && mix deps.get &&
-      elixir --name giulia@0.0.0.0 --cookie ${GIULIA_COOKIE:-giulia_dev}
+      elixir --name ${GIULIA_WORKER_NODE_NAME:-worker@giulia-worker}
+      --cookie ${GIULIA_COOKIE:-giulia_dev}
       --erl '-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9105'
       -S mix run --no-halt"
 
     environment:
-      - GIULIA_HOME=/data
-      - GIULIA_PORT=4000
-      - GIULIA_IN_CONTAINER=true
-      # Distributed Erlang — cookie for remote node authentication
-      - GIULIA_COOKIE=${GIULIA_COOKIE:-giulia_dev}
-      # Isolated build paths — never touch the host's Windows _build
-      - MIX_ENV=dev
-      - MIX_BUILD_PATH=/tmp/giulia_build
-      - MIX_DEPS_PATH=/tmp/giulia_deps
-      # EXLA backend for Nx (semantic search)
-      - XLA_TARGET=cpu
-      # Path mapping: The Translation Shim
-      # GIULIA_HOST_PROJECTS_PATH = Windows path prefix (e.g., C:/Development/GitHub)
-      # Maps to /projects inside container
-      - GIULIA_HOST_PROJECTS_PATH=${GIULIA_HOST_PROJECTS_PATH:-D:/Development/GitHub}
-      - GIULIA_PATH_MAPPING=${GIULIA_PATH_MAPPING:-}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      # Groq API Key - for hybrid escalation (Llama 3.3 70B)
-      - GROQ_API_KEY=${GROQ_API_KEY:-}
-      # Gemini API Key - fallback for escalation
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      # LM Studio URL - enable "Serve on Local Network" and use the IP shown
-      - LM_STUDIO_URL=${LM_STUDIO_URL:-http://192.168.33.1:1234/v1/chat/completions}
+      <<: *common-env
+      GIULIA_NODE_NAME: ${GIULIA_WORKER_NODE_NAME:-worker@giulia-worker}
+      GIULIA_ROLE: worker
+      GIULIA_PORT: "4000"
 
-    volumes:
-      - giulia_data:/data
-      - giulia_build:/tmp/giulia_build
-      - giulia_deps:/tmp/giulia_deps
-      - giulia_models:/root/.cache
-      - ${GIULIA_PROJECTS_PATH:-D:/Development/GitHub}:/projects:rw
-      - ${GIULIA_WORKSPACE_PATH:-./workspace}:/workspace:rw
+    volumes: *common-volumes
 
     # HTTP API + Distributed Erlang ports
     # 4000 = HTTP API, 4369 = EPMD, 9100-9105 = distribution port range
@@ -67,18 +85,80 @@ services:
       - "4369:4369"
       - "9100-9105:9100-9105"
 
+    deploy: *common-deploy
+    logging: *common-logging
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+
+  # ============================================================================
+  # Monitor — watches the worker via distributed Erlang, analyzes Giulia herself
+  #
+  # Connects to worker automatically on startup (AutoConnect GenServer).
+  # Scans Giulia's own source code to build her Knowledge Graph.
+  # Detects worker activity bursts and captures high-frequency runtime snapshots.
+  # Fuses runtime data with static analysis for performance profiling.
+  #
+  # Skips heavy children (EmbeddingServing, Inference pools) to save ~200MB RAM.
+  # ============================================================================
+  giulia-monitor:
+    image: giulia/core:latest
+    container_name: giulia-monitor
+    hostname: giulia-monitor
+    restart: unless-stopped
+
+    depends_on:
+      giulia-worker:
+        condition: service_healthy
+
+    command: >-
+      /bin/sh -c "cd /app && mix deps.get &&
+      elixir --name ${GIULIA_MONITOR_NODE_NAME:-monitor@giulia-monitor}
+      --cookie ${GIULIA_COOKIE:-giulia_dev}
+      --erl '-kernel inet_dist_listen_min 9110 inet_dist_listen_max 9115'
+      -S mix run --no-halt"
+
+    environment:
+      <<: *common-env
+      GIULIA_NODE_NAME: ${GIULIA_MONITOR_NODE_NAME:-monitor@giulia-monitor}
+      GIULIA_ROLE: monitor
+      GIULIA_PORT: "4001"
+      # AutoConnect: target node to watch via distributed Erlang
+      GIULIA_CONNECT_NODE: ${GIULIA_WORKER_NODE_NAME:-worker@giulia-worker}
+
+    volumes: *common-volumes
+
+    # EPMD host port note:
+    # 4370:4369 maps the monitor's EPMD to a different host port to avoid
+    # collision with the worker's 4369:4369 mapping. This only matters for
+    # host-side access (e.g., connecting from a BEAM on the Windows host).
+    # Container-to-container communication goes through Docker's internal
+    # network where both containers listen on 4369 in their own network
+    # namespace — no conflict there.
+    ports:
+      - "4001:4001"
+      - "4370:4369"
+      - "9110-9115:9110-9115"
+
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 2G
         reservations:
-          memory: 1G
+          memory: 512M
 
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+    logging: *common-logging
+
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:4001/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
 
 volumes:
   giulia_data:
