@@ -258,6 +258,86 @@ defmodule Giulia.Daemon.Routers.Runtime do
     end
   end
 
+  # -------------------------------------------------------------------
+  # POST /api/runtime/ingest — Receive snapshot from Monitor
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Ingest a runtime snapshot pushed by the Monitor container",
+    endpoint: "POST /api/runtime/ingest",
+    params: %{node: :required, session_id: :required, timestamp: :required, metrics: :required},
+    returns: "JSON ack with session_id and snapshot count",
+    category: "runtime"
+  }
+  post "/ingest" do
+    case Giulia.Runtime.IngestStore.ingest(conn.body_params) do
+      {:ok, result} -> send_json(conn, 200, result)
+      {:error, reason} -> send_json(conn, 422, %{error: inspect(reason)})
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # POST /api/runtime/ingest/finalize — Finalize observation session
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Finalize an observation session and produce fused profile",
+    endpoint: "POST /api/runtime/ingest/finalize",
+    params: %{session_id: :required, node: :required},
+    returns: "JSON finalized profile summary with hot modules and correlation data",
+    category: "runtime"
+  }
+  post "/ingest/finalize" do
+    case Giulia.Runtime.IngestStore.finalize(conn.body_params) do
+      {:ok, result} -> send_json(conn, 200, result)
+      {:error, :no_snapshots} -> send_json(conn, 404, %{error: "No snapshots found for session"})
+      {:error, reason} -> send_json(conn, 422, %{error: inspect(reason)})
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/observations — List available fused observations
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "List all available fused observation sessions",
+    endpoint: "GET /api/runtime/observations",
+    params: %{},
+    returns: "JSON list of observation summaries (session_id, node, status, duration)",
+    category: "runtime"
+  }
+  get "/observations" do
+    observations = Giulia.Runtime.IngestStore.list_observations()
+
+    summaries = Enum.map(observations, fn obs ->
+      %{
+        session_id: obs[:session_id],
+        node: obs[:node],
+        started_at: obs[:started_at],
+        stopped_at: obs[:stopped_at],
+        status: obs[:status],
+        snapshots_processed: obs[:snapshots_processed],
+        duration_ms: obs[:duration_ms]
+      }
+    end)
+
+    send_json(conn, 200, %{observations: summaries, count: length(summaries)})
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/observation/:session_id — Full fused profile
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get full fused observation profile (static + runtime correlation)",
+    endpoint: "GET /api/runtime/observation/:session_id",
+    params: %{session_id: :required},
+    returns: "JSON full observation with fused profile, hot modules, bottleneck analysis",
+    category: "runtime"
+  }
+  get "/observation/:session_id" do
+    case Giulia.Runtime.IngestStore.get_observation(session_id) do
+      {:ok, observation} -> send_json(conn, 200, observation)
+      {:error, :not_found} -> send_json(conn, 404, %{error: "Observation not found: #{session_id}"})
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end
