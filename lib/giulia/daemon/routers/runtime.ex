@@ -181,6 +181,83 @@ defmodule Giulia.Daemon.Routers.Runtime do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/runtime/monitor/status — Monitor lifecycle status
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get monitor lifecycle status (phase, profiles count, burst state)",
+    endpoint: "GET /api/runtime/monitor/status",
+    params: %{},
+    returns: "JSON monitor status with phase and metadata",
+    category: "runtime"
+  }
+  get "/monitor/status" do
+    status = Giulia.Runtime.Monitor.status()
+    send_json(conn, 200, status)
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profiles — List saved performance profiles
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "List saved performance profiles from burst analysis",
+    endpoint: "GET /api/runtime/profiles",
+    params: %{limit: :optional},
+    returns: "JSON list of profile summaries (timestamps, durations)",
+    category: "runtime"
+  }
+  get "/profiles" do
+    limit = parse_int_param(conn.query_params["limit"], 20)
+    profiles = Giulia.Runtime.Monitor.list_profiles(limit: limit)
+
+    summaries = Enum.map(profiles, fn p ->
+      %{
+        id: p[:id],
+        timestamp: p[:timestamp],
+        duration_ms: p[:duration_ms],
+        snapshot_count: p[:snapshot_count],
+        hot_modules_count: length(p[:hot_modules] || []),
+        bottleneck_count: length(p[:bottleneck_analysis] || [])
+      }
+    end)
+
+    send_json(conn, 200, %{profiles: summaries, count: length(summaries)})
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profile/latest — Most recent performance profile
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get the most recent performance profile from burst analysis",
+    endpoint: "GET /api/runtime/profile/latest",
+    params: %{},
+    returns: "JSON full profile with hot modules, bottleneck analysis, peak metrics",
+    category: "runtime"
+  }
+  get "/profile/latest" do
+    case Giulia.Runtime.Monitor.latest_profile() do
+      {:ok, profile} -> send_json(conn, 200, profile)
+      {:error, :not_found} -> send_json(conn, 404, %{error: "No profiles available"})
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/runtime/profile/:id — Specific profile by timestamp ID
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get a specific performance profile by timestamp ID",
+    endpoint: "GET /api/runtime/profile/:id",
+    params: %{id: :required},
+    returns: "JSON full profile detail",
+    category: "runtime"
+  }
+  get "/profile/:id" do
+    case Giulia.Runtime.Monitor.get_profile(id) do
+      {:ok, profile} -> send_json(conn, 200, profile)
+      {:error, :not_found} -> send_json(conn, 404, %{error: "Profile not found: #{id}"})
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end
