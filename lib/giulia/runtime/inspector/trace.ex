@@ -11,7 +11,9 @@ defmodule Giulia.Runtime.Inspector.Trace do
   - Max duration: 5,000ms
   - Whichever comes first wins
 
-  Only works on local node — tracing on remote nodes via :rpc is unsafe.
+  `run/3` works on local node only.
+  `run_remote/3` sends a self-contained trace function to a remote node
+  via `:rpc.call` — no Giulia code required on the target (Build 135).
 
   Extracted from `Runtime.Inspector` (Build 128).
   """
@@ -38,6 +40,141 @@ defmodule Giulia.Runtime.Inspector.Trace do
       trace_local(module_atom, actual_duration)
     else
       {:error, :remote_trace_not_supported}
+    end
+  rescue
+    ArgumentError ->
+      {:error, {:unknown_module, module}}
+  end
+
+  @doc """
+  Run a trace on a remote BEAM node via `Code.eval_string` over `:rpc.call`.
+
+  Sends self-contained Elixir source code to the target node for evaluation.
+  No Giulia modules needed on the remote — only Elixir stdlib.
+
+  Duration is capped at `@trace_max_duration` (#{@trace_max_duration}ms).
+  Event limit is `@trace_max_events` (#{@trace_max_events}).
+  """
+  @spec run_remote(atom(), atom() | String.t(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()}
+  def run_remote(node_ref, module, duration_ms \\ 2_000) do
+    actual_duration = min(duration_ms, @trace_max_duration)
+
+    module_str =
+      if is_atom(module), do: inspect(module), else: ensure_elixir_prefix(module)
+
+    # Fully qualified module atom string for Code.eval_string
+    module_atom_str =
+      if is_atom(module) do
+        inspect(module)
+      else
+        ":" <> inspect(ensure_elixir_prefix(module))
+      end
+
+    # Self-contained Elixir code string — evaluated on the remote node
+    # Uses only Elixir stdlib, no Giulia modules required
+    code = """
+    module_atom = #{module_atom_str}
+    duration_ms = #{actual_duration}
+    max_events = #{@trace_max_events}
+
+    parent = self()
+    ref = make_ref()
+
+    collector = spawn(fn ->
+      collect = fn collect, counts, total ->
+        if total >= max_events do
+          send(parent, {:trace_overflow, ref})
+          wait = fn wait, c, t ->
+            receive do
+              {:get_results, ^ref, reply_to} ->
+                send(reply_to, {:trace_results, ref, c, t, true})
+              {:trace, _, :call, _} ->
+                wait.(wait, c, t)
+              _ ->
+                wait.(wait, c, t)
+            after
+              10_000 -> :ok
+            end
+          end
+          wait.(wait, counts, total)
+        else
+          receive do
+            {:trace, _pid, :call, {_mod, func, args}} ->
+              arity = length(args)
+              key = {func, arity}
+              new_counts = Map.update(counts, key, 1, &(&1 + 1))
+              collect.(collect, new_counts, total + 1)
+
+            {:get_results, ^ref, reply_to} ->
+              send(reply_to, {:trace_results, ref, counts, total, false})
+
+            _other ->
+              collect.(collect, counts, total)
+          after
+            10_000 ->
+              send(parent, {:trace_results, ref, counts, total, false})
+          end
+        end
+      end
+      collect.(collect, %{}, 0)
+    end)
+
+    match_spec = [{:_, [], [{:return_trace}]}]
+
+    try do
+      :erlang.trace_pattern({module_atom, :_, :_}, match_spec, [:local])
+      :erlang.trace(:all, true, [{:tracer, collector}, :call])
+
+      Process.send_after(self(), {:trace_timeout, ref}, duration_ms)
+
+      receive do
+        {:trace_timeout, ^ref} -> :ok
+        {:trace_overflow, ^ref} -> :ok
+      end
+    after
+      :erlang.trace(:all, false, [:call])
+      :erlang.trace_pattern({module_atom, :_, :_}, false, [:local])
+    end
+
+    send(collector, {:get_results, ref, self()})
+
+    receive do
+      {:trace_results, ^ref, counts, total, aborted} ->
+        calls =
+          counts
+          |> Enum.map(fn {{func, arity}, count} ->
+            %{function: Atom.to_string(func), arity: arity, count: count}
+          end)
+          |> Enum.sort_by(fn c -> c.count end, :desc)
+
+        %{
+          module: "#{module_str}",
+          duration_ms: duration_ms,
+          aborted: aborted,
+          calls: calls,
+          total_calls: total,
+          calls_per_second: if(duration_ms > 0, do: Float.round(total / (duration_ms / 1000), 1), else: 0.0)
+        }
+    after
+      2_000 -> {:error, :trace_collector_timeout}
+    end
+    """
+
+    rpc_timeout = actual_duration + 5_000
+
+    case :rpc.call(node_ref, Code, :eval_string, [code], rpc_timeout) do
+      {:badrpc, reason} ->
+        {:error, {:rpc_failed, reason}}
+
+      {{:error, _} = error, _bindings} ->
+        error
+
+      {result, _bindings} when is_map(result) ->
+        {:ok, result}
+
+      other ->
+        {:error, {:unexpected_result, other}}
     end
   rescue
     ArgumentError ->

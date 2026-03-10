@@ -130,6 +130,12 @@ defmodule Giulia.Application do
       # Runtime collector (periodic BEAM health snapshots)
       Giulia.Runtime.Collector,
 
+      # Ingest store for Monitor→Worker snapshot pipeline (Build 133)
+      Giulia.Runtime.IngestStore,
+
+      # Observation controller for async start/stop observation (Build 133)
+      Giulia.Runtime.Observer,
+
       # Auto-connect to target node (returns :ignore if GIULIA_CONNECT_NODE unset)
       {Giulia.Runtime.AutoConnect, []},
 
