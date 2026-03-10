@@ -131,7 +131,10 @@ defmodule Giulia.Application do
       Giulia.Runtime.Collector,
 
       # Auto-connect to target node (returns :ignore if GIULIA_CONNECT_NODE unset)
-      {Giulia.Runtime.AutoConnect, []}
+      {Giulia.Runtime.AutoConnect, []},
+
+      # Monitor lifecycle orchestrator (returns :ignore unless GIULIA_ROLE=monitor)
+      {Giulia.Runtime.Monitor, []}
     ]
 
     all_children = base_children ++ heavy_children ++ inference_children ++ tail_children
