@@ -225,6 +225,116 @@ defmodule Giulia.Knowledge.Store.Reader do
   end
 
   # ============================================================================
+  # Bulk extraction — for ArcadeDB Indexer and future consumers
+  # ============================================================================
+
+  @doc """
+  All module vertices in the graph as a list of maps.
+
+  Returns `{:ok, [%{name: "Giulia.Foo", ...}]}`.
+  Each map includes the module name and any metadata available from
+  the Context.Store AST data (file path, line, function count).
+  """
+  @spec all_modules(String.t()) :: {:ok, [map()]}
+  def all_modules(project_path) do
+    graph = get_graph(project_path)
+
+    modules =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> Enum.map(fn name ->
+        # Enrich with AST metadata if available
+        ast_meta = get_module_meta(project_path, name)
+        Map.merge(%{name: name}, ast_meta)
+      end)
+
+    {:ok, modules}
+  end
+
+  @doc """
+  All function vertices in the graph as a list of maps.
+
+  Returns `{:ok, [%{name: "Giulia.Foo.bar/2", module: "Giulia.Foo", function: "bar", arity: 2}]}`.
+  """
+  @spec all_functions(String.t()) :: {:ok, [map()]}
+  def all_functions(project_path) do
+    graph = get_graph(project_path)
+
+    functions =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :function in Graph.vertex_labels(graph, v) end)
+      |> Enum.map(fn name ->
+        {mod, func, arity} = parse_mfa(name)
+        %{name: name, module: mod, function: func, arity: arity}
+      end)
+
+    {:ok, functions}
+  end
+
+  @doc """
+  All dependency edges in the graph as a list of `{from, to, type}` tuples.
+
+  Returns `{:ok, [{"Giulia.Foo", "Giulia.Bar", :depends_on}, ...]}`.
+  Only includes module-level edges (:depends_on, :calls, :implements).
+  """
+  @spec all_dependencies(String.t()) :: {:ok, [{String.t(), String.t(), atom()}]}
+  def all_dependencies(project_path) do
+    graph = get_graph(project_path)
+
+    # Only module-level vertices for dependency edges
+    module_set =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> MapSet.new()
+
+    edges =
+      graph
+      |> Graph.edges()
+      |> Enum.filter(fn edge ->
+        edge.v1 in module_set and edge.v2 in module_set
+      end)
+      |> Enum.map(fn edge ->
+        label = case edge.label do
+          {:semantic, _reason} -> :semantic
+          other -> other
+        end
+        {edge.v1, edge.v2, label}
+      end)
+
+    {:ok, edges}
+  end
+
+  # --- Helpers for bulk extraction ---
+
+  defp get_module_meta(project_path, module_name) do
+    # Try to find the module in Context.Store AST data
+    try do
+      case :ets.match_object(Giulia.Context.Store, {{:ast, project_path, :_}, :_}) do
+        entries ->
+          Enum.find_value(entries, %{}, fn {{:ast, _proj, file_path}, data} ->
+            modules = data[:modules] || []
+            case Enum.find(modules, fn m -> m.name == module_name end) do
+              nil -> nil
+              mod -> %{path: file_path, line: mod[:line] || mod.line}
+            end
+          end)
+      end
+    rescue
+      ArgumentError -> %{}
+    end
+  end
+
+  defp parse_mfa(name) do
+    case Regex.run(~r/^(.+)\.([^.]+)\/(\d+)$/, name) do
+      [_, mod, func, arity] -> {mod, func, String.to_integer(arity)}
+      _ -> {name, nil, nil}
+    end
+  end
+
+  # ============================================================================
   # Direct graph operations (2)
   # ============================================================================
 
