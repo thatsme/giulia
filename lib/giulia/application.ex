@@ -77,7 +77,10 @@ defmodule Giulia.Application do
       Giulia.Context.Indexer,
 
       # Knowledge graph (depends on Store + Indexer)
-      Giulia.Knowledge.Store
+      Giulia.Knowledge.Store,
+
+      # ArcadeDB consolidation (periodic cross-build analysis)
+      Giulia.Storage.Arcade.Consolidator
     ]
 
     # Heavy children — skipped in monitor mode to save ~200MB RAM

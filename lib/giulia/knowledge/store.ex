@@ -111,6 +111,9 @@ defmodule Giulia.Knowledge.Store do
   defdelegate get_test_targets(project_path, module), to: Reader
   defdelegate check_behaviour_integrity(project_path, behaviour), to: Reader
   defdelegate check_all_behaviours(project_path), to: Reader
+  defdelegate all_modules(project_path), to: Reader
+  defdelegate all_functions(project_path), to: Reader
+  defdelegate all_dependencies(project_path), to: Reader
   defdelegate graph(project_path), to: Reader
   defdelegate get_implementers(project_path, behaviour), to: Reader
   defdelegate pre_impact_check(project_path, params), to: Reader
@@ -186,6 +189,10 @@ defmodule Giulia.Knowledge.Store do
 
     # Persist graph to CubDB (Build 102-104)
     Giulia.Persistence.Writer.persist_graph(project_path, graph)
+
+    # Snapshot to ArcadeDB L2 (async, best-effort)
+    build_id = Giulia.Version.build()
+    Task.start(fn -> Giulia.Storage.Arcade.Indexer.snapshot(project_path, build_id) end)
 
     # Eagerly compute heavy metrics in background
     store_pid = self()
