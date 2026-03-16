@@ -70,7 +70,7 @@ All external credentials are resolved through environment variables:
 | Groq API key | `GROQ_API_KEY` | For Groq provider |
 | Gemini API key | `GEMINI_API_KEY` | For Gemini provider |
 | Erlang cookie | `GIULIA_COOKIE` | For distributed Erlang auth |
-| ArcadeDB password | `ARCADEDB_PASSWORD` | For L2 storage |
+| ArcadeDB password | `ARCADEDB_PASSWORD` | Giulia's HTTP auth to ArcadeDB. Must match `rootPassword` in ArcadeDB's `JAVA_OPTS`. |
 
 The Erlang distribution cookie authenticates inter-node communication.
 Both worker and monitor must share the same cookie. Default is `giulia_dev` —
@@ -131,7 +131,7 @@ use a VPN or SSH tunnel. Never expose EPMD (4369) or distribution ports
 
 - Bind to localhost only — do not expose port 4000 to untrusted networks
 - Change `GIULIA_COOKIE` from the default `giulia_dev`
-- Change `ARCADEDB_PASSWORD` from the default `playwithdata`
+- Change the ArcadeDB root password from the default `playwithdata` — set it in both places: ArcadeDB's `JAVA_OPTS` (`-Darcadedb.server.rootPassword=...`) and Giulia's `ARCADEDB_PASSWORD` env var
 - Do not expose EPMD (4369) or distribution ports (9100-9115) publicly
 - Review which LLM providers are enabled before processing sensitive code
 - ArcadeDB REST API (port 2480) has its own auth — do not expose without password
