@@ -36,7 +36,7 @@ Connect to any running BEAM node via distributed Erlang. Inspect memory, top pro
 ### Build and Start
 
 ```bash
-git clone https://github.com/yourusername/giulia.git
+git clone https://github.com/thatsme/giulia.git
 cd giulia
 
 # Build the Docker image
@@ -55,10 +55,10 @@ curl http://localhost:4000/health
 # Scan a project (use the host path -- Giulia translates it to the container path)
 curl -X POST http://localhost:4000/api/index/scan \
   -H "Content-Type: application/json" \
-  -d '{"path":"D:/Development/GitHub/MyProject"}'
+  -d '{"path":"/path/to/your/project"}'
 
 # Get the architect brief (full project awareness in one call)
-curl "http://localhost:4000/api/brief/architect?path=D:/Development/GitHub/MyProject"
+curl "http://localhost:4000/api/brief/architect?path=/path/to/your/project"
 ```
 
 ## Architecture
@@ -101,7 +101,7 @@ Claude Code / CLI Client
 |---|---|
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow |
-| [API.md](API.md) | REST API reference (57 routes across 9 domains) |
+| [API.md](API.md) | REST API reference (78 endpoints across 10 categories) |
 | [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
 | [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
@@ -111,7 +111,7 @@ Claude Code / CLI Client
 
 - **Build**: 138
 - **Tests**: 1707 tests, 0 failures
-- **API**: 57 self-describing routes across 9 categories
+- **API**: 78 endpoints across 10 categories (68 self-describing via discovery + 10 core)
 - **Storage**: Three-tier (ETS L1 + CubDB warm start + ArcadeDB L2)
 - **Containers**: Dual-container architecture (worker + monitor)
 

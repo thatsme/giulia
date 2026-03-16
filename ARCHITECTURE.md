@@ -23,7 +23,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   57 API endpoints          |
+ |   78 API endpoints          |
  +-----------------------------+
 ```
 
@@ -53,7 +53,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 57 API endpoints          |    | - Performance profiling   | |
+|  | - 78 API endpoints          |    | - Performance profiling   | |
 |  | - CubDB persistence         |    |                           | |
 |  | - ArcadeDB L2 snapshots     |    | Skips:                    | |
 |  |                             |    |  EmbeddingServing (~90MB) | |
