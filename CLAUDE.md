@@ -367,7 +367,7 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 **All Giulia-specific env vars use the `GIULIA_` prefix for consistency.**
 
 - `ANTHROPIC_API_KEY` - Required for Anthropic provider (standard Anthropic naming)
-- `GIULIA_LM_STUDIO_URL` - LM Studio base URL (e.g., `http://192.168.1.52:1234`)
+- `GIULIA_LM_STUDIO_URL` - LM Studio base URL (e.g., `http://host.docker.internal:1234`)
 - `GIULIA_LM_STUDIO_MODEL` - LM Studio model name (e.g., `qwen/qwen2.5-coder-14b`)
 - `GIULIA_IN_CONTAINER` - Set to "true" when running in Docker (auto-detected via /.dockerenv)
 - `GIULIA_HOST_PROJECTS_PATH` - Host path prefix for path mapping (e.g., `C:/Development/GitHub`)
@@ -389,7 +389,7 @@ docker run -d \
   -p 4000:4000 \
   -p 4369:4369 \
   -p 9100-9105:9100-9105 \
-  -e GIULIA_LM_STUDIO_URL=http://192.168.1.52:1234 \
+  -e GIULIA_LM_STUDIO_URL=http://host.docker.internal:1234 \
   -e GIULIA_HOST_PROJECTS_PATH="C:/Development/GitHub" \
   -e GIULIA_COOKIE=giulia_dev \
   -v "C:/Development/GitHub:/projects" \
