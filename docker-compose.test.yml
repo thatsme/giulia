@@ -75,6 +75,7 @@ services:
       GIULIA_IN_CONTAINER: "true"
       GIULIA_HOME: /data
       GIULIA_DAEMON_MODE: "true"
+      GIULIA_HOST_PROJECTS_PATH: ${GIULIA_HOST_PROJECTS_PATH:-D:/Development/GitHub}
       # ArcadeDB points to the test-dedicated instance
       ARCADEDB_URL: http://arcadedb:2480
       ARCADEDB_DB: giulia

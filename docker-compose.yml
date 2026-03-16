@@ -75,6 +75,8 @@ services:
       GIULIA_NODE_NAME: ${GIULIA_WORKER_NODE_NAME:-worker}@giulia-worker
       GIULIA_ROLE: worker
       GIULIA_PORT: "4000"
+      # ArcadeDB runs as an external standalone container, not managed by this compose file.
+      # Use host.docker.internal to reach it from inside the Giulia containers.
       ARCADEDB_URL: ${ARCADEDB_URL:-http://host.docker.internal:2480}
 
     volumes: *common-volumes
@@ -161,43 +163,9 @@ services:
       start_period: 20s
       retries: 3
 
-  # ============================================================================
-  # ArcadeDB — L2 persistent graph storage (history, consolidation, cross-build)
-  # ETS + libgraph remain L1 for real-time queries.
-  # ============================================================================
-  arcadedb:
-    image: arcadedata/arcadedb:latest
-    container_name: giulia-arcadedb
-    hostname: arcadedb
-    restart: unless-stopped
-
-    environment:
-      JAVA_OPTS: >-
-        -Darcadedb.server.rootPassword=${ARCADEDB_PASSWORD:-playwithdata}
-        -Darcadedb.server.defaultDatabases=giulia
-        -Xmx512m
-
-    ports:
-      - "2480:2480"
-
-    volumes:
-      - arcadedb_data:/home/arcadedb/databases
-
-    deploy:
-      resources:
-        limits:
-          memory: 1G
-        reservations:
-          memory: 256M
-
-    logging: *common-logging
-
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:2480/api/v1/ready || exit 1"]
-      interval: 30s
-      timeout: 10s
-      start_period: 10s
-      retries: 3
+  # NOTE: ArcadeDB runs as an external standalone container (not managed here).
+  # Start it separately: docker run -d --name arcadedb -p 2480:2480 arcadedata/arcadedb:latest
+  # Worker reaches it via ARCADEDB_URL=http://host.docker.internal:2480
 
 volumes:
   giulia_data:
@@ -208,5 +176,3 @@ volumes:
     name: giulia_deps
   giulia_models:
     name: giulia_models
-  arcadedb_data:
-    name: arcadedb_data
