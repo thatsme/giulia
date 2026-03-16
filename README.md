@@ -1,21 +1,122 @@
 # Giulia
 
-**TODO: Add description**
+Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Knowledge Graph, runtime BEAM introspection, and semantic search -- all via a REST API.
 
-## Installation
+## Why Giulia Exists
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `giulia` to your list of dependencies in `mix.exs`:
+AI coding assistants restart from zero every session. They lose context, re-index files, and grep for everything on every interaction. Giulia solves this by running as a long-lived daemon on the BEAM VM:
 
-```elixir
-def deps do
-  [
-    {:giulia, "~> 0.1.0"}
-  ]
-end
+- **Warm state**: AST indexes, Knowledge Graphs, and embeddings stay in ETS between sessions.
+- **Multi-project**: Switch terminals and projects instantly -- each gets its own isolated context.
+- **No cold starts**: CubDB persistence restores full state on restart without re-scanning.
+- **Deep analysis**: Dependency graphs, blast radius, coupling metrics, and dead code detection -- precomputed and cached, not computed on every query.
+
+## What It Does
+
+### Static Analysis (L1 -- ETS + libgraph)
+
+Sub-millisecond queries over the full project graph. Modules, functions, dependencies, centrality, impact maps, coupling heatmaps, complexity scores. All built from Sourceror AST parsing with parallel file scanning.
+
+### Runtime Introspection
+
+Connect to any running BEAM node via distributed Erlang. Inspect memory, top processes, hot modules, and fuse runtime data with static analysis for performance profiling. Worker and monitor containers operate as a two-node cluster.
+
+### Persistent Intelligence
+
+- **CubDB warm starts**: AST entries, knowledge graph, metric caches, and embeddings survive restarts. Merkle tree integrity verification detects stale files for incremental re-scanning.
+- **ArcadeDB L2**: Multi-model graph database for cross-build history, consolidation queries, complexity drift detection, and coupling trend analysis.
+
+## Quick Start
+
+### Prerequisites
+
+- Docker Desktop with Compose v2 plugin (`docker compose`, not `docker-compose`)
+- Git
+
+### Build and Start
+
+```bash
+git clone https://github.com/yourusername/giulia.git
+cd giulia
+
+# Build the Docker image
+docker compose build
+
+# Start worker (port 4000) + monitor (port 4001)
+docker compose up -d
+
+# Verify
+curl http://localhost:4000/health
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/giulia>.
+### First Scan
 
+```bash
+# Scan a project (use the host path -- Giulia translates it to the container path)
+curl -X POST http://localhost:4000/api/index/scan \
+  -H "Content-Type: application/json" \
+  -d '{"path":"D:/Development/GitHub/MyProject"}'
+
+# Get the architect brief (full project awareness in one call)
+curl "http://localhost:4000/api/brief/architect?path=D:/Development/GitHub/MyProject"
+```
+
+## Architecture
+
+```
+Claude Code / CLI Client
+         |
+         | HTTP
+         v
++------------------+     +-------------------+
+| giulia-worker    |     | giulia-monitor    |
+| :4000            |<--->| :4001             |
+| Static analysis  |  ^  | Runtime profiling |
+| Scans, graphs,   |  |  | Burst detection   |
+| embeddings       |  |  | Performance data  |
++------------------+  |  +-------------------+
+  |          |        |
+  v          v        | Distributed Erlang
++------+  +-------+  |
+| ETS  |  | CubDB |  +---> External BEAM apps
+| (L1) |  | (warm |
+|      |  | start)|
++------+  +-------+
+              |
+              v
+         +-----------+
+         | ArcadeDB  |
+         | (L2)      |
+         | :2480     |
+         | History,  |
+         | trends,   |
+         | cross-    |
+         | build     |
+         +-----------+
+```
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow |
+| [API.md](API.md) | REST API reference (57 routes across 9 domains) |
+| [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
+| [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
+| [SECURITY.md](SECURITY.md) | Path sandboxing, constitution enforcement, threat model |
+
+## Project Status
+
+- **Build**: 138
+- **Tests**: 1707 tests, 0 failures
+- **API**: 57 self-describing routes across 9 categories
+- **Storage**: Three-tier (ETS L1 + CubDB warm start + ArcadeDB L2)
+- **Containers**: Dual-container architecture (worker + monitor)
+
+## License
+
+Copyright 2026 Alessio Battistutta
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
