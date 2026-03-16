@@ -303,7 +303,10 @@ defmodule Giulia.Runtime.Collector do
 
         # Check for spike
         if reductions_delta > baseline * @burst_spike_multiplier and baseline > 0 do
-          Logger.info("Collector: burst detected on #{node_ref} — reductions/s #{reductions_delta} vs baseline #{baseline}. Switching to capture mode.")
+          Logger.info(
+            "Collector: burst detected on #{node_ref} — reductions/s #{reductions_delta} vs baseline #{baseline}. Switching to capture mode."
+          )
+
           %{state | mode: :capturing, drop_count: 0, burst_snapshots: [snapshot]}
         else
           state
@@ -320,7 +323,9 @@ defmodule Giulia.Runtime.Collector do
           new_drop_count = state.drop_count + 1
 
           if new_drop_count >= @burst_drop_consecutive do
-            Logger.info("Collector: burst ended on #{node_ref} — #{length(state.burst_snapshots)} snapshots captured. Producing profile.")
+            Logger.info(
+              "Collector: burst ended on #{node_ref} — #{length(state.burst_snapshots)} snapshots captured. Producing profile."
+            )
 
             # Notify profile callback if set
             if state.profile_callback do
@@ -368,12 +373,21 @@ defmodule Giulia.Runtime.Collector do
     # Memory alert
     alerts =
       if (beam[:memory_mb] || 0) > @high_memory_mb do
-        duration = alert_duration(snapshots, fn s ->
-          (s[:pulse][:beam][:memory_mb] || 0) > @high_memory_mb
-        end)
+        duration =
+          alert_duration(snapshots, fn s ->
+            (s[:pulse][:beam][:memory_mb] || 0) > @high_memory_mb
+          end)
 
-        [%{type: "high_memory", value: beam[:memory_mb],
-           threshold: @high_memory_mb, unit: "MB", duration_snapshots: duration} | alerts]
+        [
+          %{
+            type: "high_memory",
+            value: beam[:memory_mb],
+            threshold: @high_memory_mb,
+            unit: "MB",
+            duration_snapshots: duration
+          }
+          | alerts
+        ]
       else
         alerts
       end
@@ -381,12 +395,20 @@ defmodule Giulia.Runtime.Collector do
     # Process count alert
     alerts =
       if (beam[:processes] || 0) > @high_process_count do
-        duration = alert_duration(snapshots, fn s ->
-          (s[:pulse][:beam][:processes] || 0) > @high_process_count
-        end)
+        duration =
+          alert_duration(snapshots, fn s ->
+            (s[:pulse][:beam][:processes] || 0) > @high_process_count
+          end)
 
-        [%{type: "high_process_count", value: beam[:processes],
-           threshold: @high_process_count, duration_snapshots: duration} | alerts]
+        [
+          %{
+            type: "high_process_count",
+            value: beam[:processes],
+            threshold: @high_process_count,
+            duration_snapshots: duration
+          }
+          | alerts
+        ]
       else
         alerts
       end
@@ -394,12 +416,20 @@ defmodule Giulia.Runtime.Collector do
     # Run queue alert
     alerts =
       if (beam[:run_queue] || 0) > @high_run_queue do
-        duration = alert_duration(snapshots, fn s ->
-          (s[:pulse][:beam][:run_queue] || 0) > @high_run_queue
-        end)
+        duration =
+          alert_duration(snapshots, fn s ->
+            (s[:pulse][:beam][:run_queue] || 0) > @high_run_queue
+          end)
 
-        [%{type: "run_queue_pressure", value: beam[:run_queue],
-           threshold: @high_run_queue, duration_snapshots: duration} | alerts]
+        [
+          %{
+            type: "run_queue_pressure",
+            value: beam[:run_queue],
+            threshold: @high_run_queue,
+            duration_snapshots: duration
+          }
+          | alerts
+        ]
       else
         alerts
       end
@@ -412,16 +442,25 @@ defmodule Giulia.Runtime.Collector do
 
     queue_offenders =
       top_procs
-      |> Enum.filter(fn p -> (p[:message_queue] || p.message_queue || 0) > @high_message_queue end)
+      |> Enum.filter(fn p ->
+        (p[:message_queue] || p.message_queue || 0) > @high_message_queue
+      end)
 
     alerts =
       if queue_offenders != [] do
-        offender_info = Enum.map(queue_offenders, fn p ->
-          %{module: p[:module] || p.module, queue: p[:message_queue] || p.message_queue}
-        end)
+        offender_info =
+          Enum.map(queue_offenders, fn p ->
+            %{module: p[:module] || p.module, queue: p[:message_queue] || p.message_queue}
+          end)
 
-        [%{type: "message_queue_buildup", offenders: offender_info,
-           threshold: @high_message_queue} | alerts]
+        [
+          %{
+            type: "message_queue_buildup",
+            offenders: offender_info,
+            threshold: @high_message_queue
+          }
+          | alerts
+        ]
       else
         alerts
       end
@@ -449,8 +488,16 @@ defmodule Giulia.Runtime.Collector do
       growth_pct = Float.round((last_mem - first_mem) / first_mem * 100, 1)
 
       if growth_pct > 20.0 do
-        [%{type: "memory_growth", from_mb: first_mem, to_mb: last_mem,
-           growth_pct: growth_pct, over_snapshots: length(snapshots)} | alerts]
+        [
+          %{
+            type: "memory_growth",
+            from_mb: first_mem,
+            to_mb: last_mem,
+            growth_pct: growth_pct,
+            over_snapshots: length(snapshots)
+          }
+          | alerts
+        ]
       else
         alerts
       end
@@ -480,7 +527,7 @@ defmodule Giulia.Runtime.Collector do
 
   defp resolve_key(:local), do: node()
   defp resolve_key(n) when is_atom(n), do: n
-  defp resolve_key(n) when is_binary(n), do: String.to_atom(n)
+  defp resolve_key(n) when is_binary(n), do: Giulia.Daemon.Helpers.safe_to_node_atom(n)
 
   defp ets_safe_tab(table) do
     case :ets.whereis(table) do

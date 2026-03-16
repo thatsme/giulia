@@ -8,8 +8,17 @@ defmodule Giulia.Persistence.LoaderTest do
   setup do
     File.mkdir_p!(@test_dir)
 
+    # Close and clear any leftover CubDB from previous runs
+    Store.close(@test_dir)
+
+    # Clear the hashed temp CubDB directory used in test mode
+    hash = :erlang.phash2(@test_dir) |> Integer.to_string()
+    cubdb_tmp = Path.join([System.tmp_dir!(), "giulia_test_cubdb", hash])
+    File.rm_rf(cubdb_tmp)
+
     on_exit(fn ->
       Store.close(@test_dir)
+      File.rm_rf(cubdb_tmp)
       File.rm_rf!(@test_dir)
     end)
   end

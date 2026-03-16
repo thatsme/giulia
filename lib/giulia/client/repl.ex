@@ -51,11 +51,13 @@ defmodule Giulia.Client.REPL do
 
           Regex.match?(~r/^!(\d+)$/, line) ->
             [_, num_str] = Regex.run(~r/^!(\d+)$/, line)
-            num = String.to_integer(num_str)
+            {num, _} = Integer.parse(num_str)
+
             case Enum.at(history, num - 1) do
               nil ->
                 Output.warning("No command ##{num} in history")
                 repl_loop(host_path, history)
+
               cmd ->
                 Output.info("Replaying: #{cmd}")
                 history = [cmd | history] |> Enum.take(100)
@@ -68,6 +70,7 @@ defmodule Giulia.Client.REPL do
               nil ->
                 Output.warning("No previous command")
                 repl_loop(host_path, history)
+
               cmd ->
                 Output.info("Replaying: #{cmd}")
                 execute_or_command(cmd, host_path)
@@ -105,6 +108,7 @@ defmodule Giulia.Client.REPL do
 
           String.starts_with?(trimmed, @heredoc_delim) ->
             after_open = String.replace_prefix(trimmed, @heredoc_delim, "")
+
             if String.length(after_open) >= 3 and String.ends_with?(after_open, @heredoc_delim) do
               after_open |> String.replace_suffix(@heredoc_delim, "") |> String.trim()
             else
@@ -178,6 +182,7 @@ defmodule Giulia.Client.REPL do
 
   defp print_history(history) do
     IO.puts("\n  \e[36mHistory:\e[0m")
+
     history
     |> Enum.with_index(1)
     |> Enum.reverse()
@@ -185,6 +190,7 @@ defmodule Giulia.Client.REPL do
       display = if String.length(cmd) > 60, do: String.slice(cmd, 0, 57) <> "...", else: cmd
       IO.puts("  \e[33m#{String.pad_leading(Integer.to_string(idx), 3)}\e[0m  #{display}")
     end)
+
     IO.puts("")
     Output.info("Use !N to replay command #N, or !! to replay last command")
   end

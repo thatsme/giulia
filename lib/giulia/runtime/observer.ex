@@ -87,12 +87,14 @@ defmodule Giulia.Runtime.Observer do
 
   @impl true
   def handle_call({:start_observing, _params}, _from, %{status: :observing} = state) do
-    {:reply, {:error, %{
-      error: "already_observing",
-      node: state.node,
-      started_at: state.started_at,
-      detail: "Stop current observation first"
-    }}, state}
+    {:reply,
+     {:error,
+      %{
+        error: "already_observing",
+        node: state.node,
+        started_at: state.started_at,
+        detail: "Stop current observation first"
+      }}, state}
   end
 
   def handle_call({:start_observing, params}, _from, state) do
@@ -105,7 +107,7 @@ defmodule Giulia.Runtime.Observer do
     unless node_str do
       {:reply, {:error, %{error: "missing_node", detail: "node field is required"}}, state}
     else
-      node_atom = String.to_atom(node_str)
+      node_atom = Giulia.Daemon.Helpers.safe_to_node_atom(node_str)
 
       # Connect to target node
       connect_opts = if cookie, do: [cookie: cookie], else: []
@@ -115,22 +117,27 @@ defmodule Giulia.Runtime.Observer do
           now = DateTime.utc_now() |> DateTime.to_iso8601()
           session_id = "obs_" <> (now |> String.replace(~r/[^0-9]/, ""))
 
-          trace_label = if trace_modules != [], do: ", tracing: #{inspect(trace_modules)}", else: ""
-          Logger.info("Observer: started observing #{node_str} (session: #{session_id}, interval: #{interval_ms}ms#{trace_label})")
+          trace_label =
+            if trace_modules != [], do: ", tracing: #{inspect(trace_modules)}", else: ""
+
+          Logger.info(
+            "Observer: started observing #{node_str} (session: #{session_id}, interval: #{interval_ms}ms#{trace_label})"
+          )
 
           # Schedule first collection
           timer_ref = Process.send_after(self(), :collect, interval_ms)
 
-          new_state = %{state |
-            status: :observing,
-            node: node_str,
-            worker_url: worker_url,
-            interval_ms: interval_ms,
-            trace_modules: trace_modules,
-            started_at: now,
-            session_id: session_id,
-            snapshots_pushed: 0,
-            timer_ref: timer_ref
+          new_state = %{
+            state
+            | status: :observing,
+              node: node_str,
+              worker_url: worker_url,
+              interval_ms: interval_ms,
+              trace_modules: trace_modules,
+              started_at: now,
+              session_id: session_id,
+              snapshots_pushed: 0,
+              timer_ref: timer_ref
           }
 
           reply = %{
@@ -145,11 +152,13 @@ defmodule Giulia.Runtime.Observer do
           {:reply, {:ok, reply}, new_state}
 
         {:error, reason} ->
-          {:reply, {:error, %{
-            error: "connection_failed",
-            node: node_str,
-            detail: inspect(reason)
-          }}, state}
+          {:reply,
+           {:error,
+            %{
+              error: "connection_failed",
+              node: node_str,
+              detail: inspect(reason)
+            }}, state}
       end
     end
   end
@@ -164,7 +173,9 @@ defmodule Giulia.Runtime.Observer do
 
     now = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    Logger.info("Observer: stopping observation of #{state.node} (#{state.snapshots_pushed} snapshots)")
+    Logger.info(
+      "Observer: stopping observation of #{state.node} (#{state.snapshots_pushed} snapshots)"
+    )
 
     # Send finalize to Worker
     finalize_result = send_finalize(state, now)
@@ -188,16 +199,17 @@ defmodule Giulia.Runtime.Observer do
       finalize: finalize_result
     }
 
-    new_state = %{state |
-      status: :idle,
-      node: nil,
-      worker_url: nil,
-      trace_modules: [],
-      started_at: nil,
-      session_id: nil,
-      snapshots_pushed: 0,
-      timer_ref: nil,
-      last_observation: last_observation
+    new_state = %{
+      state
+      | status: :idle,
+        node: nil,
+        worker_url: nil,
+        trace_modules: [],
+        started_at: nil,
+        session_id: nil,
+        snapshots_pushed: 0,
+        timer_ref: nil,
+        last_observation: last_observation
     }
 
     {:reply, {:ok, reply}, new_state}
@@ -208,6 +220,7 @@ defmodule Giulia.Runtime.Observer do
       case state.status do
         :observing ->
           elapsed = elapsed_seconds(state.started_at)
+
           %{
             status: "observing",
             node: state.node,
@@ -220,6 +233,7 @@ defmodule Giulia.Runtime.Observer do
 
         :idle ->
           base = %{status: "idle"}
+
           if state.last_observation do
             Map.put(base, :last_observation, state.last_observation)
           else
@@ -236,7 +250,7 @@ defmodule Giulia.Runtime.Observer do
 
   @impl true
   def handle_info(:collect, %{status: :observing} = state) do
-    node_atom = String.to_atom(state.node)
+    node_atom = Giulia.Daemon.Helpers.safe_to_node_atom(state.node)
 
     # Collect pulse + top processes
     snapshot = collect_snapshot(node_atom)
@@ -341,15 +355,16 @@ defmodule Giulia.Runtime.Observer do
         schedulers_online: beam[:schedulers] || 0,
         run_queue: beam[:run_queue] || 0
       },
-      hot_processes: Enum.map(top_procs, fn p ->
-        %{
-          pid: p[:pid],
-          module: p[:module],
-          reductions: p[:reductions] || p[:metric_value] || 0,
-          memory_kb: p[:memory_kb] || 0,
-          message_queue: p[:message_queue] || 0
-        }
-      end),
+      hot_processes:
+        Enum.map(top_procs, fn p ->
+          %{
+            pid: p[:pid],
+            module: p[:module],
+            reductions: p[:reductions] || p[:metric_value] || 0,
+            memory_kb: p[:memory_kb] || 0,
+            message_queue: p[:message_queue] || 0
+          }
+        end),
       ets_snapshot: get_in(pulse_data, [:ets, :god_tables]) || []
     }
   end
@@ -362,14 +377,17 @@ defmodule Giulia.Runtime.Observer do
     url = "#{worker_url}/api/runtime/ingest"
     timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
 
-    body = Map.merge(snapshot, %{
-      node: node,
-      session_id: session_id,
-      timestamp: timestamp
-    })
+    body =
+      Map.merge(snapshot, %{
+        node: node,
+        session_id: session_id,
+        timestamp: timestamp
+      })
 
     case http_post(url, body) do
-      {:ok, _} -> true
+      {:ok, _} ->
+        true
+
       {:error, reason} ->
         Logger.warning("Observer: failed to push snapshot — #{inspect(reason)}")
         false
@@ -388,7 +406,9 @@ defmodule Giulia.Runtime.Observer do
     }
 
     case http_post(url, body) do
-      {:ok, response} -> response
+      {:ok, response} ->
+        response
+
       {:error, reason} ->
         Logger.error("Observer: finalize failed — #{inspect(reason)}")
         %{error: inspect(reason)}

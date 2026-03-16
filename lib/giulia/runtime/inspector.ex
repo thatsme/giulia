@@ -34,7 +34,8 @@ defmodule Giulia.Runtime.Inspector do
   def connect(node_name, opts \\ []) do
     # Set cookie if provided
     if cookie = opts[:cookie] do
-      Node.set_cookie(node_name, String.to_atom(cookie))
+      # Node.set_cookie/2 requires an atom — cookies are bounded config values
+      Node.set_cookie(node_name, String.to_existing_atom(cookie))
     end
 
     case Node.connect(node_name) do
@@ -60,7 +61,6 @@ defmodule Giulia.Runtime.Inspector do
          {:ok, scheduler_count} <- safe_rpc(node, :erlang, :system_info, [:schedulers_online]),
          {:ok, run_queue} <- safe_rpc(node, :erlang, :statistics, [:run_queue]),
          {:ok, uptime_ms} <- safe_rpc(node, :erlang, :statistics, [:wall_clock]) do
-
       {uptime_total_ms, _since_last} = uptime_ms
       memory_mb = Float.round(memory[:total] / (1024 * 1024), 2)
 
@@ -71,30 +71,31 @@ defmodule Giulia.Runtime.Inspector do
       # Warnings
       warnings = build_warnings(process_count, run_queue, memory_mb, ets_info)
 
-      {:ok, %{
-        node: node,
-        timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
-        beam: %{
-          processes: process_count,
-          memory_mb: memory_mb,
-          memory_breakdown: %{
-            processes_mb: Float.round(memory[:processes] / (1024 * 1024), 2),
-            ets_mb: Float.round(memory[:ets] / (1024 * 1024), 2),
-            atom_mb: Float.round(memory[:atom] / (1024 * 1024), 2),
-            binary_mb: Float.round(memory[:binary] / (1024 * 1024), 2),
-            code_mb: Float.round(memory[:code] / (1024 * 1024), 2)
-          },
-          schedulers: scheduler_count,
-          uptime_seconds: div(uptime_total_ms, 1000),
-          run_queue: run_queue
-        },
-        ets: %{
-          tables: length(ets_tables),
-          total_memory_mb: ets_info.total_memory_mb,
-          god_tables: ets_info.god_tables
-        },
-        warnings: warnings
-      }}
+      {:ok,
+       %{
+         node: node,
+         timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+         beam: %{
+           processes: process_count,
+           memory_mb: memory_mb,
+           memory_breakdown: %{
+             processes_mb: Float.round(memory[:processes] / (1024 * 1024), 2),
+             ets_mb: Float.round(memory[:ets] / (1024 * 1024), 2),
+             atom_mb: Float.round(memory[:atom] / (1024 * 1024), 2),
+             binary_mb: Float.round(memory[:binary] / (1024 * 1024), 2),
+             code_mb: Float.round(memory[:code] / (1024 * 1024), 2)
+           },
+           schedulers: scheduler_count,
+           uptime_seconds: div(uptime_total_ms, 1000),
+           run_queue: run_queue
+         },
+         ets: %{
+           tables: length(ets_tables),
+           total_memory_mb: ets_info.total_memory_mb,
+           god_tables: ets_info.god_tables
+         },
+         warnings: warnings
+       }}
     else
       {:error, reason} -> {:error, reason}
     end
@@ -239,8 +240,14 @@ defmodule Giulia.Runtime.Inspector do
   defp metric_to_info_key(_), do: :reductions
 
   defp fetch_process_info(node, pid, metric_key) do
-    info_keys = [:registered_name, :initial_call, :current_function,
-                 :reductions, :memory, :message_queue_len]
+    info_keys = [
+      :registered_name,
+      :initial_call,
+      :current_function,
+      :reductions,
+      :memory,
+      :message_queue_len
+    ]
 
     case safe_rpc(node, :erlang, :process_info, [pid, info_keys]) do
       {:ok, info} when is_list(info) ->
@@ -372,7 +379,9 @@ defmodule Giulia.Runtime.Inspector do
       nil
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.warning("fetch_graph_data failed for #{module_name}: #{Exception.message(e)}")
+      nil
   end
 
   defp get_heatmap_entry(project_path, module_name) do
@@ -386,7 +395,8 @@ defmodule Giulia.Runtime.Inspector do
         nil
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.warning("get_heatmap_entry failed for #{module_name}: #{Exception.message(e)}")
+      nil
   end
-
 end

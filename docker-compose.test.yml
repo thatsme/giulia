@@ -1,0 +1,113 @@
+# Giulia Test Environment — Isolated, Clean, Reproducible
+#
+# Separate from the dev/prod compose. Starts its own ArcadeDB,
+# uses fresh volumes, runs with MIX_ENV=test, and exits with
+# the test exit code.
+#
+# Usage:
+#   docker compose -f docker-compose.test.yml run --rm giulia-test
+#   docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs
+#   docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs:42
+#   docker compose -f docker-compose.test.yml run --rm giulia-test --trace
+#   docker compose -f docker-compose.test.yml run --rm giulia-test --failed
+#   docker compose -f docker-compose.test.yml down -v   # Clean up volumes
+#
+# The test runner uses /projects/Giulia (live mount), NOT /app (stale image copy).
+# NEVER run `mix format` inside this container — see TESTING.md for why.
+
+services:
+  # ============================================================================
+  # ArcadeDB — dedicated test instance, fresh database, no host port conflicts
+  # ============================================================================
+  arcadedb-test:
+    image: arcadedata/arcadedb:latest
+    container_name: giulia-arcadedb-test
+    hostname: arcadedb
+    volumes:
+      - arcadedb_test_data:/home/arcadedb/databases
+    environment:
+      JAVA_OPTS: >-
+        -Darcadedb.server.rootPassword=playwithdata
+        -Xmx256m
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2480/api/v1/ready || exit 1"]
+      interval: 5s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+
+  # ============================================================================
+  # Test Runner — runs mix test and exits
+  #
+  # Any arguments passed via `docker compose run` are forwarded to `mix test`.
+  # Examples:
+  #   (no args)                          → mix test
+  #   test/giulia/foo_test.exs           → mix test test/giulia/foo_test.exs
+  #   test/giulia/foo_test.exs:42        → mix test test/giulia/foo_test.exs:42
+  #   --trace                            → mix test --trace
+  #   --failed                           → mix test --failed
+  # ============================================================================
+  giulia-test:
+    image: giulia/core:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: giulia-test
+    hostname: giulia-test
+
+    depends_on:
+      arcadedb-test:
+        condition: service_healthy
+
+    # scripts/test-entrypoint.sh: cd /projects/Giulia && mix deps.get && exec mix test "$@"
+    entrypoint: ["/bin/sh", "/projects/Giulia/scripts/test-entrypoint.sh"]
+    command: []
+
+    environment:
+      MIX_ENV: test
+      MIX_BUILD_PATH: /tmp/giulia_test_build
+      MIX_DEPS_PATH: /tmp/giulia_deps
+      XLA_TARGET: cpu
+      GIULIA_IN_CONTAINER: "true"
+      GIULIA_HOME: /data
+      GIULIA_DAEMON_MODE: "true"
+      # ArcadeDB points to the test-dedicated instance
+      ARCADEDB_URL: http://arcadedb:2480
+      ARCADEDB_DB: giulia
+      ARCADEDB_USER: root
+      ARCADEDB_PASSWORD: playwithdata
+
+    volumes:
+      # Live source mount — edits on host are immediately visible
+      - ${GIULIA_PROJECTS_PATH:-D:/Development/GitHub}:/projects:rw
+      # Shared deps cache (saves ~30s on repeated runs)
+      - giulia_deps:/tmp/giulia_deps
+      # Isolated test build (separate from dev to avoid MIX_ENV collisions)
+      - giulia_test_build:/tmp/giulia_test_build
+      # Model cache (EmbeddingServing)
+      - giulia_models:/root/.cache
+      # Temp data dir (CubDB etc — fresh each run via tmpfs)
+      - giulia_test_data:/data
+
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 1G
+
+volumes:
+  giulia_deps:
+    name: giulia_deps
+  giulia_test_build:
+    name: giulia_test_build
+  giulia_models:
+    name: giulia_models
+  arcadedb_test_data:
+    # Fresh each `down -v`
+  giulia_test_data:
+    # Fresh each `down -v`

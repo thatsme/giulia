@@ -30,10 +30,12 @@ defmodule Giulia.Knowledge.Insights do
         specs = data[:specs] || []
         functions = data[:functions] || []
         modules = data[:modules] || []
-        module_name = case modules do
-          [%{name: name} | _] -> name
-          _ -> "Unknown"
-        end
+
+        module_name =
+          case modules do
+            [%{name: name} | _] -> name
+            _ -> "Unknown"
+          end
 
         # Build set of defined {function_name, arity} pairs
         defined_funcs =
@@ -70,11 +72,13 @@ defmodule Giulia.Knowledge.Insights do
       direct_test = module_to_test_path(module, project_path)
 
       # Get direct dependents (in-neighbors = modules that depend on this one)
-      dependents = Graph.in_neighbors(graph, module)
+      dependents =
+        Graph.in_neighbors(graph, module)
         |> Enum.filter(fn v -> Graph.vertex_labels(graph, v) == [:module] end)
 
       # Map each dependent to its test file, keep only existing ones
-      dependent_tests = dependents
+      dependent_tests =
+        dependents
         |> Enum.map(fn dep_mod ->
           test_path = module_to_test_path(dep_mod, project_path)
           {dep_mod, test_path}
@@ -82,15 +86,17 @@ defmodule Giulia.Knowledge.Insights do
         |> Enum.filter(fn {_mod, path} -> path != nil end)
 
       # Collect all unique test paths that actually exist
-      all_paths = ([direct_test | Enum.map(dependent_tests, &elem(&1, 1))])
+      all_paths =
+        [direct_test | Enum.map(dependent_tests, &elem(&1, 1))]
         |> Enum.reject(&is_nil/1)
         |> Enum.uniq()
 
-      {:ok, %{
-        direct: direct_test,
-        dependents: dependent_tests,
-        all_paths: all_paths
-      }}
+      {:ok,
+       %{
+         direct: direct_test,
+         dependents: dependent_tests,
+         all_paths: all_paths
+       }}
     else
       {:error, :not_found}
     end
@@ -138,28 +144,34 @@ defmodule Giulia.Knowledge.Insights do
             file = result.metadata.file
             line = result.metadata.line
 
-            spec = case Giulia.Context.Store.get_spec(project_path, module, function, arity) do
-              %{spec: s} when is_binary(s) and s != "" -> s
-              _ -> nil
-            end
-
-            doc = case Giulia.Context.Store.get_function_doc(project_path, module, function, arity) do
-              %{doc: d} when is_binary(d) and d != "" -> d
-              _ -> nil
-            end
-
-            # Try to get source code
-            source = if file do
-              func_atom = String.to_atom(function)
-              case File.read(file) do
-                {:ok, content} ->
-                  case Giulia.AST.Processor.slice_function(content, func_atom, arity) do
-                    {:ok, src} -> src
-                    _ -> nil
-                  end
+            spec =
+              case Giulia.Context.Store.get_spec(project_path, module, function, arity) do
+                %{spec: s} when is_binary(s) and s != "" -> s
                 _ -> nil
               end
-            end
+
+            doc =
+              case Giulia.Context.Store.get_function_doc(project_path, module, function, arity) do
+                %{doc: d} when is_binary(d) and d != "" -> d
+                _ -> nil
+              end
+
+            # Try to get source code
+            source =
+              if file do
+                func_atom = String.to_existing_atom(function)
+
+                case File.read(file) do
+                  {:ok, content} ->
+                    case Giulia.AST.Processor.slice_function(content, func_atom, arity) do
+                      {:ok, src} -> src
+                      _ -> nil
+                    end
+
+                  _ ->
+                    nil
+                end
+              end
 
             %{
               mfa: "#{module}.#{function}/#{arity}",
@@ -177,18 +189,18 @@ defmodule Giulia.Knowledge.Insights do
           |> Enum.take(top_k)
           |> Enum.map(fn e -> Map.drop(e, [:has_spec, :has_doc]) end)
 
-        {:ok, %{
-          query: query,
-          exemplars: exemplars,
-          count: length(exemplars),
-          quality_gate: "Functions with both @spec and @doc"
-        }}
+        {:ok,
+         %{
+           query: query,
+           exemplars: exemplars,
+           count: length(exemplars),
+           quality_gate: "Functions with both @spec and @doc"
+         }}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
-
 
   # ============================================================================
   # Unprotected Hub Detection
@@ -250,11 +262,12 @@ defmodule Giulia.Knowledge.Insights do
           end
 
         # Severity classification
-        severity = cond do
-          spec_ratio < spec_threshold -> "red"
-          spec_ratio < 0.8 -> "yellow"
-          true -> "green"
-        end
+        severity =
+          cond do
+            spec_ratio < spec_threshold -> "red"
+            spec_ratio < 0.8 -> "yellow"
+            true -> "green"
+          end
 
         %{
           module: mod,
@@ -276,14 +289,15 @@ defmodule Giulia.Knowledge.Insights do
 
     severity_counts = Enum.frequencies_by(hubs, & &1.severity)
 
-    {:ok, %{
-      modules: hubs,
-      count: length(hubs),
-      severity_counts: %{
-        red: Map.get(severity_counts, "red", 0),
-        yellow: Map.get(severity_counts, "yellow", 0)
-      }
-    }}
+    {:ok,
+     %{
+       modules: hubs,
+       count: length(hubs),
+       severity_counts: %{
+         red: Map.get(severity_counts, "red", 0),
+         yellow: Map.get(severity_counts, "yellow", 0)
+       }
+     }}
   end
 
   # ============================================================================
@@ -323,18 +337,21 @@ defmodule Giulia.Knowledge.Insights do
     usage_data =
       Enum.reduce(all_asts, %{}, fn {path, data}, acc ->
         modules = data[:modules] || []
-        file_module = case modules do
-          [first | _] -> first.name
-          _ -> nil
-        end
+
+        file_module =
+          case modules do
+            [first | _] -> first.name
+            _ -> nil
+          end
 
         if is_nil(file_module) do
           acc
         else
-          source = case File.read(path) do
-            {:ok, content} -> content
-            _ -> ""
-          end
+          source =
+            case File.read(path) do
+              {:ok, content} -> content
+              _ -> ""
+            end
 
           case Sourceror.parse_string(source) do
             {:ok, ast} ->
@@ -354,6 +371,7 @@ defmodule Giulia.Knowledge.Insights do
                   {:%, _meta, [{:__aliases__, _, parts}, {:%{}, _, _}]} = node, refs ->
                     raw_name = Enum.map_join(parts, ".", &safe_part_to_string/1)
                     resolved = Map.get(alias_map, raw_name, raw_name)
+
                     if MapSet.member?(struct_names, resolved) do
                       {node, [{resolved, file_module} | refs]}
                     else
@@ -417,19 +435,25 @@ defmodule Giulia.Knowledge.Insights do
 
         case modules do
           [mod | _] ->
-            public = Enum.count(functions, fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+            public =
+              Enum.count(functions, fn f ->
+                f.type in [:def, :defmacro, :defdelegate, :defguard]
+              end)
+
             private = Enum.count(functions, fn f -> f.type in [:defp, :defmacrop, :defguardp] end)
             total = public + private
             ratio = if total > 0, do: Float.round(public / total, 2), else: 0.0
 
-            [%{
-              module: mod.name,
-              public: public,
-              private: private,
-              total: total,
-              ratio: ratio,
-              file: path
-            }]
+            [
+              %{
+                module: mod.name,
+                public: public,
+                private: private,
+                total: total,
+                ratio: ratio,
+                file: path
+              }
+            ]
 
           _ ->
             []
@@ -451,6 +475,7 @@ defmodule Giulia.Knowledge.Insights do
         test_file = Giulia.Tools.RunTests.suggest_test_file(rel_file)
         full_path = Path.join(project_path, test_file)
         if File.exists?(full_path), do: test_file, else: nil
+
       _ ->
         nil
     end

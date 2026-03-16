@@ -42,11 +42,15 @@ defmodule Giulia.Daemon.Routers.Runtime do
       metric = String.to_existing_atom(conn.query_params["metric"] || "reductions")
 
       case Giulia.Runtime.Inspector.top_processes(node_ref, metric) do
-        {:ok, procs} -> send_json(conn, 200, %{processes: procs, count: length(procs), metric: metric})
-        {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+        {:ok, procs} ->
+          send_json(conn, 200, %{processes: procs, count: length(procs), metric: metric})
+
+        {:error, reason} ->
+          send_json(conn, 500, %{error: inspect(reason)})
       end
     rescue
-      ArgumentError -> send_json(conn, 400, %{error: "Invalid metric. Use: reductions, memory, message_queue"})
+      ArgumentError ->
+        send_json(conn, 400, %{error: "Invalid metric. Use: reductions, memory, message_queue"})
     end
   end
 
@@ -133,7 +137,10 @@ defmodule Giulia.Daemon.Routers.Runtime do
       points = Giulia.Runtime.Collector.trend(node_ref, metric)
       send_json(conn, 200, %{metric: metric, points: points, count: length(points)})
     rescue
-      ArgumentError -> send_json(conn, 400, %{error: "Invalid metric. Use: memory, processes, run_queue, ets_memory"})
+      ArgumentError ->
+        send_json(conn, 400, %{
+          error: "Invalid metric. Use: memory, processes, run_queue, ets_memory"
+        })
     end
   end
 
@@ -169,7 +176,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
     cookie = conn.body_params["cookie"]
 
     if node_name do
-      node_atom = String.to_atom(node_name)
+      node_atom = Giulia.Daemon.Helpers.safe_to_node_atom(node_name)
       opts = if cookie, do: [cookie: cookie], else: []
 
       case Giulia.Runtime.Inspector.connect(node_atom, opts) do
@@ -210,16 +217,17 @@ defmodule Giulia.Daemon.Routers.Runtime do
     limit = parse_int_param(conn.query_params["limit"], 20)
     profiles = Giulia.Runtime.Monitor.list_profiles(limit: limit)
 
-    summaries = Enum.map(profiles, fn p ->
-      %{
-        id: p[:id],
-        timestamp: p[:timestamp],
-        duration_ms: p[:duration_ms],
-        snapshot_count: p[:snapshot_count],
-        hot_modules_count: length(p[:hot_modules] || []),
-        bottleneck_count: length(p[:bottleneck_analysis] || [])
-      }
-    end)
+    summaries =
+      Enum.map(profiles, fn p ->
+        %{
+          id: p[:id],
+          timestamp: p[:timestamp],
+          duration_ms: p[:duration_ms],
+          snapshot_count: p[:snapshot_count],
+          hot_modules_count: length(p[:hot_modules] || []),
+          bottleneck_count: length(p[:bottleneck_analysis] || [])
+        }
+      end)
 
     send_json(conn, 200, %{profiles: summaries, count: length(summaries)})
   end
@@ -306,17 +314,18 @@ defmodule Giulia.Daemon.Routers.Runtime do
   get "/observations" do
     observations = Giulia.Runtime.IngestStore.list_observations()
 
-    summaries = Enum.map(observations, fn obs ->
-      %{
-        session_id: obs[:session_id],
-        node: obs[:node],
-        started_at: obs[:started_at],
-        stopped_at: obs[:stopped_at],
-        status: obs[:status],
-        snapshots_processed: obs[:snapshots_processed],
-        duration_ms: obs[:duration_ms]
-      }
-    end)
+    summaries =
+      Enum.map(observations, fn obs ->
+        %{
+          session_id: obs[:session_id],
+          node: obs[:node],
+          started_at: obs[:started_at],
+          stopped_at: obs[:stopped_at],
+          status: obs[:status],
+          snapshots_processed: obs[:snapshots_processed],
+          duration_ms: obs[:duration_ms]
+        }
+      end)
 
     send_json(conn, 200, %{observations: summaries, count: length(summaries)})
   end
@@ -333,8 +342,11 @@ defmodule Giulia.Daemon.Routers.Runtime do
   }
   get "/observation/:session_id" do
     case Giulia.Runtime.IngestStore.get_observation(session_id) do
-      {:ok, observation} -> send_json(conn, 200, observation)
-      {:error, :not_found} -> send_json(conn, 404, %{error: "Observation not found: #{session_id}"})
+      {:ok, observation} ->
+        send_json(conn, 200, observation)
+
+      {:error, :not_found} ->
+        send_json(conn, 404, %{error: "Observation not found: #{session_id}"})
     end
   end
 
