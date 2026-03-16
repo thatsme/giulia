@@ -162,7 +162,7 @@ docker compose -f docker-compose.test.yml run --rm giulia-test
 docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo_test.exs
 ```
 
-All 1,707 tests must pass before merging.
+The full test suite must pass with zero regressions from your changes.
 
 ---
 
