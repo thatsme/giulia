@@ -32,24 +32,30 @@ docker compose -f docker-compose.test.yml down -v
 Runs tests inside the running dev daemon. Faster (no startup), but CubDB state
 and ETS tables from the running daemon can cause flaky failures.
 
+**The daemon must be running** for this approach. Start it first with `docker compose up -d`.
+
+Replace `/projects/Giulia` below with the container-side path where your source
+is mounted (this matches the host path you configured in `docker-compose.yml`
+under `GIULIA_PROJECTS_PATH`).
+
 ```bash
 # Run ALL tests
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test"
 
 # Run a single test file
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
 
 # Run a specific test by line number
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
 ```
 
-## NEVER run `mix format` inside Docker
+## NEVER run `mix format` on the full project inside Docker
 
-The source is mounted from a Windows host (CRLF line endings). Running `mix format`
-inside the Linux container converts every `.ex` and `.exs` file to LF, causing 100+ files
-to appear modified in `git diff` and spurious test failures from line-ending mismatches.
+If your host uses CRLF line endings (Windows), running `mix format` inside the
+Linux container converts every `.ex` and `.exs` file to LF, causing 100+ files
+to appear modified in `git diff` and spurious test failures.
 
-**If you need to format:** run `mix format` on the Windows host, or format only specific
+**If you need to format:** run `mix format` on the host, or format only the specific
 files you changed — never `mix format` on the full project from inside the container.
 
 ## Verifying changes don't break tests
@@ -62,13 +68,15 @@ Always follow this workflow when making code changes:
 4. **Never assume**: don't claim failures are "pre-existing" without the before/after proof
 
 ```bash
+# Using the isolated test environment (recommended):
+
 # Step 1: Baseline
 git stash
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test 2>&1" | tail -5
+docker compose -f docker-compose.test.yml run --rm giulia-test 2>&1 | tail -5
 
 # Step 2: After changes
 git stash pop
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test 2>&1" | tail -5
+docker compose -f docker-compose.test.yml run --rm giulia-test 2>&1 | tail -5
 
 # Step 3: Compare (should show same failure modules, same counts)
 ```
@@ -77,30 +85,34 @@ docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test m
 
 1. **EXLA** (ML backend for Nx) doesn't compile on Windows — no precompiled binaries for `x86_64-windows`
 2. The Docker image has a working Linux EXLA build with CPU target
-3. Tests **must** run from `/projects/Giulia` (the live-mounted volume), NOT from `/app` (baked-in image copy)
+3. Tests **must** run from the live-mounted volume, NOT from `/app` (baked-in image copy)
 
 ## Critical Rules
 
-### Always use `/projects/Giulia`, never `/app`
+### Always use the mounted source path, never `/app`
 
 The Dockerfile copies source into `/app` at build time. That's a **frozen snapshot**.
-Your live edits on the host are mounted at `/projects/Giulia`.
+Your live edits are mounted under `/projects/` (the path depends on your
+`GIULIA_PROJECTS_PATH` setting in `docker-compose.yml`). For the exec approach,
+always `cd` to the mounted path before running tests.
 
 ```bash
 # WRONG — runs stale code from image build time
 docker compose exec giulia-worker bash -c "MIX_ENV=test mix test"
 
 # CORRECT — runs live code from host mount
-docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test"
 ```
 
-### Always set `MIX_ENV=test`
+The isolated test environment (`docker-compose.test.yml`) handles this automatically
+via the `test-entrypoint.sh` script.
+
+### Always set `MIX_ENV=test` (exec approach only)
 
 Without it, the app tries to start Bandit on port 4000, which conflicts with the running daemon.
 The `application.ex` skips the HTTP endpoint when `MIX_ENV=test`:
 
 ```elixir
-# lib/giulia/application.ex, line ~116
 children =
   if Mix.env() == :test do
     base_children  # no Bandit
@@ -109,13 +121,7 @@ children =
   end
 ```
 
-### The daemon must be running
-
-Tests run inside the existing container via `docker compose exec`. Start it first:
-
-```bash
-docker compose up -d
-```
+The isolated test environment sets `MIX_ENV=test` automatically.
 
 ## Test File Conventions
 
@@ -132,26 +138,11 @@ docker compose up -d
 
 ### Known Failures
 
-**Consistent failures** (broken tests, not code bugs):
+**Build 138: 1,707 tests, 0 failures** (isolated test environment).
 
-| Module | Failures | Root Cause |
-|--------|----------|-----------|
-| `Giulia.Storage.Arcade.ConsolidatorTest` | 27 | Tests call `defp` (private) functions directly — tests need rewriting |
-| `Giulia.Storage.Arcade.ClientTest` | 28 | ArcadeDB `giulia` database not auto-created in test setup |
-| `Giulia.Storage.Arcade.IndexerTest` | 6 | Same ArcadeDB database issue |
-| `Giulia.Knowledge.Store.ReaderEnrichmentTest` | 5 | ETS table not initialized in test setup |
-
-**Flaky failures** (shared state pollution between tests, vary per run):
-
-| Module | Failures | Root Cause |
-|--------|----------|-----------|
-| `Giulia.Knowledge.PartialGraphTest` | 0-17 | GenServer/ETS state from other tests |
-| `Giulia.Tools.RegistryTest` | 0-15 | Tool registry state |
-| `Giulia.Knowledge.InsightsTest` | 0-13 | Knowledge Store state |
-| `Giulia.Context.StoreConcurrencyTest` | 0-5 | ETS concurrency |
-| `Giulia.Integration.ApiAdversarialTest` | 2-10 | CubDB corruption |
-
-If a test outside these two tables fails, it's a real regression.
+All previously known failures (ArcadeDB setup, CubDB corruption, ETS state pollution,
+private function tests) were fixed in Build 138. If you see failures, they are real
+regressions — investigate before merging.
 
 ### Test Categories
 
@@ -350,7 +341,7 @@ use Plug.Test
 alias Giulia.Daemon.Endpoint
 
 @opts Endpoint.init([])
-@project_path "/projects/Giulia"
+@project_path "/projects/Giulia"  # matches the volume mount in docker-compose.yml
 
 # Simulate GET with query params
 defp get(path, query_params \\ %{}) do
