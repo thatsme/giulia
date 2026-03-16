@@ -8,7 +8,7 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 
 **Path Convention:** Most GET endpoints under `/api/index` and `/api/knowledge` require `?path=P` where `P` is the host-side project path (e.g., `C:/Development/GitHub/MyApp`). POST endpoints take `path` in the JSON body. The `PathMapper` translates host paths to container paths automatically.
 
-**Authentication:** None. Giulia is a local development tool. Bind to localhost only in production.
+**Authentication:** None. Giulia is a local development tool designed for localhost access only. It is not designed for network exposure -- do not bind to 0.0.0.0 or expose port 4000 to untrusted networks. See [SECURITY.md](SECURITY.md) for the full threat model.
 
 ---
 

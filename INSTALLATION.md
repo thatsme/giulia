@@ -9,7 +9,7 @@
 ## Clone and Build
 
 ```bash
-git clone https://github.com/yourusername/giulia.git
+git clone https://github.com/thatsme/giulia.git
 cd giulia
 
 # Build the Docker image
@@ -77,8 +77,8 @@ The following environment variables are defined in the `x-common-env` anchor in 
 |---|---|---|
 | `GIULIA_HOME` | `/data` | Data directory inside the container |
 | `GIULIA_IN_CONTAINER` | `true` | Signals that Giulia is running inside Docker |
-| `GIULIA_COOKIE` | `giulia_dev` | Erlang distribution cookie for node authentication |
-| `GIULIA_HOST_PROJECTS_PATH` | `D:/Development/GitHub` | Host-side path prefix for path translation |
+| `GIULIA_COOKIE` | `giulia_dev` | Erlang distribution cookie for node authentication. **Change this before connecting to non-trivial nodes or exposing over a network.** |
+| `GIULIA_HOST_PROJECTS_PATH` | *(required)* | Host-side path prefix for path translation. Example: `D:/Development/GitHub` (Windows) or `/home/user/projects` (Linux). Must match the host side of your Docker volume mount. |
 | `GIULIA_PATH_MAPPING` | (empty) | Custom path mapping overrides |
 | `GIULIA_PORT` | `4000` (worker), `4001` (monitor) | HTTP API port |
 | `GIULIA_ROLE` | `worker` or `monitor` | Container role. Determines which OTP children start. |
@@ -89,7 +89,7 @@ The following environment variables are defined in the `x-common-env` anchor in 
 | `ANTHROPIC_API_KEY` | (empty) | Anthropic Claude API key |
 | `GROQ_API_KEY` | (empty) | Groq API key |
 | `GEMINI_API_KEY` | (empty) | Gemini API key |
-| `LM_STUDIO_URL` | `http://192.168.33.1:1234/v1/chat/completions` | LM Studio chat completions endpoint |
+| `LM_STUDIO_URL` | `http://host.docker.internal:1234/v1/chat/completions` | LM Studio chat completions endpoint. Use `host.docker.internal` (Docker Desktop) or your machine's LAN IP. |
 | `XLA_TARGET` | `cpu` | EXLA compilation target |
 | `MIX_ENV` | `dev` | Elixir environment |
 
