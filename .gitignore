@@ -43,9 +43,6 @@ nul
 # Claude Code local settings
 .claude/
 
-# Personal launch scripts (contain local IPs/paths)
-# Copy start-local.bat.example to start-local.bat and edit for your machine
-start-home.bat
-start-work.bat
+# Personal launch scripts — copy start-local.bat.example for your own
 start-local.bat
 
