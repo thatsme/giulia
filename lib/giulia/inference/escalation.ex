@@ -127,7 +127,7 @@ defmodule Giulia.Inference.Escalation do
 
     case {line_match, code_match} do
       {[_, line_str], [_, code]} ->
-        line_num = String.to_integer(String.trim(line_str))
+        {line_num, _} = Integer.parse(String.trim(line_str))
         {:ok, line_num, code}
 
       {nil, _} ->
@@ -144,7 +144,12 @@ defmodule Giulia.Inference.Escalation do
   Apply a line fix: replace line N in file with fixed content.
   Returns `{:ok, result}` or `{:error, reason}`.
   """
-  @spec apply_line_fix(String.t() | nil, non_neg_integer(), String.t(), Giulia.Core.PathSandbox.t()) :: {:ok, String.t()} | {:error, String.t()}
+  @spec apply_line_fix(
+          String.t() | nil,
+          non_neg_integer(),
+          String.t(),
+          Giulia.Core.PathSandbox.t()
+        ) :: {:ok, String.t()} | {:error, String.t()}
   def apply_line_fix(file_path, line_num, fixed_line, sandbox) do
     safe_path =
       case Giulia.Core.PathSandbox.validate(sandbox, file_path) do

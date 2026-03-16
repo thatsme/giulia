@@ -9,11 +9,17 @@ defmodule Giulia.Runtime.Inspector.TraceTest do
 
   describe "run/3 on local node" do
     test "traces a known module and returns call data" do
-      # Trace the Enum module for a short burst — it's always loaded
-      {:ok, result} = Trace.run(:local, Enum, 100)
+      # Generate Enum activity in background so the trace captures something
+      # even when the full test suite is saturating the BEAM
+      bg = Task.async(fn ->
+        for _ <- 1..500, do: Enum.map(1..10, & &1)
+      end)
+
+      {:ok, result} = Trace.run(:local, Enum, 200)
+      Task.await(bg)
 
       assert result.module == "Enum"
-      assert result.duration_ms == 100
+      assert result.duration_ms == 200
       assert is_list(result.calls)
       assert is_integer(result.total_calls)
       assert is_float(result.calls_per_second)

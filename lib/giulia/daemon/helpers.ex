@@ -30,7 +30,23 @@ defmodule Giulia.Daemon.Helpers do
     case conn.query_params["node"] do
       nil -> :local
       "" -> :local
-      node_str -> String.to_atom(node_str)
+      node_str -> safe_to_node_atom(node_str)
+    end
+  end
+
+  @doc """
+  Convert a node name string to an atom safely.
+
+  Node names in Erlang must be atoms, but we validate the format
+  (name@host) before conversion to prevent arbitrary atom creation
+  from untrusted HTTP input.
+  """
+  @spec safe_to_node_atom(String.t()) :: atom()
+  def safe_to_node_atom(node_str) when is_binary(node_str) do
+    if Regex.match?(~r/^[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+$/, node_str) do
+      String.to_atom(node_str)
+    else
+      :local
     end
   end
 

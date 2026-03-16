@@ -2,27 +2,75 @@
 
 ## Quick Reference
 
+### Recommended: Isolated test environment (`docker-compose.test.yml`)
+
+Uses a dedicated compose file with its own ArcadeDB instance, fresh volumes,
+and `MIX_ENV=test` baked in. No interference with the running dev daemon.
+
 ```bash
-# Run ALL tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+# Run ALL tests (starts ArcadeDB, runs tests, exits)
+docker compose -f docker-compose.test.yml run --rm giulia-test
 
 # Run a single test file
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/inference/state_test.exs
 
 # Run a specific test by line number
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/prompt/builder_test.exs:124
 
-# Run with trace (verbose, shows each test name)
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --trace"
+# Run with trace (verbose)
+docker compose -f docker-compose.test.yml run --rm -e TEST_ARGS="--trace" giulia-test
 
 # Run only previously failed tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --failed"
+docker compose -f docker-compose.test.yml run --rm -e TEST_ARGS="--failed" giulia-test
 
-# Run integration tests only
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/integration/"
+# Clean up test containers and volumes when done
+docker compose -f docker-compose.test.yml down -v
+```
 
-# Run adversarial tests only
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --only adversarial 2>/dev/null || cd /projects/Giulia && MIX_ENV=test mix test test/giulia/**/*adversarial*"
+### Alternative: exec into dev container (quick but less isolated)
+
+Runs tests inside the running dev daemon. Faster (no startup), but CubDB state
+and ETS tables from the running daemon can cause flaky failures.
+
+```bash
+# Run ALL tests
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+
+# Run a single test file
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
+
+# Run a specific test by line number
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
+```
+
+## NEVER run `mix format` inside Docker
+
+The source is mounted from a Windows host (CRLF line endings). Running `mix format`
+inside the Linux container converts every `.ex` and `.exs` file to LF, causing 100+ files
+to appear modified in `git diff` and spurious test failures from line-ending mismatches.
+
+**If you need to format:** run `mix format` on the Windows host, or format only specific
+files you changed — never `mix format` on the full project from inside the container.
+
+## Verifying changes don't break tests
+
+Always follow this workflow when making code changes:
+
+1. **Baseline first**: `git stash`, run full test suite, record exact failure count + which modules
+2. **Restore and test**: `git stash pop`, run full test suite again
+3. **Compare module-by-module**: same modules + same failure count = zero regressions
+4. **Never assume**: don't claim failures are "pre-existing" without the before/after proof
+
+```bash
+# Step 1: Baseline
+git stash
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test 2>&1" | tail -5
+
+# Step 2: After changes
+git stash pop
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test 2>&1" | tail -5
+
+# Step 3: Compare (should show same failure modules, same counts)
 ```
 
 ## Why Tests Only Work in Docker
@@ -40,10 +88,10 @@ Your live edits on the host are mounted at `/projects/Giulia`.
 
 ```bash
 # WRONG — runs stale code from image build time
-docker compose exec giulia-daemon bash -c "MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "MIX_ENV=test mix test"
 
 # CORRECT — runs live code from host mount
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
 ```
 
 ### Always set `MIX_ENV=test`
@@ -78,9 +126,32 @@ docker compose up -d
 - All tests use `use ExUnit.Case, async: true` unless they need shared state (GenServers, ETS)
 - Use `Code.ensure_loaded!(Module)` before `function_exported?/3` checks — aliases don't trigger module loading
 
-## Current Coverage (Build 122)
+## Current Coverage (Build 138)
 
-**84 test files**, **1534 tests**, **0 failures**
+**84+ test files**, **1707 tests**
+
+### Known Failures
+
+**Consistent failures** (broken tests, not code bugs):
+
+| Module | Failures | Root Cause |
+|--------|----------|-----------|
+| `Giulia.Storage.Arcade.ConsolidatorTest` | 27 | Tests call `defp` (private) functions directly — tests need rewriting |
+| `Giulia.Storage.Arcade.ClientTest` | 28 | ArcadeDB `giulia` database not auto-created in test setup |
+| `Giulia.Storage.Arcade.IndexerTest` | 6 | Same ArcadeDB database issue |
+| `Giulia.Knowledge.Store.ReaderEnrichmentTest` | 5 | ETS table not initialized in test setup |
+
+**Flaky failures** (shared state pollution between tests, vary per run):
+
+| Module | Failures | Root Cause |
+|--------|----------|-----------|
+| `Giulia.Knowledge.PartialGraphTest` | 0-17 | GenServer/ETS state from other tests |
+| `Giulia.Tools.RegistryTest` | 0-15 | Tool registry state |
+| `Giulia.Knowledge.InsightsTest` | 0-13 | Knowledge Store state |
+| `Giulia.Context.StoreConcurrencyTest` | 0-5 | ETS concurrency |
+| `Giulia.Integration.ApiAdversarialTest` | 2-10 | CubDB corruption |
+
+If a test outside these two tables fails, it's a real regression.
 
 ### Test Categories
 

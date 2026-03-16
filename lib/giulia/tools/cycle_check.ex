@@ -104,8 +104,8 @@ defmodule Giulia.Tools.CycleCheck do
         {output, 0} ->
           case Regex.run(~r/Elixir (\d+)\.(\d+)\.(\d+)/, output) do
             [_, major, minor, _patch] ->
-              major = String.to_integer(major)
-              minor = String.to_integer(minor)
+              {major, _} = Integer.parse(major)
+              {minor, _} = Integer.parse(minor)
 
               if major > 1 or (major == 1 and minor >= 19) do
                 {:ok, "#{major}.#{minor}"}
@@ -261,5 +261,4 @@ defmodule Giulia.Tools.CycleCheck do
        Enum.join(sections, "\n") <>
        summary}
   end
-
 end

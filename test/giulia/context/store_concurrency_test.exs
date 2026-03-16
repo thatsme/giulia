@@ -172,8 +172,13 @@ defmodule Giulia.Context.StoreConcurrencyTest do
 
   describe "multi-project isolation" do
     test "concurrent writes to different projects don't leak" do
-      project_a = "/tmp/isolation_a_#{:rand.uniform(100_000)}"
-      project_b = "/tmp/isolation_b_#{:rand.uniform(100_000)}"
+      project_a = "/tmp/isolation_a_#{System.unique_integer([:positive])}"
+      project_b = "/tmp/isolation_b_#{System.unique_integer([:positive])}"
+
+      on_exit(fn ->
+        Store.clear_asts(project_a)
+        Store.clear_asts(project_b)
+      end)
 
       task_a = Task.async(fn ->
         for i <- 1..20 do
@@ -212,8 +217,6 @@ defmodule Giulia.Context.StoreConcurrencyTest do
       assert Enum.all?(a_modules, fn m -> String.starts_with?(m, "A.") end)
       assert Enum.all?(b_modules, fn m -> String.starts_with?(m, "B.") end)
 
-      Store.clear_asts(project_a)
-      Store.clear_asts(project_b)
     end
   end
 end

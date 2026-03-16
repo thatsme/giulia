@@ -48,13 +48,20 @@ defmodule Giulia.Application do
     cond do
       explicit_client -> true
       explicit_daemon -> false
-      in_container -> false  # Container = daemon mode
-      true -> true  # Default outside container = client mode
+      # Container = daemon mode
+      in_container -> false
+      # Default outside container = client mode
+      true -> true
     end
   end
 
   defp start_daemon_mode do
-    port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
+    port =
+      case Integer.parse(System.get_env("GIULIA_PORT", "4000")) do
+        {n, _} -> n
+        :error -> 4000
+      end
+
     role = Giulia.Role.role()
 
     base_children = [
@@ -167,5 +174,4 @@ defmodule Giulia.Application do
 
     result
   end
-
 end

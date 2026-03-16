@@ -5,7 +5,8 @@ defmodule Giulia.Tools.ContractTest do
   Every tool MUST implement name/0, description/0, parameters/0, execute/2.
   This test verifies the contract across all 23 tools at once.
   """
-  use ExUnit.Case, async: true
+  # async: false — Code.ensure_loaded! across 23 modules races under async: true
+  use ExUnit.Case, async: false
 
   @tools [
     Giulia.Tools.BulkReplace,

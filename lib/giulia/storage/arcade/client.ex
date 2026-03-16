@@ -42,7 +42,15 @@ defmodule Giulia.Storage.Arcade.Client do
   def create_db do
     url = "#{base_url()}/api/v1/server"
     body = %{command: "create database #{db()}"}
-    post(url, body)
+
+    case Req.post(url, json: body, auth: {:basic, "#{user()}:#{password()}"}, receive_timeout: @default_timeout) do
+      {:ok, %{status: 200}} -> :ok
+      # Already exists — not an error
+      {:ok, %{status: 500, body: %{"detail" => detail}}} when is_binary(detail) ->
+        if String.contains?(detail, "already exists"), do: :ok, else: {:error, detail}
+      {:ok, %{status: status, body: resp}} -> {:error, {status, resp}}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc "Ensure all vertex/edge types, properties, and indexes exist. Idempotent."
@@ -51,15 +59,21 @@ defmodule Giulia.Storage.Arcade.Client do
       "CREATE VERTEX TYPE Module IF NOT EXISTS",
       "CREATE VERTEX TYPE Function IF NOT EXISTS",
       "CREATE VERTEX TYPE File IF NOT EXISTS",
+      "CREATE VERTEX TYPE Insight IF NOT EXISTS",
       "CREATE EDGE TYPE DEPENDS_ON IF NOT EXISTS",
       "CREATE EDGE TYPE CALLS IF NOT EXISTS",
       "CREATE EDGE TYPE DEFINED_IN IF NOT EXISTS"
     ]
 
     properties = [
-      {"Module", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME"]},
-      {"Function", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME"]},
+      {"Module", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME",
+                   "function_count INTEGER", "complexity_score INTEGER", "dep_in INTEGER", "dep_out INTEGER"]},
+      {"Function", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME",
+                     "complexity INTEGER"]},
       {"File", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME"]},
+      {"Insight", ["type STRING", "module STRING", "project STRING", "build_id INTEGER",
+                    "severity STRING", "trend STRING", "detected_at DATETIME",
+                    "build_range_start INTEGER", "build_range_end INTEGER"]},
       {"DEPENDS_ON", ["project STRING", "build_id INTEGER"]},
       {"CALLS", ["project STRING", "build_id INTEGER"]},
       {"DEFINED_IN", ["project STRING", "build_id INTEGER"]}
@@ -69,7 +83,8 @@ defmodule Giulia.Storage.Arcade.Client do
     indexes = [
       "CREATE INDEX IF NOT EXISTS ON Module (project, name) UNIQUE",
       "CREATE INDEX IF NOT EXISTS ON Function (project, name) UNIQUE",
-      "CREATE INDEX IF NOT EXISTS ON File (project, name) UNIQUE"
+      "CREATE INDEX IF NOT EXISTS ON File (project, name) UNIQUE",
+      "CREATE INDEX IF NOT EXISTS ON Insight (project, type, module) UNIQUE"
     ]
 
     with :ok <- run_statements(types),
@@ -119,19 +134,89 @@ defmodule Giulia.Storage.Arcade.Client do
   # ---------------------------------------------------------------------------
 
   @doc "Upsert a Module vertex. Idempotent per (project, name)."
-  def upsert_module(project, name, build_id) do
+  def upsert_module(project, name, build_id, metrics \\ %{}) do
+    fc = Map.get(metrics, :function_count, 0)
+    cs = Map.get(metrics, :complexity_score, 0)
+    di = Map.get(metrics, :dep_in, 0)
+    do_ = Map.get(metrics, :dep_out, 0)
+
     command(
-      "UPDATE Module SET build_id = :build_id, indexed_at = sysdate() UPSERT WHERE project = :project AND name = :name",
-      %{project: project, name: name, build_id: build_id}
+      """
+      UPDATE Module SET build_id = :build_id, indexed_at = sysdate(),
+        function_count = :fc, complexity_score = :cs, dep_in = :di, dep_out = :do
+      UPSERT WHERE project = :project AND name = :name
+      """,
+      %{project: project, name: name, build_id: build_id, fc: fc, cs: cs, di: di, do: do_}
     )
   end
 
   @doc "Upsert a Function vertex. Idempotent per (project, name)."
-  def upsert_function(project, name, build_id) do
+  def upsert_function(project, name, build_id, complexity \\ 0) do
     command(
-      "UPDATE Function SET build_id = :build_id, indexed_at = sysdate() UPSERT WHERE project = :project AND name = :name",
-      %{project: project, name: name, build_id: build_id}
+      """
+      UPDATE Function SET build_id = :build_id, indexed_at = sysdate(), complexity = :complexity
+      UPSERT WHERE project = :project AND name = :name
+      """,
+      %{project: project, name: name, build_id: build_id, complexity: complexity}
     )
+  end
+
+  @doc "Upsert an Insight vertex. Idempotent per (project, type, module)."
+  def upsert_insight(project, type, module, severity, build_id, trend, build_range_start, build_range_end) do
+    command(
+      """
+      UPDATE Insight SET build_id = :build_id, severity = :severity, trend = :trend,
+        build_range_start = :brs, build_range_end = :bre, detected_at = sysdate()
+      UPSERT WHERE project = :project AND type = :type AND module = :module
+      """,
+      %{project: project, type: type, module: module, severity: severity,
+        build_id: build_id, trend: trend, brs: build_range_start, bre: build_range_end}
+    )
+  end
+
+  @doc "List insights for a project, optionally filtered by build_id."
+  def list_insights(project, build_id \\ nil) do
+    if build_id do
+      query("SELECT FROM Insight WHERE project = :p AND build_id = :b",
+        "sql", %{p: project, b: build_id})
+    else
+      query("SELECT FROM Insight WHERE project = :p", "sql", %{p: project})
+    end
+  end
+
+  @doc "Return modules ranked by hotspot score for a given build."
+  def hotspots(project, build_id, limit \\ 10) do
+    query("""
+      SELECT name, complexity_score, dep_in, dep_out, function_count,
+        (complexity_score + dep_in + dep_out) AS hotspot_score
+      FROM Module
+      WHERE project = :p AND build_id = :b
+        AND (complexity_score > 0 OR dep_in > 0 OR dep_out > 0)
+      ORDER BY hotspot_score DESC
+      LIMIT #{limit}
+    """, "sql", %{p: project, b: build_id})
+  end
+
+  @doc "Return complexity history across builds for a project."
+  def complexity_history(project, limit \\ 10) do
+    query("""
+      SELECT name, build_id, complexity_score
+      FROM Module
+      WHERE project = :p AND complexity_score > 0
+      ORDER BY name, build_id
+      LIMIT #{limit * 50}
+    """, "sql", %{p: project})
+  end
+
+  @doc "Return coupling history across builds for a project."
+  def coupling_history(project, limit \\ 10) do
+    query("""
+      SELECT name, build_id, dep_in, dep_out
+      FROM Module
+      WHERE project = :p AND (dep_in > 0 OR dep_out > 0)
+      ORDER BY name, build_id
+      LIMIT #{limit * 50}
+    """, "sql", %{p: project})
   end
 
   @doc "Create a DEPENDS_ON edge between two modules for a given build."

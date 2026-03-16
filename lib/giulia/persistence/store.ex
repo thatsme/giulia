@@ -146,12 +146,19 @@ defmodule Giulia.Persistence.Store do
   end
 
   defp cubdb_dir(project_path) do
-    role = Giulia.Role.role()
-
-    if role == :standalone do
-      Path.join([project_path, ".giulia", "cache", "cubdb"])
+    if Mix.env() == :test do
+      # In test mode, use a temp directory to avoid corrupting the dev daemon's CubDB.
+      # Two CubDB instances opening the same directory = guaranteed corruption.
+      hash = :erlang.phash2(project_path) |> Integer.to_string()
+      Path.join([System.tmp_dir!(), "giulia_test_cubdb", hash])
     else
-      Path.join([project_path, ".giulia", "cache", "cubdb_#{role}"])
+      role = Giulia.Role.role()
+
+      if role == :standalone do
+        Path.join([project_path, ".giulia", "cache", "cubdb"])
+      else
+        Path.join([project_path, ".giulia", "cache", "cubdb_#{role}"])
+      end
     end
   end
 end

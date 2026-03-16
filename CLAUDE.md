@@ -233,19 +233,51 @@ iex -S mix
 
 Tests MUST run inside Docker from the live-mounted volume. Never run from `/app`.
 
+### Isolated test environment (recommended)
+
+Uses `docker-compose.test.yml` — dedicated ArcadeDB, fresh volumes, `MIX_ENV=test` baked in.
+No interference with the running dev daemon.
+
 ```bash
 # Run ALL tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose -f docker-compose.test.yml run --rm giulia-test
 
 # Run single file
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs
 
 # Run specific test by line
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs:42"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs:42
+
+# Clean up when done
+docker compose -f docker-compose.test.yml down -v
 ```
 
-**Why:** EXLA doesn't compile on Windows. `MIX_ENV=test` skips Bandit (port 4000 conflict).
+### Quick exec into dev container (less isolated)
+
+Faster (no startup), but the running daemon's CubDB/ETS state can cause flaky failures.
+
+```bash
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+```
+
+**Why Docker:** EXLA doesn't compile on Windows. `MIX_ENV=test` skips Bandit (port 4000 conflict).
 `/projects/Giulia` is the live host mount; `/app` is a stale image copy.
+
+### NEVER run `mix format` inside Docker
+
+The source is mounted from a Windows host (CRLF line endings). Running `mix format` inside
+the Linux container converts every file to LF, causing 100+ files to appear modified and
+spurious test failures from line-ending mismatches. Format on the host only, or format
+specific files — never `mix format` on the full project from inside the container.
+
+### Verifying changes don't break tests
+
+Always follow this workflow when making code changes:
+
+1. **Baseline first**: `git stash`, run full test suite, record exact failure count + modules
+2. **Restore and test**: `git stash pop`, run full test suite again
+3. **Compare**: same modules, same failure count = zero regressions. Never assume failures are "pre-existing" without proving it.
+4. **Batch fixes**: make ALL changes first, compile once, test once. Don't interleave formatting with fixes.
 
 ## Building the Light Client (HTTP-based thin client)
 

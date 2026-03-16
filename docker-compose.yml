@@ -193,7 +193,7 @@ services:
     logging: *common-logging
 
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:2480/api/v1/ready"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:2480/api/v1/ready || exit 1"]
       interval: 30s
       timeout: 10s
       start_period: 10s

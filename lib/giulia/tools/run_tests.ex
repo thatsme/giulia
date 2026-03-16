@@ -35,15 +35,16 @@ defmodule Giulia.Tools.RunTests do
 
   @primary_key false
   embedded_schema do
-    field :file, :string
-    field :test_name, :string
+    field(:file, :string)
+    field(:test_name, :string)
   end
 
   @impl true
   def name, do: "run_tests"
 
   @impl true
-  def description, do: "Run ExUnit tests with structured failure analysis. Preferred over run_mix for testing."
+  def description,
+    do: "Run ExUnit tests with structured failure analysis. Preferred over run_mix for testing."
 
   @impl true
   def parameters do
@@ -109,10 +110,11 @@ defmodule Giulia.Tools.RunTests do
   @spec suggest_test_file(String.t()) :: String.t()
   def suggest_test_file(source_path) do
     # Extract the lib-relative portion even from absolute paths
-    rel = case Regex.run(~r"(lib/.+)$", source_path) do
-      [_, match] -> match
-      nil -> source_path
-    end
+    rel =
+      case Regex.run(~r"(lib/.+)$", source_path) do
+        [_, match] -> match
+        nil -> source_path
+      end
 
     rel
     |> String.replace_prefix("lib/", "test/")
@@ -153,7 +155,12 @@ defmodule Giulia.Tools.RunTests do
   defp build_args(file, test_name) do
     args = ["test"]
     args = if file && file != "", do: args ++ [file], else: args
-    args = if test_name && test_name != "", do: args ++ ["--only", "test_name:#{test_name}"], else: args
+
+    args =
+      if test_name && test_name != "",
+        do: args ++ ["--only", "test_name:#{test_name}"],
+        else: args
+
     args
   end
 
@@ -185,9 +192,10 @@ defmodule Giulia.Tools.RunTests do
 
       _ ->
         # Fallback: just report success with raw summary
-        summary_line = output
-        |> String.split("\n")
-        |> Enum.find("Tests passed", &Regex.match?(@summary_line, &1))
+        summary_line =
+          output
+          |> String.split("\n")
+          |> Enum.find("Tests passed", &Regex.match?(@summary_line, &1))
 
         "ALL TESTS PASSED: #{String.trim(summary_line)}"
     end
@@ -195,18 +203,25 @@ defmodule Giulia.Tools.RunTests do
 
   defp format_test_failures(output, project_path) do
     # Parse the summary line
-    summary = case Regex.run(@summary_line, output) do
-      [_, total, failures] ->
-        passed = String.to_integer(total) - String.to_integer(failures)
-        "TEST RESULTS: #{total} total, #{passed} passed, #{failures} failed"
+    summary =
+      case Regex.run(@summary_line, output) do
+        [_, total, failures] ->
+          {t, _} = Integer.parse(total)
+          {f, _} = Integer.parse(failures)
+          passed = t - f
+          "TEST RESULTS: #{total} total, #{passed} passed, #{failures} failed"
 
-      [_, total, failures, excluded] ->
-        passed = String.to_integer(total) - String.to_integer(failures) - String.to_integer(excluded)
-        "TEST RESULTS: #{total} total, #{passed} passed, #{failures} failed, #{excluded} excluded"
+        [_, total, failures, excluded] ->
+          {t, _} = Integer.parse(total)
+          {f, _} = Integer.parse(failures)
+          {e, _} = Integer.parse(excluded)
+          passed = t - f - e
 
-      _ ->
-        "TEST RESULTS: failures detected"
-    end
+          "TEST RESULTS: #{total} total, #{passed} passed, #{failures} failed, #{excluded} excluded"
+
+        _ ->
+          "TEST RESULTS: failures detected"
+      end
 
     # Split output into individual failure blocks
     failures = parse_failure_blocks(output)
@@ -215,34 +230,38 @@ defmodule Giulia.Tools.RunTests do
     # Format first N failures in detail, rest as one-liners
     {detailed, rest} = Enum.split(failures, @max_detailed_failures)
 
-    detailed_text = detailed
-    |> Enum.with_index(1)
-    |> Enum.map(fn {failure, idx} ->
-      format_single_failure(failure, idx, total_failures, project_path)
-    end)
-    |> Enum.join("\n\n")
-
-    rest_text = if rest != [] do
-      rest_lines = rest
-      |> Enum.with_index(@max_detailed_failures + 1)
+    detailed_text =
+      detailed
+      |> Enum.with_index(1)
       |> Enum.map(fn {failure, idx} ->
-        "FAILURE #{idx}/#{total_failures}: #{failure.test_name} (#{failure.module}) - #{failure.file}:#{failure.line}"
+        format_single_failure(failure, idx, total_failures, project_path)
       end)
-      |> Enum.join("\n")
+      |> Enum.join("\n\n")
 
-      "\n\n" <> rest_lines
-    else
-      ""
-    end
+    rest_text =
+      if rest != [] do
+        rest_lines =
+          rest
+          |> Enum.with_index(@max_detailed_failures + 1)
+          |> Enum.map(fn {failure, idx} ->
+            "FAILURE #{idx}/#{total_failures}: #{failure.test_name} (#{failure.module}) - #{failure.file}:#{failure.line}"
+          end)
+          |> Enum.join("\n")
+
+        "\n\n" <> rest_lines
+      else
+        ""
+      end
 
     truncate_total(summary <> "\n\n" <> detailed_text <> rest_text)
   end
 
   defp parse_failure_blocks(output) do
     # Split on failure headers (e.g., "  1) test adds two numbers (MyApp.MathTest)")
-    blocks = Regex.split(~r/(?=^\s+\d+\) test )/m, output)
-    |> Enum.reject(&(String.trim(&1) == ""))
-    |> Enum.filter(&Regex.match?(@failure_header, &1))
+    blocks =
+      Regex.split(~r/(?=^\s+\d+\) test )/m, output)
+      |> Enum.reject(&(String.trim(&1) == ""))
+      |> Enum.filter(&Regex.match?(@failure_header, &1))
 
     Enum.map(blocks, &parse_single_failure/1)
   end
@@ -272,20 +291,23 @@ defmodule Giulia.Tools.RunTests do
 
   defp format_single_failure(failure, idx, total, project_path) do
     # Build parts list conditionally — Elixir if blocks don't rebind outer scope
-    context = if failure.file && failure.line do
-      read_source_context(failure.file, failure.line, project_path)
-    end
+    context =
+      if failure.file && failure.line do
+        read_source_context(failure.file, failure.line, project_path)
+      end
 
     parts =
-      ["FAILURE #{idx}/#{total}:",
-       "  Test: \"#{failure.test_name || "unknown"}\" (#{failure.module || "unknown"})"] ++
-      if_line(failure.file && failure.line, "  File: #{failure.file}:#{failure.line}") ++
-      if_line(failure.assertion, "  Assertion: #{failure.assertion}") ++
-      if_line(failure.left, "  Got (left): #{failure.left}") ++
-      if_line(failure.right, "  Expected (right): #{failure.right}") ++
-      if_line(failure.code, "  Code: #{failure.code}") ++
-      if_line(failure.message, "  Message: #{failure.message}") ++
-      if(context, do: ["\n  Test code:", context], else: [])
+      [
+        "FAILURE #{idx}/#{total}:",
+        "  Test: \"#{failure.test_name || "unknown"}\" (#{failure.module || "unknown"})"
+      ] ++
+        if_line(failure.file && failure.line, "  File: #{failure.file}:#{failure.line}") ++
+        if_line(failure.assertion, "  Assertion: #{failure.assertion}") ++
+        if_line(failure.left, "  Got (left): #{failure.left}") ++
+        if_line(failure.right, "  Expected (right): #{failure.right}") ++
+        if_line(failure.code, "  Code: #{failure.code}") ++
+        if_line(failure.message, "  Message: #{failure.message}") ++
+        if(context, do: ["\n  Test code:", context], else: [])
 
     Enum.join(parts, "\n")
   end
@@ -299,7 +321,16 @@ defmodule Giulia.Tools.RunTests do
   # ============================================================================
 
   defp read_source_context(file, line_str, project_path) do
-    line_num = if is_binary(line_str), do: String.to_integer(line_str), else: line_str
+    line_num =
+      if is_binary(line_str) do
+        case Integer.parse(line_str) do
+          {n, _} -> n
+          :error -> 0
+        end
+      else
+        line_str
+      end
+
     full_path = Path.join(project_path, file)
 
     case File.read(full_path) do
@@ -327,14 +358,17 @@ defmodule Giulia.Tools.RunTests do
   # ============================================================================
 
   defp truncate_field(nil), do: nil
+
   defp truncate_field(value) when byte_size(value) > @max_field_length do
     String.slice(value, 0, @max_field_length) <> "..."
   end
+
   defp truncate_field(value), do: value
 
   defp truncate_total(text) when byte_size(text) > @max_total_chars do
     String.slice(text, 0, @max_total_chars) <> "\n\n... [output truncated]"
   end
+
   defp truncate_total(text), do: text
 
   # ============================================================================
@@ -343,6 +377,7 @@ defmodule Giulia.Tools.RunTests do
 
   defp parse_params(params) do
     changeset = changeset(params)
+
     if changeset.valid? do
       {:ok, Ecto.Changeset.apply_changes(changeset)}
     else
