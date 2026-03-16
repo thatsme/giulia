@@ -40,3 +40,10 @@ giulia-*.tar
 # Windows artifacts
 nul
 
+# Claude Code local settings
+.claude/
+
+# Personal launch scripts (contain local IPs/paths)
+start-home.bat
+start-work.bat
+

@@ -1,12 +1,12 @@
 @echo off
 REM Giulia Monitor — Observation Control (Build 135)
 REM Usage:
-REM   giulia-observe start nexus@192.168.10.174 [cookie] [interval_ms] [trace_modules]
-REM   giulia-observe stop  nexus@192.168.10.174
+REM   giulia-observe start nexus@&lt;TARGET_HOST&gt; [cookie] [interval_ms] [trace_modules]
+REM   giulia-observe stop  nexus@&lt;TARGET_HOST&gt;
 REM   giulia-observe status
 REM
 REM Defaults:
-REM   cookie        = nexus_shared_cookie
+REM   cookie        = giulia_dev
 REM   interval_ms   = 5000
 REM   trace_modules = (none)
 REM   monitor       = http://localhost:4001
@@ -16,7 +16,7 @@ setlocal enabledelayedexpansion
 
 set MONITOR_URL=http://localhost:4001
 set WORKER_URL=http://giulia-worker:4000
-set DEFAULT_COOKIE=nexus_shared_cookie
+set DEFAULT_COOKIE=giulia_dev
 set DEFAULT_INTERVAL=5000
 
 if "%1"=="" goto :usage
@@ -29,7 +29,7 @@ goto :usage
 :start
 if "%2"=="" (
     echo Error: node name required
-    echo Example: giulia-observe start nexus@192.168.10.174
+    echo Example: giulia-observe start nexus@&lt;TARGET_HOST&gt;
     exit /b 1
 )
 set NODE=%2
@@ -69,7 +69,7 @@ goto :eof
 :stop
 if "%2"=="" (
     echo Error: node name required
-    echo Example: giulia-observe stop nexus@192.168.10.174
+    echo Example: giulia-observe stop nexus@&lt;TARGET_HOST&gt;
     exit /b 1
 )
 set NODE=%2
@@ -100,10 +100,10 @@ echo   giulia-observe stop  ^<node^>
 echo   giulia-observe status
 echo.
 echo Examples:
-echo   giulia-observe start nexus@192.168.10.174
-echo   giulia-observe start nexus@192.168.10.174 my_cookie 3000
-echo   giulia-observe start nexus@192.168.10.174 my_cookie 5000 Nexus.Repo,Nexus.Registry.TableRegistry
-echo   giulia-observe stop nexus@192.168.10.174
+echo   giulia-observe start nexus@&lt;TARGET_HOST&gt;
+echo   giulia-observe start nexus@&lt;TARGET_HOST&gt; my_cookie 3000
+echo   giulia-observe start nexus@&lt;TARGET_HOST&gt; my_cookie 5000 Nexus.Repo,Nexus.Registry.TableRegistry
+echo   giulia-observe stop nexus@&lt;TARGET_HOST&gt;
 echo   giulia-observe status
 echo.
 echo Defaults:
