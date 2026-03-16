@@ -22,6 +22,8 @@ If you are uncomfortable with any of these, read [Programming Elixir](https://pr
 
 Run `mix format` before every commit. No exceptions. CI enforces this.
 
+**Docker users:** always run `mix format` on the host, never inside the container. The Linux container converts CRLF to LF, corrupting every file in `git diff`. See [TESTING.md](TESTING.md) for details.
+
 A `.formatter.exs` is in the repository root. Do not modify it without discussion.
 
 ---
@@ -763,5 +765,5 @@ This document covers Elixir/OTP code. It does not define conventions for:
 - [Elixir Style Guide](https://github.com/christopheradams/elixir_style_guide)
 - [Credo](https://github.com/rrrene/credo) — static analysis for Elixir style
 - [Dialyxir](https://github.com/jeremyjh/dialyxir) — typespec verification
-- [Programming Elixir](https://pragprog.com/titles/elixir16/programming-elixir-1-6/) — Dave Thomas
+- [Programming Elixir](https://pragprog.com/titles/elixir16/programming-elixir-1-6/) — Dave Thomas (1.6+)
 - [Designing Elixir Systems with OTP](https://pragprog.com/titles/jgotp/designing-elixir-systems-with-otp/) — James Edward Gray II
