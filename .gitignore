@@ -44,6 +44,8 @@ nul
 .claude/
 
 # Personal launch scripts (contain local IPs/paths)
+# Copy start-local.bat.example to start-local.bat and edit for your machine
 start-home.bat
 start-work.bat
+start-local.bat
 
