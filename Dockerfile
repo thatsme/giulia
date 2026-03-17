@@ -42,8 +42,8 @@ RUN mix deps.compile
 COPY lib lib
 COPY priv priv
 COPY test test
+COPY scripts scripts
 RUN mix compile
-RUN MIX_ENV=test mix test --trace || echo "WARNING: Some tests failed (see above). Continuing build."
 
 # Model downloads on first startup (needs CUDA runtime from nvidia-docker)
 # Cached in /root/.cache via giulia_models volume

@@ -49,7 +49,16 @@ defmodule Giulia.Inference.RenameMFA do
         {:error, "old_name and new_name are identical: #{old_name}"}
 
       true ->
-        arity = if is_binary(arity), do: String.to_integer(arity), else: arity
+        arity =
+          if is_binary(arity) do
+            case Integer.parse(arity) do
+              {n, _} -> n
+              :error -> 0
+            end
+          else
+            arity
+          end
+
         run(module, old_name, new_name, arity, tx, opts)
     end
   end
@@ -60,7 +69,7 @@ defmodule Giulia.Inference.RenameMFA do
     resolve_fn = Keyword.fetch!(opts, :resolve_fn)
     modified_files = Keyword.get(opts, :modified_files, MapSet.new())
 
-    old_atom = String.to_atom(old_name)
+    old_atom = String.to_existing_atom(old_name)
 
     # === PHASE 1: Discovery via Knowledge Graph + ETS ===
     Logger.info("RENAME_MFA: Phase 1 — Discovery for #{module}.#{old_name}/#{arity}")
@@ -80,12 +89,16 @@ defmodule Giulia.Inference.RenameMFA do
               {:ok, c} -> c
               _ -> ""
             end
-          staged -> staged
+
+          staged ->
+            staged
         end
 
       arity_range = detect_arity_range(target_source, old_atom, arity)
 
-      Logger.info("RENAME_MFA: Arity range: #{inspect(arity_range)} (default args detected: #{length(arity_range) > 1})")
+      Logger.info(
+        "RENAME_MFA: Arity range: #{inspect(arity_range)} (default args detected: #{length(arity_range) > 1})"
+      )
 
       # Get dependents (callers) from Knowledge Graph
       callers =
@@ -110,7 +123,10 @@ defmodule Giulia.Inference.RenameMFA do
             _ -> []
           end
         else
-          Logger.info("RENAME_MFA: #{old_name} is NOT a @callback in #{module} — skipping implementers")
+          Logger.info(
+            "RENAME_MFA: #{old_name} is NOT a @callback in #{module} — skipping implementers"
+          )
+
           []
         end
 
@@ -143,7 +159,8 @@ defmodule Giulia.Inference.RenameMFA do
 
       # === PHASE 2: AST-guided line-level rename in each file ===
       {tx, modified_files, results} =
-        Enum.reduce(affected_files, {tx, modified_files, []}, fn file_path, {acc_tx, acc_mf, acc} ->
+        Enum.reduce(affected_files, {tx, modified_files, []}, fn file_path,
+                                                                 {acc_tx, acc_mf, acc} ->
           resolved = resolve_fn.(file_path)
 
           content =
@@ -153,7 +170,9 @@ defmodule Giulia.Inference.RenameMFA do
                   {:ok, c} -> c
                   {:error, reason} -> {:error, reason}
                 end
-              staged -> staged
+
+              staged ->
+                staged
             end
 
           case content do
@@ -247,8 +266,14 @@ defmodule Giulia.Inference.RenameMFA do
       Logger.info("RENAME_MFA: #{length(staged)} files staged, #{total_changes} renames")
 
       {:ok, String.trim(observation), tx, modified_files,
-       %{staged: staged, total_changes: total_changes, arity: arity,
-         module: module, old_name: old_name, new_name: new_name}}
+       %{
+         staged: staged,
+         total_changes: total_changes,
+         arity: arity,
+         module: module,
+         old_name: old_name,
+         new_name: new_name
+       }}
     end
   end
 
@@ -296,7 +321,15 @@ defmodule Giulia.Inference.RenameMFA do
   AST-guided, line-level rename within a single source file.
   Returns `{new_source, change_count}`.
   """
-  @spec rename_in_source(String.t(), String.t(), atom(), String.t(), String.t(), [non_neg_integer()], keyword()) ::
+  @spec rename_in_source(
+          String.t(),
+          String.t(),
+          atom(),
+          String.t(),
+          String.t(),
+          [non_neg_integer()],
+          keyword()
+        ) ::
           {String.t(), non_neg_integer()}
   def rename_in_source(source, target_module, old_atom, old_name, new_name, arity_range, opts) do
     is_target = Keyword.get(opts, :is_target, false)
@@ -318,8 +351,10 @@ defmodule Giulia.Inference.RenameMFA do
                 end
 
               {:@, _attr_meta,
-               [{:callback, _cb_meta,
-                 [{:"::", _spec_meta, [{^old_atom, fn_meta, args} | _]} | _]}]}
+               [
+                 {:callback, _cb_meta,
+                  [{:"::", _spec_meta, [{^old_atom, fn_meta, args} | _]} | _]}
+               ]}
               when is_target ->
                 if length(args || []) in arity_range do
                   {node, [{fn_meta[:line], :callback} | acc]}
@@ -338,7 +373,7 @@ defmodule Giulia.Inference.RenameMFA do
               {{:., _dot_meta, [alias_node, ^old_atom]}, call_meta, args} ->
                 if length(args || []) in arity_range and
                      (ast_matches_module?(alias_node, target_module) or
-                      ast_matches_any_module?(alias_node, implementer_modules)) do
+                        ast_matches_any_module?(alias_node, implementer_modules)) do
                   {node, [{call_meta[:line], :remote_call} | acc]}
                 else
                   {node, acc}
@@ -404,6 +439,7 @@ defmodule Giulia.Inference.RenameMFA do
   @doc false
   def ast_matches_module?({:__aliases__, _meta, parts}, target_module) when is_list(parts) do
     alias_str = Enum.map_join(parts, ".", &Atom.to_string/1)
+
     alias_str == target_module or
       Atom.to_string(List.last(parts)) == last_segment(target_module)
   end
@@ -417,6 +453,7 @@ defmodule Giulia.Inference.RenameMFA do
 
   @doc false
   def ast_matches_any_module?(_alias_node, []), do: false
+
   def ast_matches_any_module?(alias_node, modules) do
     Enum.any?(modules, &ast_matches_module?(alias_node, &1))
   end
@@ -431,7 +468,9 @@ defmodule Giulia.Inference.RenameMFA do
     try do
       GenServer.call(Giulia.Knowledge.Store, {:get_implementers, project_path, behaviour_module})
     catch
-      :exit, _ -> {:ok, []}
+      :exit, reason ->
+        Logger.warning("get_implementers_from_graph exit: #{inspect(reason)}")
+        {:ok, []}
     end
   end
 end

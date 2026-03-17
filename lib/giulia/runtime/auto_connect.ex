@@ -60,7 +60,7 @@ defmodule Giulia.Runtime.AutoConnect do
         :ignore
 
       node_str ->
-        target = String.to_atom(node_str)
+        target = Giulia.Daemon.Helpers.safe_to_node_atom(node_str)
         Logger.info("AutoConnect: will connect to #{target}")
 
         state = %{
@@ -104,7 +104,9 @@ defmodule Giulia.Runtime.AutoConnect do
         {:noreply, %{state | connected: true, retry_ms: @initial_retry_ms}}
 
       {:error, reason} ->
-        Logger.warning("AutoConnect: failed to connect to #{state.target}: #{inspect(reason)}, retrying in #{state.retry_ms}ms")
+        Logger.warning(
+          "AutoConnect: failed to connect to #{state.target}: #{inspect(reason)}, retrying in #{state.retry_ms}ms"
+        )
 
         # Schedule retry with exponential backoff
         Process.send_after(self(), :connect, state.retry_ms)

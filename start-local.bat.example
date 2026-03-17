@@ -1,0 +1,28 @@
+@echo off
+REM Giulia Daemon — Local Environment Launcher
+REM
+REM Copy this file to start-local.bat and edit for your machine:
+REM   copy start-local.bat.example start-local.bat
+REM
+REM start-local.bat is gitignored — your IPs and paths stay private.
+
+echo ============================================
+echo   Giulia Daemon — Local Environment
+echo ============================================
+echo.
+
+REM ---- EDIT THESE FOR YOUR MACHINE ----
+set LM_STUDIO_HOST=host.docker.internal
+set LM_STUDIO_PORT=1234
+set LM_STUDIO_MODEL=qwen/qwen2.5-coder-14b
+set PROJECTS_PATH=D:/Development/GitHub
+REM ---- END EDIT ----
+
+docker compose down 2>nul
+docker compose up -d
+
+echo.
+echo Waiting for health check...
+timeout /t 10 /nobreak >nul
+curl -s http://localhost:4000/health
+echo.

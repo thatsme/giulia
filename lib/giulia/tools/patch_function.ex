@@ -24,10 +24,10 @@ defmodule Giulia.Tools.PatchFunction do
 
   @primary_key false
   embedded_schema do
-    field :module, :string
-    field :function_name, :string
-    field :arity, :integer
-    field :code, :string
+    field(:module, :string)
+    field(:function_name, :string)
+    field(:arity, :integer)
+    field(:code, :string)
   end
 
   @impl true
@@ -38,7 +38,7 @@ defmodule Giulia.Tools.PatchFunction do
   @spec description() :: String.t()
   def description do
     "Replace a function using AST patching. Preferred over edit_file for function replacement. " <>
-    "Uses Sourceror to find the function by name/arity and replace it, preserving file formatting."
+      "Uses Sourceror to find the function by name/arity and replace it, preserving file formatting."
   end
 
   @impl true
@@ -61,7 +61,8 @@ defmodule Giulia.Tools.PatchFunction do
         },
         code: %{
           type: "string",
-          description: "Complete new function code including def/defp. Use <payload> tags for this."
+          description:
+            "Complete new function code including def/defp. Use <payload> tags for this."
         }
       },
       required: ["module", "function_name", "arity", "code"]
@@ -96,21 +97,22 @@ defmodule Giulia.Tools.PatchFunction do
 
   # Catch-all: missing "code" param (model sent action-only without <payload>)
   def execute(params, _opts) when is_map(params) do
-    {:error, """
-    patch_function requires a "code" parameter with the new function body.
+    {:error,
+     """
+     patch_function requires a "code" parameter with the new function body.
 
-    You must use the HYBRID FORMAT with <payload> tags:
-    <action>
-    {"tool": "patch_function", "parameters": {"module": "#{Map.get(params, "module", "Module")}", "function_name": "#{Map.get(params, "function_name", "func")}", "arity": #{Map.get(params, "arity", 0)}}}
-    </action>
-    <payload>
-    def #{Map.get(params, "function_name", "func")}(...) do
-      # your code here
-    end
-    </payload>
+     You must use the HYBRID FORMAT with <payload> tags:
+     <action>
+     {"tool": "patch_function", "parameters": {"module": "#{Map.get(params, "module", "Module")}", "function_name": "#{Map.get(params, "function_name", "func")}", "arity": #{Map.get(params, "arity", 0)}}}
+     </action>
+     <payload>
+     def #{Map.get(params, "function_name", "func")}(...) do
+       # your code here
+     end
+     </payload>
 
-    The code goes in <payload>, NOT in the JSON parameters.
-    """}
+     The code goes in <payload>, NOT in the JSON parameters.
+     """}
   end
 
   # ============================================================================
@@ -123,6 +125,7 @@ defmodule Giulia.Tools.PatchFunction do
     try do
       # Step 1: Find the module file via index
       project_path = opts[:project_path]
+
       case Store.find_module(project_path, module_name) do
         {:ok, %{file: file_path}} ->
           sandbox = get_sandbox(opts)
@@ -147,7 +150,7 @@ defmodule Giulia.Tools.PatchFunction do
 
   defp patch_function_in_file(file_path, func_name, arity, new_code) do
     require Logger
-    func_atom = String.to_atom(func_name)
+    func_atom = String.to_existing_atom(func_name)
     Logger.info("PatchFunction: Patching #{func_name}/#{arity} in #{file_path}")
 
     with {:ok, raw_source} <- File.read(file_path),
@@ -155,7 +158,6 @@ defmodule Giulia.Tools.PatchFunction do
          source = String.replace(raw_source, "\r\n", "\n"),
          {:ok, _valid_ast} <- parse_new_function(new_code),
          {:ok, range} <- find_function_range(source, func_atom, arity) do
-
       # ATOMIC SURGERY: splice → format → write. If format fails, abort.
       # The file on disk is GUARANTEED to be syntactically valid and formatted.
       new_source = splice_source(source, range, new_code)
@@ -178,18 +180,20 @@ defmodule Giulia.Tools.PatchFunction do
           # Return the error so the model can fix its code and retry.
           Logger.error("PatchFunction: ATOMIC ABORT — formatter failed, file NOT modified.")
           Logger.error("PatchFunction: Format error: #{format_error}")
-          {:error, """
-          ATOMIC ABORT: Your code produced a syntax error AFTER splicing into the file.
-          The file was NOT modified — it is still in its original state.
 
-          Formatter error: #{format_error}
+          {:error,
+           """
+           ATOMIC ABORT: Your code produced a syntax error AFTER splicing into the file.
+           The file was NOT modified — it is still in its original state.
 
-          Your proposed code:
-          #{new_code}
+           Formatter error: #{format_error}
 
-          Fix the syntax error in your code and try patch_function again.
-          Do NOT use edit_file — the file has not changed.
-          """}
+           Your proposed code:
+           #{new_code}
+
+           Fix the syntax error in your code and try patch_function again.
+           Do NOT use edit_file — the file has not changed.
+           """}
       end
     else
       {:error, :enoent} ->
@@ -217,8 +221,12 @@ defmodule Giulia.Tools.PatchFunction do
       {:ok, ast} ->
         case search_defmodule_for_function(ast, func_atom, arity) do
           {:ok, range} ->
-            Logger.info("PatchFunction: Found #{func_atom}/#{arity} at lines #{range.start_line}-#{range.end_line}")
+            Logger.info(
+              "PatchFunction: Found #{func_atom}/#{arity} at lines #{range.start_line}-#{range.end_line}"
+            )
+
             {:ok, range}
+
           :not_found ->
             {:error, :function_not_found}
         end
@@ -236,9 +244,15 @@ defmodule Giulia.Tools.PatchFunction do
   defp search_defmodule_for_function({:defmodule, _meta, [_alias, [do: body]]}, func_atom, arity) do
     search_body_for_function(body, func_atom, arity)
   end
-  defp search_defmodule_for_function({:defmodule, _meta, [_alias, [{_do_key, body}]]}, func_atom, arity) do
+
+  defp search_defmodule_for_function(
+         {:defmodule, _meta, [_alias, [{_do_key, body}]]},
+         func_atom,
+         arity
+       ) do
     search_body_for_function(body, func_atom, arity)
   end
+
   defp search_defmodule_for_function(_ast, _func_atom, _arity), do: :not_found
 
   # Multi-Head Block Capture: find ALL contiguous clauses for a function/arity
@@ -246,22 +260,28 @@ defmodule Giulia.Tools.PatchFunction do
   # e.g., `def handle_call(...)` with 5 clauses → one range covering all of them.
   defp search_body_for_function({:__block__, _meta, statements}, func_atom, arity) do
     # Collect ALL matching clause ranges
-    ranges = statements
-    |> Enum.flat_map(fn stmt ->
-      case match_function_def(stmt, func_atom, arity) do
-        {:ok, range} -> [range]
-        :no_match -> []
-      end
-    end)
+    ranges =
+      statements
+      |> Enum.flat_map(fn stmt ->
+        case match_function_def(stmt, func_atom, arity) do
+          {:ok, range} -> [range]
+          :no_match -> []
+        end
+      end)
 
     case ranges do
-      [] -> :not_found
-      [single] -> {:ok, single}
+      [] ->
+        :not_found
+
+      [single] ->
+        {:ok, single}
+
       [first | _] ->
         last = List.last(ranges)
         {:ok, %{start_line: first.start_line, end_line: last.end_line}}
     end
   end
+
   # Single-expression module body
   defp search_body_for_function(stmt, func_atom, arity) do
     case match_function_def(stmt, func_atom, arity) do
@@ -271,7 +291,11 @@ defmodule Giulia.Tools.PatchFunction do
   end
 
   # Match def/defp with or without guard clause, extract line range
-  defp match_function_def({def_type, meta, [{:when, _, [{name, _, args} | _]} | _]}, func_atom, arity)
+  defp match_function_def(
+         {def_type, meta, [{:when, _, [{name, _, args} | _]} | _]},
+         func_atom,
+         arity
+       )
        when def_type in [:def, :defp] and is_atom(name) do
     if name == func_atom and length(args || []) == arity do
       extract_range(meta)
@@ -305,8 +329,10 @@ defmodule Giulia.Tools.PatchFunction do
     cond do
       start_line && end_line ->
         {:ok, %{start_line: start_line, end_line: end_line}}
+
       start_line ->
         {:ok, %{start_line: start_line, end_line: nil}}
+
       true ->
         :no_match
     end
@@ -340,7 +366,9 @@ defmodule Giulia.Tools.PatchFunction do
     # Safety: verify the line at actual_end contains `end` (for Sourceror ranges)
     actual_end = verify_end_line(lines, actual_end)
 
-    Logger.info("PatchFunction: Splicing lines #{start_line}..#{actual_end} (total=#{total_lines})")
+    Logger.info(
+      "PatchFunction: Splicing lines #{start_line}..#{actual_end} (total=#{total_lines})"
+    )
 
     # before = lines 1..(start_line - 1)
     # after  = lines (actual_end + 1)..total
@@ -355,6 +383,7 @@ defmodule Giulia.Tools.PatchFunction do
   # Protects against :end_of_expression pointing past the function's `end`.
   defp verify_end_line(lines, end_line) do
     line_content = Enum.at(lines, end_line - 1, "")
+
     if String.trim(line_content) =~ ~r/^end\b/ do
       end_line
     else
@@ -392,24 +421,28 @@ defmodule Giulia.Tools.PatchFunction do
 
   defp parse_new_function(code) do
     case Code.string_to_quoted(code) do
-      {:ok, ast} -> {:ok, ast}
+      {:ok, ast} ->
+        {:ok, ast}
+
       {:error, {meta, message, token}} ->
         line = if is_list(meta), do: Keyword.get(meta, :line, 1), else: 1
         col = if is_list(meta), do: Keyword.get(meta, :column, 1), else: 1
         lines = String.split(code, "\n")
         context = extract_error_context(lines, line)
-        {:error, """
-        SYNTAX ERROR in your proposed code at line #{line}, column #{col}:
-        #{message} #{inspect(token)}
 
-        YOUR CODE (showing error location):
-        #{context}
+        {:error,
+         """
+         SYNTAX ERROR in your proposed code at line #{line}, column #{col}:
+         #{message} #{inspect(token)}
 
-        FULL CODE YOU SENT:
-        #{code}
+         YOUR CODE (showing error location):
+         #{context}
 
-        Fix the syntax error and try again.
-        """}
+         FULL CODE YOU SENT:
+         #{code}
+
+         Fix the syntax error and try again.
+         """}
     end
   end
 
@@ -452,6 +485,7 @@ defmodule Giulia.Tools.PatchFunction do
 
   defp parse_params(params) do
     changeset = changeset(params)
+
     if changeset.valid? do
       {:ok, Ecto.Changeset.apply_changes(changeset)}
     else

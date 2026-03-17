@@ -48,13 +48,20 @@ defmodule Giulia.Application do
     cond do
       explicit_client -> true
       explicit_daemon -> false
-      in_container -> false  # Container = daemon mode
-      true -> true  # Default outside container = client mode
+      # Container = daemon mode
+      in_container -> false
+      # Default outside container = client mode
+      true -> true
     end
   end
 
   defp start_daemon_mode do
-    port = String.to_integer(System.get_env("GIULIA_PORT", "4000"))
+    port =
+      case Integer.parse(System.get_env("GIULIA_PORT", "4000")) do
+        {n, _} -> n
+        :error -> 4000
+      end
+
     role = Giulia.Role.role()
 
     base_children = [
@@ -77,7 +84,13 @@ defmodule Giulia.Application do
       Giulia.Context.Indexer,
 
       # Knowledge graph (depends on Store + Indexer)
-      Giulia.Knowledge.Store
+      Giulia.Knowledge.Store,
+
+      # ArcadeDB L2: Indexer (listens for {:graph_ready} from Knowledge.Store)
+      Giulia.Storage.Arcade.Indexer,
+
+      # ArcadeDB consolidation (periodic cross-build analysis)
+      Giulia.Storage.Arcade.Consolidator
     ]
 
     # Heavy children — skipped in monitor mode to save ~200MB RAM
@@ -130,10 +143,16 @@ defmodule Giulia.Application do
       # Runtime collector (periodic BEAM health snapshots)
       Giulia.Runtime.Collector,
 
+      # Ingest store for Monitor→Worker snapshot pipeline (Build 133)
+      Giulia.Runtime.IngestStore,
+
+      # Observation controller for async start/stop observation (Build 133)
+      Giulia.Runtime.Observer,
+
       # Auto-connect to target node (returns :ignore if GIULIA_CONNECT_NODE unset)
       {Giulia.Runtime.AutoConnect, []},
 
-      # Monitor lifecycle orchestrator (returns :ignore unless monitor mode)
+      # Monitor lifecycle orchestrator (returns :ignore unless GIULIA_ROLE=monitor)
       {Giulia.Runtime.Monitor, []}
     ]
 
@@ -158,5 +177,4 @@ defmodule Giulia.Application do
 
     result
   end
-
 end

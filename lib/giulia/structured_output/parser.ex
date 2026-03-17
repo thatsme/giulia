@@ -103,7 +103,11 @@ defmodule Giulia.StructuredOutput.Parser do
             if tool in @code_tools and trailing_code != nil do
               # Tier 2: Code tool with trailing code — inject it
               merged_params = Map.put(params, "code", trailing_code)
-              Logger.info("Parser: Action + trailing code — tool=#{tool}, code=#{byte_size(trailing_code)} bytes")
+
+              Logger.info(
+                "Parser: Action + trailing code — tool=#{tool}, code=#{byte_size(trailing_code)} bytes"
+              )
+
               {:ok, %{"tool" => tool, "parameters" => merged_params}}
             else
               # Tier 3: Non-code tool or no trailing code
@@ -113,6 +117,7 @@ defmodule Giulia.StructuredOutput.Parser do
 
           {:ok, %{"tool" => tool}} ->
             trailing_code = extract_trailing_code(trailing)
+
             if tool in @code_tools and trailing_code != nil do
               {:ok, %{"tool" => tool, "parameters" => %{"code" => trailing_code}}}
             else
@@ -138,6 +143,7 @@ defmodule Giulia.StructuredOutput.Parser do
     case Regex.run(~r/<action>\s*(.*)/s, response) do
       [_, content] ->
         json_str = String.trim(content)
+
         case Jason.decode(json_str) do
           {:ok, %{"tool" => tool, "parameters" => params}} when is_map(params) ->
             Logger.info("Parser: Unclosed action — tool=#{tool}")
@@ -174,6 +180,7 @@ defmodule Giulia.StructuredOutput.Parser do
           [_, code] ->
             clean = String.trim(code)
             if String.length(clean) > 5, do: clean, else: nil
+
           nil ->
             extract_raw_elixir(trimmed)
         end
@@ -192,18 +199,22 @@ defmodule Giulia.StructuredOutput.Parser do
     lines = String.split(text, "\n")
 
     # Drop leading non-code lines (explanatory text, empty lines)
-    code_lines = Enum.drop_while(lines, fn line ->
-      trimmed = String.trim(line)
-      trimmed == "" or
-        (not String.starts_with?(trimmed, "def ") and
-         not String.starts_with?(trimmed, "defp ") and
-         not String.starts_with?(trimmed, "@") and
-         not String.starts_with?(trimmed, "def(") and
-         not Regex.match?(~r/^\s*(def|defp|defmacro|defguard)\s/, trimmed))
-    end)
+    code_lines =
+      Enum.drop_while(lines, fn line ->
+        trimmed = String.trim(line)
+
+        trimmed == "" or
+          (not String.starts_with?(trimmed, "def ") and
+             not String.starts_with?(trimmed, "defp ") and
+             not String.starts_with?(trimmed, "@") and
+             not String.starts_with?(trimmed, "def(") and
+             not Regex.match?(~r/^\s*(def|defp|defmacro|defguard)\s/, trimmed))
+      end)
 
     case code_lines do
-      [] -> nil
+      [] ->
+        nil
+
       _ ->
         code = Enum.join(code_lines, "\n") |> String.trim()
         if String.length(code) > 10, do: code, else: nil
@@ -218,7 +229,11 @@ defmodule Giulia.StructuredOutput.Parser do
     case Jason.decode(String.trim(action_json)) do
       {:ok, %{"tool" => tool, "parameters" => params}} when is_map(params) ->
         merged_params = Map.put(params, "code", raw_code)
-        Logger.info("Parser: Hybrid format parsed — tool=#{tool}, code=#{byte_size(raw_code)} bytes")
+
+        Logger.info(
+          "Parser: Hybrid format parsed — tool=#{tool}, code=#{byte_size(raw_code)} bytes"
+        )
+
         {:ok, %{"tool" => tool, "parameters" => merged_params}}
 
       {:ok, %{"tool" => tool}} ->
@@ -316,7 +331,8 @@ defmodule Giulia.StructuredOutput.Parser do
           %{"tool" => tool, "parameters" => %{}}
         end
 
-      _ -> nil
+      _ ->
+        nil
     end
   end
 
@@ -339,12 +355,14 @@ defmodule Giulia.StructuredOutput.Parser do
   end
 
   defp extract_partial_params(json_str) do
-    params = Regex.scan(~r/"(\w+)"\s*:\s*"([^"]*)"/, json_str)
-    |> Enum.reject(fn [_, key, _] -> key == "tool" end)
-    |> Map.new(fn [_, key, value] -> {key, value} end)
+    params =
+      Regex.scan(~r/"(\w+)"\s*:\s*"([^"]*)"/, json_str)
+      |> Enum.reject(fn [_, key, _] -> key == "tool" end)
+      |> Map.new(fn [_, key, value] -> {key, value} end)
 
-    int_params = Regex.scan(~r/"(\w+)"\s*:\s*(\d+)/, json_str)
-    |> Map.new(fn [_, key, value] -> {key, String.to_integer(value)} end)
+    int_params =
+      Regex.scan(~r/"(\w+)"\s*:\s*(\d+)/, json_str)
+      |> Map.new(fn [_, key, value] -> {key, elem(Integer.parse(value), 0)} end)
 
     Map.merge(params, int_params)
   end

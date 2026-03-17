@@ -56,12 +56,14 @@ defmodule Giulia.Knowledge.Store.Reader do
     project_path |> get_graph() |> Analyzer.centrality(module)
   end
 
-  @spec dependents(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
+  @spec dependents(String.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependents(project_path, module) do
     project_path |> get_graph() |> Analyzer.dependents(module)
   end
 
-  @spec dependencies(String.t(), String.t()) :: {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
+  @spec dependencies(String.t(), String.t()) ::
+          {:ok, [String.t()]} | {:error, {:not_found, String.t()}}
   def dependencies(project_path, module) do
     project_path |> get_graph() |> Analyzer.dependencies(module)
   end
@@ -71,7 +73,8 @@ defmodule Giulia.Knowledge.Store.Reader do
     project_path |> get_graph() |> Analyzer.impact_map(vertex_id, depth)
   end
 
-  @spec trace_path(String.t(), String.t(), String.t()) :: {:ok, :no_path | [String.t()]} | {:error, {:not_found, String.t()}}
+  @spec trace_path(String.t(), String.t(), String.t()) ::
+          {:ok, :no_path | [String.t()]} | {:error, {:not_found, String.t()}}
   def trace_path(project_path, from, to) do
     project_path |> get_graph() |> Analyzer.trace_path(from, to)
   end
@@ -200,7 +203,8 @@ defmodule Giulia.Knowledge.Store.Reader do
     Analyzer.test_targets(graph, module, project_path)
   end
 
-  @spec check_behaviour_integrity(String.t(), String.t()) :: {:ok, :consistent} | {:error, :not_found | [map()]}
+  @spec check_behaviour_integrity(String.t(), String.t()) ::
+          {:ok, :consistent} | {:error, :not_found | [map()]}
   def check_behaviour_integrity(project_path, behaviour) do
     graph = get_graph(project_path)
     Analyzer.behaviour_integrity(graph, behaviour, project_path)
@@ -222,6 +226,165 @@ defmodule Giulia.Knowledge.Store.Reader do
   def pre_impact_check(project_path, params) do
     graph = get_graph(project_path)
     Analyzer.pre_impact_check(graph, project_path, params)
+  end
+
+  # ============================================================================
+  # Bulk extraction — for ArcadeDB Indexer and future consumers
+  # ============================================================================
+
+  @doc """
+  All module vertices in the graph as a list of maps.
+
+  Returns `{:ok, [%{name: "Giulia.Foo", ...}]}`.
+  Each map includes the module name and any metadata available from
+  the Context.Store AST data (file path, line, function count).
+  """
+  @spec all_modules(String.t()) :: {:ok, [map()]}
+  def all_modules(project_path) do
+    graph = get_graph(project_path)
+
+    modules =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> Enum.map(fn name ->
+        # Enrich with AST metadata if available
+        ast_meta = get_module_meta(project_path, name)
+
+        # Enrich with complexity and coupling from graph + AST
+        functions = get_module_functions(project_path, name)
+        complexity_score = Enum.sum(Enum.map(functions, fn f -> f[:complexity] || 0 end))
+        function_count = length(functions)
+
+        in_degree = graph |> Graph.in_edges(name) |> length()
+        out_degree = graph |> Graph.out_edges(name) |> length()
+
+        Map.merge(%{
+          name: name,
+          complexity_score: complexity_score,
+          function_count: function_count,
+          dep_in: in_degree,
+          dep_out: out_degree
+        }, ast_meta)
+      end)
+
+    {:ok, modules}
+  end
+
+  @doc """
+  All function vertices in the graph as a list of maps.
+
+  Returns `{:ok, [%{name: "Giulia.Foo.bar/2", module: "Giulia.Foo", function: "bar", arity: 2}]}`.
+  """
+  @spec all_functions(String.t()) :: {:ok, [map()]}
+  def all_functions(project_path) do
+    graph = get_graph(project_path)
+
+    functions =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :function in Graph.vertex_labels(graph, v) end)
+      |> Enum.map(fn name ->
+        {mod, func, arity} = parse_mfa(name)
+        complexity = get_function_complexity(project_path, mod, func, arity)
+        %{name: name, module: mod, function: func, arity: arity, complexity: complexity}
+      end)
+
+    {:ok, functions}
+  end
+
+  @doc """
+  All dependency edges in the graph as a list of `{from, to, type}` tuples.
+
+  Returns `{:ok, [{"Giulia.Foo", "Giulia.Bar", :depends_on}, ...]}`.
+  Only includes module-level edges (:depends_on, :calls, :implements).
+  """
+  @spec all_dependencies(String.t()) :: {:ok, [{String.t(), String.t(), atom()}]}
+  def all_dependencies(project_path) do
+    graph = get_graph(project_path)
+
+    # Only module-level vertices for dependency edges
+    module_set =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> MapSet.new()
+
+    edges =
+      graph
+      |> Graph.edges()
+      |> Enum.filter(fn edge ->
+        edge.v1 in module_set and edge.v2 in module_set
+      end)
+      |> Enum.map(fn edge ->
+        label =
+          case edge.label do
+            {:semantic, _reason} -> :semantic
+            other -> other
+          end
+
+        {edge.v1, edge.v2, label}
+      end)
+
+    {:ok, edges}
+  end
+
+  # --- Helpers for bulk extraction ---
+
+  defp get_module_functions(project_path, module_name) do
+    try do
+      case :ets.match_object(Giulia.Context.Store, {{:ast, project_path, :_}, :_}) do
+        entries ->
+          Enum.flat_map(entries, fn {{:ast, _proj, _file}, data} ->
+            modules = data[:modules] || []
+
+            case Enum.find(modules, fn m -> m.name == module_name end) do
+              nil -> []
+              mod -> mod[:functions] || []
+            end
+          end)
+      end
+    rescue
+      ArgumentError -> []
+    end
+  end
+
+  defp get_function_complexity(project_path, module_name, func_name, arity) do
+    functions = get_module_functions(project_path, module_name)
+
+    case Enum.find(functions, fn f ->
+      to_string(f[:name] || f.name) == to_string(func_name) and
+        (f[:arity] || f.arity) == arity
+    end) do
+      nil -> 0
+      f -> f[:complexity] || 0
+    end
+  end
+
+  defp get_module_meta(project_path, module_name) do
+    # Try to find the module in Context.Store AST data
+    try do
+      case :ets.match_object(Giulia.Context.Store, {{:ast, project_path, :_}, :_}) do
+        entries ->
+          Enum.find_value(entries, %{}, fn {{:ast, _proj, file_path}, data} ->
+            modules = data[:modules] || []
+
+            case Enum.find(modules, fn m -> m.name == module_name end) do
+              nil -> nil
+              mod -> %{path: file_path, line: mod[:line] || mod.line}
+            end
+          end)
+      end
+    rescue
+      ArgumentError -> %{}
+    end
+  end
+
+  defp parse_mfa(name) do
+    case Regex.run(~r/^(.+)\.([^.]+)\/(\d+)$/, name) do
+      [_, mod, func, arity] -> {mod, func, elem(Integer.parse(arity), 0)}
+      _ -> {name, nil, nil}
+    end
   end
 
   # ============================================================================

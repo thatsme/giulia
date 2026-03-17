@@ -123,7 +123,7 @@ defmodule Giulia.Tools.WriteFunction do
 
   defp replace_function_in_file(file_path, func_name, arity, new_code) do
     require Logger
-    func_atom = String.to_atom(func_name)
+    func_atom = String.to_existing_atom(func_name)
     Logger.info("WriteFunction: Starting replacement of #{func_name}/#{arity} in #{file_path}")
 
     with {:ok, source} <- File.read(file_path),

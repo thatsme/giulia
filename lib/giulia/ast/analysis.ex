@@ -4,7 +4,7 @@ defmodule Giulia.AST.Analysis do
   complexity estimation, and summary generation for LLM context.
 
   Depends on `Giulia.AST.Extraction` for extract_* calls and
-  `Giulia.AST.Processor.parse_file/1` for file reading.
+  `Giulia.AST.Parser.parse_file/1` for file reading.
   """
 
   alias Giulia.AST.{Complexity, Extraction}
@@ -83,7 +83,7 @@ defmodule Giulia.AST.Analysis do
   """
   @spec analyze_file(String.t()) :: {:ok, Giulia.AST.Processor.file_info()} | {:error, term()}
   def analyze_file(path) do
-    with {:ok, ast, source} <- Giulia.AST.Processor.parse_file(path) do
+    with {:ok, ast, source} <- Giulia.AST.Parser.parse_file(path) do
       info = analyze(ast, source) |> Map.put(:path, path)
       {:ok, info}
     end
@@ -205,7 +205,7 @@ defmodule Giulia.AST.Analysis do
     Logger.info("=== TEST EXTRACTION ===")
     Logger.info("Parsing source...")
 
-    case Giulia.AST.Processor.parse(source) do
+    case Giulia.AST.Parser.parse(source) do
       {:ok, ast, _src} ->
         Logger.info("AST parsed successfully")
         Logger.info("AST structure: #{inspect(ast, pretty: true, limit: 5)}")

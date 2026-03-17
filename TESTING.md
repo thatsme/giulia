@@ -2,57 +2,117 @@
 
 ## Quick Reference
 
+### Recommended: Isolated test environment (`docker-compose.test.yml`)
+
+Uses a dedicated compose file with its own ArcadeDB instance, fresh volumes,
+and `MIX_ENV=test` baked in. No interference with the running dev daemon.
+
 ```bash
-# Run ALL tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+# Run ALL tests (starts ArcadeDB, runs tests, exits)
+docker compose -f docker-compose.test.yml run --rm giulia-test
 
 # Run a single test file
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/inference/state_test.exs
 
 # Run a specific test by line number
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/prompt/builder_test.exs:124
 
-# Run with trace (verbose, shows each test name)
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --trace"
+# Run with trace (verbose)
+docker compose -f docker-compose.test.yml run --rm -e TEST_ARGS="--trace" giulia-test
 
 # Run only previously failed tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --failed"
+docker compose -f docker-compose.test.yml run --rm -e TEST_ARGS="--failed" giulia-test
 
-# Run integration tests only
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/integration/"
+# Clean up test containers and volumes when done
+docker compose -f docker-compose.test.yml down -v
+```
 
-# Run adversarial tests only
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test --only adversarial 2>/dev/null || cd /projects/Giulia && MIX_ENV=test mix test test/giulia/**/*adversarial*"
+### Alternative: exec into dev container (quick but less isolated)
+
+Runs tests inside the running dev daemon. Faster (no startup), but CubDB state
+and ETS tables from the running daemon can cause flaky failures.
+
+**The daemon must be running** for this approach. Start it first with `docker compose up -d`.
+
+Replace `/projects/Giulia` below with the container-side path where your source
+is mounted (this matches the host path you configured in `docker-compose.yml`
+under `GIULIA_PROJECTS_PATH`).
+
+```bash
+# Run ALL tests
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test"
+
+# Run a single test file
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test test/giulia/inference/state_test.exs"
+
+# Run a specific test by line number
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test test/giulia/prompt/builder_test.exs:124"
+```
+
+## NEVER run `mix format` on the full project inside Docker
+
+If your host uses CRLF line endings (Windows), running `mix format` inside the
+Linux container converts every `.ex` and `.exs` file to LF, causing 100+ files
+to appear modified in `git diff` and spurious test failures.
+
+**If you need to format:** run `mix format` on the host, or format only the specific
+files you changed — never `mix format` on the full project from inside the container.
+
+## Verifying changes don't break tests
+
+Always follow this workflow when making code changes:
+
+1. **Baseline first**: `git stash`, run full test suite, record exact failure count + which modules
+2. **Restore and test**: `git stash pop`, run full test suite again
+3. **Compare module-by-module**: same modules + same failure count = zero regressions
+4. **Never assume**: don't claim failures are "pre-existing" without the before/after proof
+
+```bash
+# Using the isolated test environment (recommended):
+
+# Step 1: Baseline
+git stash
+docker compose -f docker-compose.test.yml run --rm giulia-test 2>&1 | tail -5
+
+# Step 2: After changes
+git stash pop
+docker compose -f docker-compose.test.yml run --rm giulia-test 2>&1 | tail -5
+
+# Step 3: Compare (should show same failure modules, same counts)
 ```
 
 ## Why Tests Only Work in Docker
 
 1. **EXLA** (ML backend for Nx) doesn't compile on Windows — no precompiled binaries for `x86_64-windows`
 2. The Docker image has a working Linux EXLA build with CPU target
-3. Tests **must** run from `/projects/Giulia` (the live-mounted volume), NOT from `/app` (baked-in image copy)
+3. Tests **must** run from the live-mounted volume, NOT from `/app` (baked-in image copy)
 
 ## Critical Rules
 
-### Always use `/projects/Giulia`, never `/app`
+### Always use the mounted source path, never `/app`
 
 The Dockerfile copies source into `/app` at build time. That's a **frozen snapshot**.
-Your live edits on the host are mounted at `/projects/Giulia`.
+Your live edits are mounted under `/projects/` (the path depends on your
+`GIULIA_PROJECTS_PATH` setting in `docker-compose.yml`). For the exec approach,
+always `cd` to the mounted path before running tests.
 
 ```bash
 # WRONG — runs stale code from image build time
-docker compose exec giulia-daemon bash -c "MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "MIX_ENV=test mix test"
 
 # CORRECT — runs live code from host mount
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose exec giulia-worker bash -c "cd /projects/YourProject && MIX_ENV=test mix test"
 ```
 
-### Always set `MIX_ENV=test`
+The isolated test environment (`docker-compose.test.yml`) handles this automatically
+via the `test-entrypoint.sh` script.
+
+### Always set `MIX_ENV=test` (exec approach only)
 
 Without it, the app tries to start Bandit on port 4000, which conflicts with the running daemon.
 The `application.ex` skips the HTTP endpoint when `MIX_ENV=test`:
 
 ```elixir
-# lib/giulia/application.ex, line ~116
 children =
   if Mix.env() == :test do
     base_children  # no Bandit
@@ -61,13 +121,7 @@ children =
   end
 ```
 
-### The daemon must be running
-
-Tests run inside the existing container via `docker compose exec`. Start it first:
-
-```bash
-docker compose up -d
-```
+The isolated test environment sets `MIX_ENV=test` automatically.
 
 ## Test File Conventions
 
@@ -78,9 +132,17 @@ docker compose up -d
 - All tests use `use ExUnit.Case, async: true` unless they need shared state (GenServers, ETS)
 - Use `Code.ensure_loaded!(Module)` before `function_exported?/3` checks — aliases don't trigger module loading
 
-## Current Coverage (Build 122)
+## Current Coverage (Build 138)
 
-**84 test files**, **1534 tests**, **0 failures**
+**84+ test files**, **1707 tests**
+
+### Known Failures
+
+**Build 138: 1,707 tests, 0 failures** (isolated test environment).
+
+All previously known failures (ArcadeDB setup, CubDB corruption, ETS state pollution,
+private function tests) were fixed in Build 138. If you see failures, they are real
+regressions — investigate before merging.
 
 ### Test Categories
 
@@ -279,7 +341,7 @@ use Plug.Test
 alias Giulia.Daemon.Endpoint
 
 @opts Endpoint.init([])
-@project_path "/projects/Giulia"
+@project_path "/projects/Giulia"  # matches the volume mount in docker-compose.yml
 
 # Simulate GET with query params
 defp get(path, query_params \\ %{}) do
