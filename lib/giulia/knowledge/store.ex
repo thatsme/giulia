@@ -190,9 +190,15 @@ defmodule Giulia.Knowledge.Store do
     # Persist graph to CubDB (Build 102-104)
     Giulia.Persistence.Writer.persist_graph(project_path, graph)
 
-    # Snapshot to ArcadeDB L2 (async, best-effort)
+    # Notify ArcadeDB Indexer that the graph is ready (async, best-effort).
+    # Uses send/2 instead of a direct function call to avoid a circular dependency
+    # (Store -> Indexer -> Store). The Indexer handles {:graph_ready, ...} in handle_info.
     build_id = Giulia.Version.build()
-    Task.start(fn -> Giulia.Storage.Arcade.Indexer.snapshot(project_path, build_id) end)
+
+    case GenServer.whereis(Giulia.Storage.Arcade.Indexer) do
+      nil -> :ok
+      pid -> send(pid, {:graph_ready, project_path, build_id})
+    end
 
     # Eagerly compute heavy metrics in background
     store_pid = self()

@@ -2,25 +2,37 @@ defmodule Giulia.Storage.Arcade.Indexer do
   @moduledoc """
   Snapshots the completed knowledge graph to ArcadeDB after {:graph_ready}.
 
-  Called once per build — writes a complete, tagged snapshot of modules,
-  functions, and dependency edges. Never touches in-flight state.
+  Listens for `{:graph_ready, project_path, build_id}` messages from
+  Knowledge.Store and writes a complete, tagged snapshot of modules,
+  functions, and dependency edges to ArcadeDB.
 
-  Reads from Knowledge.Store (ETS) so it's decoupled from the graph
-  construction pipeline and can be called from anywhere: the {:graph_ready}
-  hook, an HTTP endpoint, or a manual iex trigger.
+  This module is a GenServer registered by name. Knowledge.Store sends
+  a message via `send/2` (not a direct function call) to avoid a circular
+  dependency: Store -> Indexer -> Store.
+
+  The `snapshot/2` function can also be called directly from iex or tests.
   """
+
+  use GenServer
 
   require Logger
 
   alias Giulia.Storage.Arcade.Client
   alias Giulia.Knowledge.Store
 
+  # ============================================================================
+  # Public API
+  # ============================================================================
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
   @doc """
   Snapshot the current knowledge graph state for a project to ArcadeDB.
 
   Reads modules, functions, and dependency edges from Knowledge.Store,
-  writes them as a tagged build snapshot. Runs synchronously — caller
-  should wrap in `Task.start/1` if async is desired.
+  writes them as a tagged build snapshot. Runs synchronously.
   """
   @spec snapshot(String.t(), integer()) :: {:ok, map()} | {:error, term()}
   def snapshot(project_path, build_id) do
@@ -49,7 +61,27 @@ defmodule Giulia.Storage.Arcade.Indexer do
     end
   end
 
-  # --- Writers ---
+  # ============================================================================
+  # GenServer Callbacks
+  # ============================================================================
+
+  @impl true
+  def init(_opts) do
+    {:ok, %{}}
+  end
+
+  @impl true
+  def handle_info({:graph_ready, project_path, build_id}, state) do
+    # Run snapshot in a separate task to avoid blocking the GenServer
+    Task.start(fn -> snapshot(project_path, build_id) end)
+    {:noreply, state}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  # ============================================================================
+  # Writers
+  # ============================================================================
 
   defp write_modules(project, modules, build_id) do
     results = Enum.map(modules, fn mod ->
