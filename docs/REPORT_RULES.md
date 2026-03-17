@@ -284,6 +284,10 @@ Function-level edges: <count> MFA→MFA call edges
   they share structural patterns, not duplicated logic. Flag these as "structural similarity,
   not duplication" when the cluster members are all accessors/delegates.
 - If EmbeddingServing is unavailable (503), note: "Semantic duplicates unavailable — EmbeddingServing not loaded"
+- **Transitive cluster bug (fixed Build 138+)**: pre-Build-138 versions may return
+  mega-clusters with avg_similarity well below the threshold due to BFS transitive
+  expansion. If you see a cluster with avg_similarity < threshold, discard it — it's
+  a chain artifact, not real duplication.
 
 ### Section 12: Architecture Health
 
