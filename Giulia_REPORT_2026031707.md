@@ -13,7 +13,13 @@
 | Callbacks | 7 |
 | Graph vertices | 1,613 (141 modules + 1,472 functions) |
 | Graph edges | 1,977 |
-| Connected components | 426 |
+| Connected components | 426 (*) |
+
+(*) Component count is computed over the full module+function graph (1,613 vertices).
+Most function-level vertices are leaves with a single edge to their parent module,
+creating hundreds of trivial 1-2 vertex components. The module-only subgraph
+(141 vertices, ~500 module-level edges) has far fewer components. The 426 number
+reflects graph fragmentation at the function level, not architectural isolation.
 | Circular dependencies | 5 |
 | Behaviour fractures | 0 |
 | Orphan specs | 0 |
@@ -82,18 +88,25 @@ depends on it but it depends on nothing.
 
 ## Section 4: Change Risk (Top 10)
 
-| Rank | Module | Score | Key Driver |
-|---|---|---|---|
-| 1 | Context.Store | 2,774 | Centrality 36 x 33 functions x low complexity = massive surface area |
-| 2 | Knowledge.Store | 1,760 | Centrality 18 x 37 functions x moderate complexity |
-| 3 | Inference.State | 1,729 | Centrality 17 x 56 functions — highest function count in project |
-| 4 | Tools.Registry | 1,292 | Centrality 32 x 10 functions — many dependents, small API |
-| 5 | AST.Extraction | 227 | Low centrality, but 25 functions with high complexity (98) |
-| 6 | Context.Store (Query) | 197 | Sub-module of #1, inherits risk |
-| 7 | Prompt.Builder | 155 | 23 functions, complexity 57 — LLM prompt construction |
-| 8 | SemanticIndex | 155 | 24 functions, complexity 55, high coupling to Nx |
-| 9 | Knowledge.Store (Reader) | 153 | 35 functions delegating from Store |
-| 10 | Tools.PatchFunction | 150 | 22 functions, complexity 64 — AST patching logic |
+**Formula**: `change_risk = centrality * function_count * (1 + complexity/100 + max_coupling/50)`
+
+This is multiplicative — a module with high centrality AND high function count AND high
+complexity scores exponentially higher. The gap between #1 (2,774) and #5 (227) is not a
+bug in the formula; it reflects that data hubs compound risk across all three dimensions
+while leaf modules only score on one.
+
+| Rank | Module | Score | Centrality | Functions | Complexity | Coupling | Key Driver |
+|---|---|---|---|---|---|---|---|
+| 1 | Context.Store | 2,774 | 36 | 33 | 28 | 9 | Fan-in 36 x 33 functions = massive surface area |
+| 2 | Knowledge.Store | 1,760 | 18 | 37 | 29 | 13 | 37 functions (highest non-State count) |
+| 3 | Inference.State | 1,729 | 17 | 56 | 19 | 13 | 56 functions — highest function count in project |
+| 4 | Tools.Registry | 1,292 | 32 | 10 | 19 | 8 | Fan-in 32 but only 10 functions — small API |
+| 5 | AST.Extraction | 227 | 2 | 25 | 98 | 31 | Low centrality, high complexity (98) |
+| 6 | Context.Store.Query | 197 | 1 | 15 | 30 | 25 | Sub-module of #1 |
+| 7 | Prompt.Builder | 155 | 6 | 23 | 57 | 25 | LLM prompt construction |
+| 8 | SemanticIndex | 155 | 7 | 24 | 55 | 49 | High coupling to Bumblebee/Nx |
+| 9 | Knowledge.Store.Reader | 153 | 1 | 35 | 54 | 51 | 35 delegation functions |
+| 10 | Tools.PatchFunction | 150 | 0 | 22 | 64 | 15 | Zero fan-in — safe to refactor |
 
 The top 3 are all **data hubs** (ETS store, graph store, state struct). Their risk is driven
 by surface area (many dependents x many functions), not by poor design.
@@ -269,17 +282,21 @@ Transaction struct internals — acceptable, as State is the container for Trans
 
 ## Section 11: Semantic Duplicates
 
-2 clusters found at >= 85% similarity threshold.
+2 clusters returned by `/api/knowledge/duplicates?threshold=0.85`.
 
 **Cluster 1** (3 members, 92.5% avg similarity): SkillRouter macro functions
 (`__using__/1`, `__before_compile__/1`, `__skills__/0`). Structural similarity from
 macro expansion — not duplication.
 
-**Cluster 2** (928 members, 5.3% avg similarity): All tool module functions
-(`name/0`, `description/0`, `parameters/0`, `execute/2` across 22 tools).
-Structural similarity from shared interface convention — not duplication.
+**Cluster 2** (928 members, 5.3% avg similarity): **Discarded — below threshold.**
+The clustering algorithm returned this cluster despite its internal similarity (5.3%)
+being far below the requested 85% threshold. This is a bug in the duplicate detection
+endpoint — it should filter clusters whose `avg_similarity` falls below the requested
+threshold. The 928 members represent nearly all functions in the project grouped into
+a single junk cluster. Filed for fix in a future build.
 
-**Genuinely duplicated logic: none detected.**
+**Genuinely duplicated logic: none detected.** Only 1 valid cluster (macro structural
+similarity), no real code duplication.
 
 ---
 
@@ -354,24 +371,26 @@ state through these functions. Adding `@spec` to the remaining 37 unspecced func
 catch type errors at compile time via Dialyzer. Expected effort: 2-3 hours (functions are
 simple getters/setters).
 
-**2. Add specs to Knowledge.Analyzer** (33 public functions, 0% coverage, 3 dependents)
+**2. Break Knowledge.Store <-> Arcade.Indexer cycle** (cycle #5)
 
-Pure facade — every function is a one-line delegation. Adding specs here documents the
-API contract for callers without needing to read the target modules. Expected effort: 1 hour
-(copy specs from Topology, Metrics, Behaviours, Insights).
+Store triggers Indexer on graph rebuild, Indexer reads from Store. Going public means
+contributors will hit this cycle when modifying either module. Use a `{:graph_ready}`
+message (already partially implemented) instead of a direct function call to decouple them.
+Expected effort: 1 hour.
 
 ### P2: Improvement Opportunities
 
-**3. Break AST.Analysis <-> AST.Processor cycle**
+**3. Add specs to Knowledge.Analyzer** (33 public functions, 0% coverage, 3 dependents)
+
+Pure facade with only 3 dependents — low risk, but 0% spec coverage looks bad in a
+public repo. Every function is a one-line delegation, so specs can be copied from the
+target modules (Topology, Metrics, Behaviours, Insights). Expected effort: 1 hour.
+
+**4. Break AST.Analysis <-> AST.Processor cycle** (cycle #4)
 
 Processor delegates to Analysis, but Analysis calls back into Processor for `parse/1`.
 Extract the shared `parse/1` into a third module (e.g., `AST.Parser`) to break the cycle.
 Low risk — both modules are well-tested.
-
-**4. Break Knowledge.Store <-> Arcade.Indexer cycle**
-
-Store triggers Indexer on graph rebuild, Indexer reads from Store. Use a `{:graph_ready}`
-message (already partially implemented) instead of a direct function call to decouple them.
 
 **5. Split Client.Renderer (complexity 66, 9 functions)**
 
