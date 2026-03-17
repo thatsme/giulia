@@ -86,6 +86,9 @@ defmodule Giulia.Application do
       # Knowledge graph (depends on Store + Indexer)
       Giulia.Knowledge.Store,
 
+      # ArcadeDB L2: Indexer (listens for {:graph_ready} from Knowledge.Store)
+      Giulia.Storage.Arcade.Indexer,
+
       # ArcadeDB consolidation (periodic cross-build analysis)
       Giulia.Storage.Arcade.Consolidator
     ]
