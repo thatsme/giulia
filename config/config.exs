@@ -27,6 +27,19 @@ config :giulia,
   ollama_model: "qwen2.5:32b"
 
 # =============================================================================
+# ArcadeDB (L2 persistent graph storage)
+# =============================================================================
+
+config :giulia,
+  arcadedb_url: System.get_env("ARCADEDB_URL",
+    if(System.get_env("GIULIA_IN_CONTAINER") == "true",
+      do: "http://arcadedb:2480",
+      else: "http://localhost:2480")),
+  arcadedb_db: System.get_env("ARCADEDB_DB", "giulia"),
+  arcadedb_user: System.get_env("ARCADEDB_USER", "root"),
+  arcadedb_password: System.get_env("ARCADEDB_PASSWORD", "playwithdata")
+
+# =============================================================================
 # Logging
 # =============================================================================
 

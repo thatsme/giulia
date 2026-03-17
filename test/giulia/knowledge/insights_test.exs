@@ -4,9 +4,9 @@ defmodule Giulia.Knowledge.InsightsTest do
   alias Giulia.Knowledge.Insights
   alias Giulia.Context.Store
 
-  @test_path "/tmp/insights_test_#{:rand.uniform(10000)}"
-
   setup do
+    test_path = "/tmp/insights_test_#{System.unique_integer([:positive])}"
+
     # Seed ETS with test AST data
     ast_with_orphan = %{
       modules: [%{name: "MyApp.Accounts", line: 1, moduledoc: nil}],
@@ -50,12 +50,12 @@ defmodule Giulia.Knowledge.InsightsTest do
       complexity: 2
     }
 
-    Store.put_ast(@test_path, "lib/my_app/accounts.ex", ast_with_orphan)
-    Store.put_ast(@test_path, "lib/my_app/repo.ex", ast_clean)
+    Store.put_ast(test_path, "lib/my_app/accounts.ex", ast_with_orphan)
+    Store.put_ast(test_path, "lib/my_app/repo.ex", ast_clean)
 
-    on_exit(fn -> Store.clear_asts(@test_path) end)
+    on_exit(fn -> Store.clear_asts(test_path) end)
 
-    %{path: @test_path}
+    %{path: test_path}
   end
 
   describe "orphan_specs/1" do
@@ -69,7 +69,7 @@ defmodule Giulia.Knowledge.InsightsTest do
     end
 
     test "returns empty for project with no orphans" do
-      clean_path = "/tmp/insights_clean_#{:rand.uniform(10000)}"
+      clean_path = "/tmp/insights_clean_#{System.unique_integer([:positive])}"
 
       Store.put_ast(clean_path, "lib/clean.ex", %{
         modules: [%{name: "Clean", line: 1, moduledoc: nil}],
@@ -79,8 +79,9 @@ defmodule Giulia.Knowledge.InsightsTest do
         structs: [], docs: [], line_count: 5, complexity: 1
       })
 
+      on_exit(fn -> Store.clear_asts(clean_path) end)
+
       {:ok, %{orphans: [], count: 0}} = Insights.orphan_specs(clean_path)
-      Store.clear_asts(clean_path)
     end
   end
 
@@ -111,7 +112,7 @@ defmodule Giulia.Knowledge.InsightsTest do
         |> Graph.add_edge("A.foo/1", "B.bar/2")
         |> Graph.add_edge("B.bar/2", "C.baz/0")
 
-      {:ok, steps} = Insights.logic_flow(graph, @test_path, "A.foo/1", "C.baz/0")
+      {:ok, steps} = Insights.logic_flow(graph, "/tmp/insights_ephemeral", "A.foo/1", "C.baz/0")
       assert length(steps) == 3
       assert hd(steps).mfa == "A.foo/1"
       assert List.last(steps).mfa == "C.baz/0"
@@ -123,17 +124,17 @@ defmodule Giulia.Knowledge.InsightsTest do
         |> Graph.add_vertex("A.foo/1", :mfa)
         |> Graph.add_vertex("B.bar/2", :mfa)
 
-      {:ok, :no_path} = Insights.logic_flow(graph, @test_path, "A.foo/1", "B.bar/2")
+      {:ok, :no_path} = Insights.logic_flow(graph, "/tmp/insights_ephemeral", "A.foo/1", "B.bar/2")
     end
 
     test "returns error for missing from vertex" do
       graph = Graph.new() |> Graph.add_vertex("B.bar/2", :mfa)
-      {:error, {:not_found, "A.foo/1"}} = Insights.logic_flow(graph, @test_path, "A.foo/1", "B.bar/2")
+      {:error, {:not_found, "A.foo/1"}} = Insights.logic_flow(graph, "/tmp/insights_ephemeral", "A.foo/1", "B.bar/2")
     end
 
     test "returns error for missing to vertex" do
       graph = Graph.new() |> Graph.add_vertex("A.foo/1", :mfa)
-      {:error, {:not_found, "B.bar/2"}} = Insights.logic_flow(graph, @test_path, "A.foo/1", "B.bar/2")
+      {:error, {:not_found, "B.bar/2"}} = Insights.logic_flow(graph, "/tmp/insights_ephemeral", "A.foo/1", "B.bar/2")
     end
   end
 
@@ -141,13 +142,13 @@ defmodule Giulia.Knowledge.InsightsTest do
     test "returns error for unknown action" do
       graph = Graph.new()
       {:error, {:unknown_action, "nope"}} =
-        Insights.pre_impact_check(graph, @test_path, %{"action" => "nope"})
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{"action" => "nope"})
     end
 
     test "returns error for invalid target format" do
       graph = Graph.new()
       {:error, {:invalid_target, "bad"}} =
-        Insights.pre_impact_check(graph, @test_path, %{
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{
           "action" => "rename_function",
           "module" => "Foo",
           "target" => "bad",
@@ -158,7 +159,7 @@ defmodule Giulia.Knowledge.InsightsTest do
     test "returns error when MFA not in graph" do
       graph = Graph.new()
       {:error, {:not_found, "Foo.bar/2"}} =
-        Insights.pre_impact_check(graph, @test_path, %{
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{
           "action" => "rename_function",
           "module" => "Foo",
           "target" => "bar/2",
@@ -173,7 +174,7 @@ defmodule Giulia.Knowledge.InsightsTest do
         |> Graph.add_vertex("Foo", :module)
 
       {:ok, result} =
-        Insights.pre_impact_check(graph, @test_path, %{
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{
           "action" => "rename_function",
           "module" => "Foo",
           "target" => "bar/2",
@@ -193,7 +194,7 @@ defmodule Giulia.Knowledge.InsightsTest do
         |> Graph.add_vertex("Foo", :module)
 
       {:ok, result} =
-        Insights.pre_impact_check(graph, @test_path, %{
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{
           "action" => "remove_function",
           "module" => "Foo",
           "target" => "bar/1"
@@ -207,7 +208,7 @@ defmodule Giulia.Knowledge.InsightsTest do
     test "rename_module returns error when module not in graph" do
       graph = Graph.new()
       {:error, {:not_found, "Old"}} =
-        Insights.pre_impact_check(graph, @test_path, %{
+        Insights.pre_impact_check(graph, "/tmp/insights_ephemeral", %{
           "action" => "rename_module",
           "module" => "Old",
           "new_name" => "New"

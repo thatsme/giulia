@@ -40,3 +40,11 @@ giulia-*.tar
 # Windows artifacts
 nul
 
+# Claude Code local settings
+.claude/
+
+# Personal launch scripts — copy start-local.bat.example for your own
+start-local.bat
+
+# Generated reports (dynamic output, not source)
+/reports/

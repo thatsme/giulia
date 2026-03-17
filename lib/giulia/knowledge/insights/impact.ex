@@ -58,7 +58,9 @@ defmodule Giulia.Knowledge.Insights.Impact do
                   nil -> nil
                   f -> f.line
                 end
+
               {file, func_line}
+
             _ ->
               {nil, nil}
           end
@@ -82,12 +84,14 @@ defmodule Giulia.Knowledge.Insights.Impact do
         if not Graph.has_vertex?(graph, mfa) do
           {:error, {:not_found, mfa}}
         else
-          callers = Graph.in_neighbors(graph, mfa)
-                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+          callers =
+            Graph.in_neighbors(graph, mfa)
+            |> Enum.filter(fn v -> String.contains?(v, "/") end)
 
-          affected = Enum.map(callers, fn caller_mfa ->
-            enrich_mfa_vertex(caller_mfa, project_path)
-          end)
+          affected =
+            Enum.map(callers, fn caller_mfa ->
+              enrich_mfa_vertex(caller_mfa, project_path)
+            end)
 
           affected_modules =
             affected
@@ -101,18 +105,19 @@ defmodule Giulia.Knowledge.Insights.Impact do
 
           warnings = build_hub_warnings(graph, affected_modules)
 
-          {:ok, %{
-            action: "rename_function",
-            target: mfa,
-            new_name: new_mfa,
-            affected_callers: affected,
-            affected_count: length(affected),
-            affected_modules: length(affected_modules),
-            risk_score: risk,
-            risk_level: risk_level(risk),
-            phases: phases,
-            warnings: warnings
-          }}
+          {:ok,
+           %{
+             action: "rename_function",
+             target: mfa,
+             new_name: new_mfa,
+             affected_callers: affected,
+             affected_count: length(affected),
+             affected_modules: length(affected_modules),
+             risk_score: risk,
+             risk_level: risk_level(risk),
+             phases: phases,
+             warnings: warnings
+           }}
         end
 
       :error ->
@@ -128,15 +133,18 @@ defmodule Giulia.Knowledge.Insights.Impact do
         if not Graph.has_vertex?(graph, mfa) do
           {:error, {:not_found, mfa}}
         else
-          callers = Graph.in_neighbors(graph, mfa)
-                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+          callers =
+            Graph.in_neighbors(graph, mfa)
+            |> Enum.filter(fn v -> String.contains?(v, "/") end)
 
-          callees = Graph.out_neighbors(graph, mfa)
-                    |> Enum.filter(fn v -> String.contains?(v, "/") end)
+          callees =
+            Graph.out_neighbors(graph, mfa)
+            |> Enum.filter(fn v -> String.contains?(v, "/") end)
 
-          affected = Enum.map(callers, fn caller_mfa ->
-            enrich_mfa_vertex(caller_mfa, project_path)
-          end)
+          affected =
+            Enum.map(callers, fn caller_mfa ->
+              enrich_mfa_vertex(caller_mfa, project_path)
+            end)
 
           affected_modules =
             affected
@@ -148,29 +156,31 @@ defmodule Giulia.Knowledge.Insights.Impact do
 
           warnings =
             build_hub_warnings(graph, affected_modules) ++
-            if length(callers) > 0 do
-              ["BREAKING: #{length(callers)} callers will break if #{mfa} is removed"]
-            else
-              []
-            end
+              if length(callers) > 0 do
+                ["BREAKING: #{length(callers)} callers will break if #{mfa} is removed"]
+              else
+                []
+              end
 
-          orphaned = Enum.filter(callees, fn callee ->
-            callers_of_callee = Graph.in_neighbors(graph, callee)
-            callers_of_callee == [mfa] or callers_of_callee == []
-          end)
+          orphaned =
+            Enum.filter(callees, fn callee ->
+              callers_of_callee = Graph.in_neighbors(graph, callee)
+              callers_of_callee == [mfa] or callers_of_callee == []
+            end)
 
-          {:ok, %{
-            action: "remove_function",
-            target: mfa,
-            affected_callers: affected,
-            affected_count: length(affected),
-            affected_modules: length(affected_modules),
-            potentially_orphaned: orphaned,
-            risk_score: risk,
-            risk_level: risk_level(risk),
-            phases: phases,
-            warnings: warnings
-          }}
+          {:ok,
+           %{
+             action: "remove_function",
+             target: mfa,
+             affected_callers: affected,
+             affected_count: length(affected),
+             affected_modules: length(affected_modules),
+             potentially_orphaned: orphaned,
+             risk_score: risk,
+             risk_level: risk_level(risk),
+             phases: phases,
+             warnings: warnings
+           }}
         end
 
       :error ->
@@ -184,32 +194,39 @@ defmodule Giulia.Knowledge.Insights.Impact do
     else
       case Topology.dependents(graph, module) do
         {:ok, deps} ->
-          hub_penalty = case Topology.centrality(graph, module) do
-            {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> in_deg * 3
-            {:ok, %{in_degree: in_deg}} -> in_deg
-            _ -> 0
-          end
-
-          affected = Enum.map(deps, fn dep ->
-            case Giulia.Context.Store.find_module(project_path, dep) do
-              {:ok, %{file: file}} -> %{module: dep, file: file}
-              _ -> %{module: dep, file: nil}
+          hub_penalty =
+            case Topology.centrality(graph, module) do
+              {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> in_deg * 3
+              {:ok, %{in_degree: in_deg}} -> in_deg
+              _ -> 0
             end
-          end)
+
+          affected =
+            Enum.map(deps, fn dep ->
+              case Giulia.Context.Store.find_module(project_path, dep) do
+                {:ok, %{file: file}} -> %{module: dep, file: file}
+                _ -> %{module: dep, file: nil}
+              end
+            end)
 
           risk = length(deps) * 5 + hub_penalty
-          warnings = if hub_penalty > 30, do: ["HUB MODULE: #{module} has #{hub_penalty} hub penalty"], else: []
 
-          {:ok, %{
-            action: "rename_module",
-            target: module,
-            new_name: new_name,
-            affected_dependents: affected,
-            affected_count: length(affected),
-            risk_score: risk,
-            risk_level: risk_level(risk),
-            warnings: warnings
-          }}
+          warnings =
+            if hub_penalty > 30,
+              do: ["HUB MODULE: #{module} has #{hub_penalty} hub penalty"],
+              else: []
+
+          {:ok,
+           %{
+             action: "rename_module",
+             target: module,
+             new_name: new_name,
+             affected_dependents: affected,
+             affected_count: length(affected),
+             risk_score: risk,
+             risk_level: risk_level(risk),
+             warnings: warnings
+           }}
 
         {:error, reason} ->
           {:error, reason}
@@ -229,34 +246,55 @@ defmodule Giulia.Knowledge.Insights.Impact do
       affected_callers
       |> Enum.map(& &1.module)
       |> Enum.uniq()
-      |> Enum.reject(& &1 == target_module)
+      |> Enum.reject(&(&1 == target_module))
 
     affected_set = MapSet.new(caller_modules)
 
     {leaves, interconnected} =
       Enum.split_with(caller_modules, fn mod ->
-        deps = case Graph.out_neighbors(graph, mod) do
-          neighbors when is_list(neighbors) -> neighbors
-          _ -> []
-        end
+        deps =
+          case Graph.out_neighbors(graph, mod) do
+            neighbors when is_list(neighbors) -> neighbors
+            _ -> []
+          end
 
         not Enum.any?(deps, fn dep -> MapSet.member?(affected_set, dep) and dep != mod end)
       end)
 
     phases = [phase1]
-    phases = if leaves != [], do: phases ++ [%{phase: 2, description: "Update leaf callers", modules: Enum.sort(leaves)}], else: phases
-    phases = if interconnected != [], do: phases ++ [%{phase: 3, description: "Update interconnected callers", modules: Enum.sort(interconnected)}], else: phases
+
+    phases =
+      if leaves != [],
+        do:
+          phases ++ [%{phase: 2, description: "Update leaf callers", modules: Enum.sort(leaves)}],
+        else: phases
+
+    phases =
+      if interconnected != [],
+        do:
+          phases ++
+            [
+              %{
+                phase: 3,
+                description: "Update interconnected callers",
+                modules: Enum.sort(interconnected)
+              }
+            ],
+        else: phases
+
     phases
   end
 
   defp impact_risk(caller_count, module_count, graph, affected_modules) do
     hub_penalty =
-      Enum.sum(Enum.map(affected_modules, fn mod ->
-        case Topology.centrality(graph, mod) do
-          {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> 10
-          _ -> 0
-        end
-      end))
+      Enum.sum(
+        Enum.map(affected_modules, fn mod ->
+          case Topology.centrality(graph, mod) do
+            {:ok, %{in_degree: in_deg}} when in_deg >= 10 -> 10
+            _ -> 0
+          end
+        end)
+      )
 
     caller_count * 2 + module_count * 5 + hub_penalty
   end
@@ -270,6 +308,7 @@ defmodule Giulia.Knowledge.Insights.Impact do
       case Topology.centrality(graph, mod) do
         {:ok, %{in_degree: in_deg}} when in_deg >= 10 ->
           ["HUB CALLER: #{mod} has #{in_deg} dependents"]
+
         _ ->
           []
       end
@@ -279,7 +318,7 @@ defmodule Giulia.Knowledge.Insights.Impact do
   # Parse "func/arity" or "func_name/2" into {:ok, "func", 2}
   defp parse_func_target(target) do
     case Regex.run(~r/^(.+)\/(\d+)$/, target) do
-      [_, func, arity_str] -> {:ok, func, String.to_integer(arity_str)}
+      [_, func, arity_str] -> {:ok, func, elem(Integer.parse(arity_str), 0)}
       _ -> :error
     end
   end
@@ -288,7 +327,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
   defp parse_mfa_vertex(mfa) do
     case Regex.run(~r/^(.+)\.([^.]+)\/(\d+)$/, mfa) do
       [_, module, function, arity_str] ->
-        {:ok, module, function, String.to_integer(arity_str)}
+        {:ok, module, function, elem(Integer.parse(arity_str), 0)}
+
       _ ->
         :error
     end

@@ -17,11 +17,11 @@ defmodule Giulia.Knowledge.PartialGraphTest do
   alias Giulia.Context.Store
   alias Giulia.Knowledge.{Topology, Insights}
 
-  @project "/tmp/partial_graph_#{:rand.uniform(100_000)}"
-
   setup do
-    on_exit(fn -> Store.clear_asts(@project) end)
-    :ok
+    # Unique project path per test to prevent cross-test pollution
+    project = "/tmp/partial_graph_#{System.unique_integer([:positive])}"
+    on_exit(fn -> Store.clear_asts(project) end)
+    %{project: project}
   end
 
   # ============================================================================
@@ -63,12 +63,12 @@ defmodule Giulia.Knowledge.PartialGraphTest do
       assert {:error, _} = result
     end
 
-    test "orphan_specs on empty project returns empty" do
-      {:ok, %{orphans: [], count: 0}} = Insights.orphan_specs(@project)
+    test "orphan_specs on empty project returns empty", %{project: project} do
+      {:ok, %{orphans: [], count: 0}} = Insights.orphan_specs(project)
     end
 
-    test "api_surface on empty project returns empty" do
-      {:ok, %{modules: [], count: 0}} = Insights.api_surface(@project)
+    test "api_surface on empty project returns empty", %{project: project} do
+      {:ok, %{modules: [], count: 0}} = Insights.api_surface(project)
     end
   end
 
@@ -77,9 +77,9 @@ defmodule Giulia.Knowledge.PartialGraphTest do
   # ============================================================================
 
   describe "partial index — module references missing module" do
-    setup do
+    setup %{project: project} do
       # Index module A that depends on module B, but don't index B
-      Store.put_ast(@project, "lib/a.ex", %{
+      Store.put_ast(project, "lib/a.ex", %{
         modules: [%{name: "App.A", line: 1, moduledoc: nil}],
         functions: [
           %{name: :call_b, arity: 0, type: :def, line: 3}
@@ -93,19 +93,19 @@ defmodule Giulia.Knowledge.PartialGraphTest do
       :ok
     end
 
-    test "list_modules only shows indexed modules" do
-      modules = Store.list_modules(@project)
+    test "list_modules only shows indexed modules", %{project: project} do
+      modules = Store.list_modules(project)
       module_names = Enum.map(modules, & &1.name)
       assert "App.A" in module_names
       refute "App.B" in module_names
     end
 
-    test "find_module returns :not_found for unindexed module" do
-      assert :not_found = Store.find_module(@project, "App.B")
+    test "find_module returns :not_found for unindexed module", %{project: project} do
+      assert :not_found = Store.find_module(project, "App.B")
     end
 
-    test "orphan_specs works with partial data" do
-      {:ok, result} = Insights.orphan_specs(@project)
+    test "orphan_specs works with partial data", %{project: project} do
+      {:ok, result} = Insights.orphan_specs(project)
       # Should not crash — A has no specs, so no orphans
       assert result.count == 0
     end
@@ -150,9 +150,9 @@ defmodule Giulia.Knowledge.PartialGraphTest do
   # ============================================================================
 
   describe "stale data — Store has old AST, graph references removed function" do
-    test "find_function returns empty for removed function" do
+    test "find_function returns empty for removed function", %{project: project} do
       # Index with foo/1
-      Store.put_ast(@project, "lib/stale.ex", %{
+      Store.put_ast(project, "lib/stale.ex", %{
         modules: [%{name: "App.Stale", line: 1, moduledoc: nil}],
         functions: [%{name: :foo, arity: 1, type: :def, line: 3}],
         imports: [], types: [], specs: [], callbacks: [],
@@ -161,7 +161,7 @@ defmodule Giulia.Knowledge.PartialGraphTest do
       })
 
       # Now overwrite with different functions (simulating file edit)
-      Store.put_ast(@project, "lib/stale.ex", %{
+      Store.put_ast(project, "lib/stale.ex", %{
         modules: [%{name: "App.Stale", line: 1, moduledoc: nil}],
         functions: [%{name: :bar, arity: 0, type: :def, line: 3}],
         imports: [], types: [], specs: [], callbacks: [],
@@ -170,11 +170,11 @@ defmodule Giulia.Knowledge.PartialGraphTest do
       })
 
       # foo should no longer be found
-      result = Store.find_function(@project, :foo, 1)
+      result = Store.find_function(project, :foo, 1)
       assert result == []
 
       # bar should be found
-      result = Store.find_function(@project, :bar, 0)
+      result = Store.find_function(project, :bar, 0)
       assert length(result) == 1
     end
   end

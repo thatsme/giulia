@@ -65,23 +65,27 @@ defmodule Giulia.Prompt.Builder do
         env_model = System.get_env("GIULIA_LM_STUDIO_MODEL")
         model_ids = Enum.map(models, &Map.get(&1, "id", "unknown"))
 
-        model_id = if env_model do
-          # Find model matching env var (partial match: "qwen/qwen2.5-coder-14b" matches "qwen2.5-coder-14b")
-          env_lower = String.downcase(env_model)
-          Enum.find(model_ids, List.first(model_ids), fn id ->
-            id_lower = String.downcase(id)
-            String.contains?(id_lower, env_lower) or String.contains?(env_lower, id_lower)
-          end)
-        else
-          List.first(model_ids)
-        end
+        model_id =
+          if env_model do
+            # Find model matching env var (partial match: "qwen/qwen2.5-coder-14b" matches "qwen2.5-coder-14b")
+            env_lower = String.downcase(env_model)
+
+            Enum.find(model_ids, List.first(model_ids), fn id ->
+              id_lower = String.downcase(id)
+              String.contains?(id_lower, env_lower) or String.contains?(env_lower, id_lower)
+            end)
+          else
+            List.first(model_ids)
+          end
 
         {detect_model_tier(model_id), model_id}
 
       _ ->
         # Can't reach LM Studio, fall back to env var
-        model_name = System.get_env("GIULIA_LM_STUDIO_MODEL") ||
-                     Application.get_env(:giulia, :lm_studio_model, "unknown")
+        model_name =
+          System.get_env("GIULIA_LM_STUDIO_MODEL") ||
+            Application.get_env(:giulia, :lm_studio_model, "unknown")
+
         {detect_model_tier(model_name), model_name}
     end
   rescue
@@ -105,11 +109,12 @@ defmodule Giulia.Prompt.Builder do
     # Extract parameter count from model name (e.g., "14b", "3b", "24b", "32b")
     case Regex.run(~r/(\d+)b/i, String.downcase(model_name)) do
       [_, size_str] ->
-        size = String.to_integer(size_str)
+        {size, _} = Integer.parse(size_str)
+
         cond do
-          size <= 7  -> :small
+          size <= 7 -> :small
           size <= 16 -> :medium
-          true       -> :large
+          true -> :large
         end
 
       nil ->
@@ -489,9 +494,12 @@ defmodule Giulia.Prompt.Builder do
 
     [
       %{role: "system", content: system_prompt}
-    ] ++ briefing_msg ++ history ++ [
-      %{role: "user", content: user_prompt}
-    ]
+    ] ++
+      briefing_msg ++
+      history ++
+      [
+        %{role: "user", content: user_prompt}
+      ]
   end
 
   @doc """
@@ -509,11 +517,12 @@ defmodule Giulia.Prompt.Builder do
   @spec format_observation(String.t(), term()) :: String.t()
   def format_observation(tool_name, {:ok, content}) when is_binary(content) do
     # Truncate large outputs for small models
-    truncated = if String.length(content) > 2000 do
-      String.slice(content, 0, 2000) <> "\n... [truncated]"
-    else
-      content
-    end
+    truncated =
+      if String.length(content) > 2000 do
+        String.slice(content, 0, 2000) <> "\n... [truncated]"
+      else
+        content
+      end
 
     """
     Tool #{tool_name} succeeded:
@@ -584,7 +593,8 @@ defmodule Giulia.Prompt.Builder do
       (mentioned_modules ++ mentioned_files)
       |> Enum.map(&find_relevant_ast(&1, project_path))
       |> Enum.reject(&is_nil/1)
-      |> Enum.take(3)  # Max 3 files for small models
+      # Max 3 files for small models
+      |> Enum.take(3)
 
     if relevant_asts == [] do
       # No specific context, use project summary
@@ -643,8 +653,10 @@ defmodule Giulia.Prompt.Builder do
 
   defp format_parameters(_), do: "none"
 
-  defp build_transaction_section(true, staged_files) when is_list(staged_files) and staged_files != [] do
+  defp build_transaction_section(true, staged_files)
+       when is_list(staged_files) and staged_files != [] do
     file_list = Enum.map_join(staged_files, "\n", &"  - #{&1}")
+
     """
     ## TRANSACTION MODE (Active)
     Your writes are being STAGED, not written to disk.
@@ -674,7 +686,9 @@ defmodule Giulia.Prompt.Builder do
   defp build_transaction_section(_, _), do: ""
 
   defp format_constitution(nil), do: ""
-  defp format_constitution(%{taboos: taboos, patterns: patterns}) when taboos != [] or patterns != [] do
+
+  defp format_constitution(%{taboos: taboos, patterns: patterns})
+       when taboos != [] or patterns != [] do
     """
 
     ## Project Rules (from GIULIA.md)
@@ -682,12 +696,15 @@ defmodule Giulia.Prompt.Builder do
     #{if patterns != [], do: "Preferred patterns:\n" <> Enum.map_join(patterns, "\n", &"- #{&1}"), else: ""}
     """
   end
+
   defp format_constitution(_), do: ""
 
   defp format_constitution_minimal(nil), do: ""
+
   defp format_constitution_minimal(%{taboos: [first | _]}) do
     "\nTaboo: #{first}"
   end
+
   defp format_constitution_minimal(_), do: ""
 
   defp extract_module_mentions(task) do

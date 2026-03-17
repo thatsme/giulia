@@ -23,17 +23,19 @@ defmodule Giulia.Tools.GetFunction do
 
   @primary_key false
   embedded_schema do
-    field :file, :string
-    field :function_name, :string
-    field :arity, :integer
-    field :include_deps, :boolean, default: false
+    field(:file, :string)
+    field(:function_name, :string)
+    field(:arity, :integer)
+    field(:include_deps, :boolean, default: false)
   end
 
   @impl true
   def name, do: "get_function"
 
   @impl true
-  def description, do: "Extract a specific function from a file by name. More efficient than reading the whole file."
+  def description,
+    do:
+      "Extract a specific function from a file by name. More efficient than reading the whole file."
 
   @impl true
   def parameters do
@@ -70,7 +72,15 @@ defmodule Giulia.Tools.GetFunction do
   @impl true
   def execute(params, opts \\ [])
 
-  def execute(%__MODULE__{file: file, function_name: func_name, arity: arity, include_deps: include_deps}, opts) do
+  def execute(
+        %__MODULE__{
+          file: file,
+          function_name: func_name,
+          arity: arity,
+          include_deps: include_deps
+        },
+        opts
+      ) do
     sandbox = get_sandbox(opts)
 
     case PathSandbox.validate(sandbox, file) do
@@ -92,13 +102,15 @@ defmodule Giulia.Tools.GetFunction do
   # Handle when model sends "module" instead of "file" - look up the file from index
   def execute(%{"module" => module, "function_name" => _func_name} = params, opts) do
     project_path = opts[:project_path]
+
     case Giulia.Context.Store.find_module(project_path, module) do
       {:ok, %{file: file_path}} ->
         new_params = Map.put(params, "file", file_path) |> Map.delete("module")
         execute(new_params, opts)
 
       :not_found ->
-        {:error, "Module '#{module}' not found in project index. Use /scan first or provide 'file' parameter."}
+        {:error,
+         "Module '#{module}' not found in project index. Use /scan first or provide 'file' parameter."}
     end
   end
 
@@ -108,7 +120,7 @@ defmodule Giulia.Tools.GetFunction do
 
   defp do_extract(file_path, func_name, arity, include_deps) do
     # Convert function name to atom
-    func_atom = String.to_atom(func_name)
+    func_atom = String.to_existing_atom(func_name)
 
     case File.read(file_path) do
       {:ok, source} ->
@@ -126,23 +138,28 @@ defmodule Giulia.Tools.GetFunction do
     # Determine arity if not provided
     actual_arity = arity || find_function_arity(source, func_name)
 
-    result = if include_deps do
-      Processor.slice_function_with_deps(source, func_name, actual_arity || 0)
-    else
-      Processor.slice_function(source, func_name, actual_arity || 0)
-    end
+    result =
+      if include_deps do
+        Processor.slice_function_with_deps(source, func_name, actual_arity || 0)
+      else
+        Processor.slice_function(source, func_name, actual_arity || 0)
+      end
 
     case result do
       {:ok, func_source} ->
         # Add file context
-        header = "# From: #{Path.basename(file_path)}\n# Function: #{func_name}/#{actual_arity || "?"}\n\n"
+        header =
+          "# From: #{Path.basename(file_path)}\n# Function: #{func_name}/#{actual_arity || "?"}\n\n"
+
         {:ok, header <> func_source}
 
       {:error, :function_not_found} ->
         # Try to find similar function names
         similar = find_similar_functions(source, func_name)
+
         if similar != [] do
-          {:error, "Function '#{func_name}' not found. Did you mean: #{Enum.join(similar, ", ")}?"}
+          {:error,
+           "Function '#{func_name}' not found. Did you mean: #{Enum.join(similar, ", ")}?"}
         else
           {:error, "Function '#{func_name}' not found in #{file_path}"}
         end
@@ -159,6 +176,7 @@ defmodule Giulia.Tools.GetFunction do
     case Processor.parse(source) do
       {:ok, ast, _} ->
         functions = Processor.extract_functions(ast)
+
         case Enum.find(functions, &(to_string(&1.name) == func_str)) do
           %{arity: arity} -> arity
           nil -> nil
@@ -186,6 +204,7 @@ defmodule Giulia.Tools.GetFunction do
 
   defp parse_params(params) do
     changeset = changeset(params)
+
     if changeset.valid? do
       {:ok, Ecto.Changeset.apply_changes(changeset)}
     else

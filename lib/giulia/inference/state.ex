@@ -277,47 +277,119 @@ defmodule Giulia.Inference.State do
   # Delegated: Counter Operations (State.Counters)
   # ============================================================================
 
+  @spec increment_iteration(t()) :: t()
   defdelegate increment_iteration(state), to: Counters
+
+  @spec increment_failures(t()) :: t()
   defdelegate increment_failures(state), to: Counters
+
+  @spec reset_failures(t()) :: t()
   defdelegate reset_failures(state), to: Counters
+
+  @spec increment_syntax_failures(t()) :: t()
   defdelegate increment_syntax_failures(state), to: Counters
+
+  @spec set_syntax_failures(t(), non_neg_integer()) :: t()
   defdelegate set_syntax_failures(state, n), to: Counters
+
+  @spec increment_repeat(t()) :: t()
   defdelegate increment_repeat(state), to: Counters
+
+  @spec reset_repeat(t()) :: t()
   defdelegate reset_repeat(state), to: Counters
+
+  @spec increment_goal_blocks(t()) :: t()
   defdelegate increment_goal_blocks(state), to: Counters
+
+  @spec reset_goal_blocks(t()) :: t()
   defdelegate reset_goal_blocks(state), to: Counters
+
+  @spec set_max_iterations(t(), pos_integer()) :: t()
   defdelegate set_max_iterations(state, n), to: Counters
+
+  @spec bump_max_iterations(t(), pos_integer()) :: t()
   defdelegate bump_max_iterations(state, bonus), to: Counters
+
+  @spec max_iterations?(t()) :: boolean()
   defdelegate max_iterations?(state), to: Counters
+
+  @spec max_failures?(t()) :: boolean()
   defdelegate max_failures?(state), to: Counters
+
+  @spec iteration(t()) :: non_neg_integer()
   defdelegate iteration(state), to: Counters
+
+  @spec max_iterations(t()) :: pos_integer()
   defdelegate max_iterations(state), to: Counters
+
+  @spec consecutive_failures(t()) :: non_neg_integer()
   defdelegate consecutive_failures(state), to: Counters
+
+  @spec max_failures(t()) :: pos_integer()
   defdelegate max_failures(state), to: Counters
+
+  @spec repeat_count(t()) :: non_neg_integer()
   defdelegate repeat_count(state), to: Counters
+
+  @spec syntax_failures(t()) :: non_neg_integer()
   defdelegate syntax_failures(state), to: Counters
+
+  @spec goal_tracker_blocks(t()) :: non_neg_integer()
   defdelegate goal_tracker_blocks(state), to: Counters
 
   # ============================================================================
   # Delegated: Tracking (State.Tracking)
   # ============================================================================
 
+  @spec set_provider(t(), atom() | String.t(), module()) :: t()
   defdelegate set_provider(state, name, module), to: Tracking
+
+  @spec escalate_provider(t(), atom() | String.t(), module()) :: t()
   defdelegate escalate_provider(state, name, module), to: Tracking
+
+  @spec mark_escalated(t()) :: t()
   defdelegate mark_escalated(state), to: Tracking
+
+  @spec set_last_compile_error(t(), String.t() | nil) :: t()
   defdelegate set_last_compile_error(state, error), to: Tracking
+
+  @spec provider_name(t()) :: atom() | String.t() | nil
   defdelegate provider_name(state), to: Tracking
+
+  @spec provider_module(t()) :: module() | nil
   defdelegate provider_module(state), to: Tracking
+
+  @spec escalated?(t()) :: boolean()
   defdelegate escalated?(state), to: Tracking
+
+  @spec set_pending_verification(t(), boolean()) :: t()
   defdelegate set_pending_verification(state, bool), to: Tracking
+
+  @spec set_test_status(t(), :untested | :red | :green) :: t()
   defdelegate set_test_status(state, status), to: Tracking
+
+  @spec set_baseline(t(), :clean | :dirty | :unknown) :: t()
   defdelegate set_baseline(state, status), to: Tracking
+
+  @spec pending_verification?(t()) :: boolean()
   defdelegate pending_verification?(state), to: Tracking
+
+  @spec test_status(t()) :: :untested | :red | :green
   defdelegate test_status(state), to: Tracking
+
+  @spec baseline_status(t()) :: :clean | :dirty | :unknown
   defdelegate baseline_status(state), to: Tracking
+
+  @spec set_impact_map(t(), map()) :: t()
   defdelegate set_impact_map(state, map), to: Tracking
+
+  @spec track_modified_file(t(), String.t()) :: t()
   defdelegate track_modified_file(state, path), to: Tracking
+
+  @spec goal_coverage(t()) :: float()
   defdelegate goal_coverage(state), to: Tracking
+
+  @spec repeating?(t(), {String.t(), map()}) :: boolean()
   defdelegate repeating?(state, action), to: Tracking
 
   @spec stuck_in_loop?(t(), non_neg_integer()) :: boolean()

@@ -51,7 +51,9 @@ defmodule Giulia.AST.Patcher do
   def insert_function(source, module_name, function_source) do
     with {:ok, ast} <- Sourceror.parse_string(source),
          {:ok, func_ast} <- Sourceror.parse_string(function_source) do
-      module_parts = String.split(module_name, ".") |> Enum.map(&String.to_atom/1)
+      # Module name parts must be atoms for AST pattern matching (Sourceror).
+      # These are bounded by the project's compiled modules.
+      module_parts = String.split(module_name, ".") |> Enum.map(&String.to_existing_atom/1)
 
       {patched, _acc} =
         Macro.postwalk(ast, nil, fn
@@ -59,12 +61,25 @@ defmodule Giulia.AST.Patcher do
             case body_block do
               [do: {:__block__, block_meta, body}] ->
                 new_body = body ++ [func_ast]
-                node = {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, block_meta, new_body}]]}
+
+                node =
+                  {:defmodule, meta,
+                   [
+                     {:__aliases__, alias_meta, module_parts},
+                     [do: {:__block__, block_meta, new_body}]
+                   ]}
+
                 {node, acc}
 
               [{_do_key, body}] ->
                 # Single expression body — wrap in block
-                node = {:defmodule, meta, [{:__aliases__, alias_meta, module_parts}, [do: {:__block__, [], [body, func_ast]}]]}
+                node =
+                  {:defmodule, meta,
+                   [
+                     {:__aliases__, alias_meta, module_parts},
+                     [do: {:__block__, [], [body, func_ast]}]
+                   ]}
+
                 {node, acc}
 
               _ ->

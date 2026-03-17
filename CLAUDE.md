@@ -233,19 +233,51 @@ iex -S mix
 
 Tests MUST run inside Docker from the live-mounted volume. Never run from `/app`.
 
+### Isolated test environment (recommended)
+
+Uses `docker-compose.test.yml` — dedicated ArcadeDB, fresh volumes, `MIX_ENV=test` baked in.
+No interference with the running dev daemon.
+
 ```bash
 # Run ALL tests
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+docker compose -f docker-compose.test.yml run --rm giulia-test
 
 # Run single file
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs
 
 # Run specific test by line
-docker compose exec giulia-daemon bash -c "cd /projects/Giulia && MIX_ENV=test mix test test/giulia/foo/bar_test.exs:42"
+docker compose -f docker-compose.test.yml run --rm giulia-test test/giulia/foo/bar_test.exs:42
+
+# Clean up when done
+docker compose -f docker-compose.test.yml down -v
 ```
 
-**Why:** EXLA doesn't compile on Windows. `MIX_ENV=test` skips Bandit (port 4000 conflict).
+### Quick exec into dev container (less isolated)
+
+Faster (no startup), but the running daemon's CubDB/ETS state can cause flaky failures.
+
+```bash
+docker compose exec giulia-worker bash -c "cd /projects/Giulia && MIX_ENV=test mix test"
+```
+
+**Why Docker:** EXLA doesn't compile on Windows. `MIX_ENV=test` skips Bandit (port 4000 conflict).
 `/projects/Giulia` is the live host mount; `/app` is a stale image copy.
+
+### NEVER run `mix format` inside Docker
+
+The source is mounted from a Windows host (CRLF line endings). Running `mix format` inside
+the Linux container converts every file to LF, causing 100+ files to appear modified and
+spurious test failures from line-ending mismatches. Format on the host only, or format
+specific files — never `mix format` on the full project from inside the container.
+
+### Verifying changes don't break tests
+
+Always follow this workflow when making code changes:
+
+1. **Baseline first**: `git stash`, run full test suite, record exact failure count + modules
+2. **Restore and test**: `git stash pop`, run full test suite again
+3. **Compare**: same modules, same failure count = zero regressions. Never assume failures are "pre-existing" without proving it.
+4. **Batch fixes**: make ALL changes first, compile once, test once. Don't interleave formatting with fixes.
 
 ## Building the Light Client (HTTP-based thin client)
 
@@ -335,7 +367,7 @@ url = Giulia.Core.PathMapper.lm_studio_models_url()
 **All Giulia-specific env vars use the `GIULIA_` prefix for consistency.**
 
 - `ANTHROPIC_API_KEY` - Required for Anthropic provider (standard Anthropic naming)
-- `GIULIA_LM_STUDIO_URL` - LM Studio base URL (e.g., `http://192.168.1.52:1234`)
+- `GIULIA_LM_STUDIO_URL` - LM Studio base URL (e.g., `http://host.docker.internal:1234`)
 - `GIULIA_LM_STUDIO_MODEL` - LM Studio model name (e.g., `qwen/qwen2.5-coder-14b`)
 - `GIULIA_IN_CONTAINER` - Set to "true" when running in Docker (auto-detected via /.dockerenv)
 - `GIULIA_HOST_PROJECTS_PATH` - Host path prefix for path mapping (e.g., `C:/Development/GitHub`)
@@ -357,7 +389,7 @@ docker run -d \
   -p 4000:4000 \
   -p 4369:4369 \
   -p 9100-9105:9100-9105 \
-  -e GIULIA_LM_STUDIO_URL=http://192.168.1.52:1234 \
+  -e GIULIA_LM_STUDIO_URL=http://host.docker.internal:1234 \
   -e GIULIA_HOST_PROJECTS_PATH="C:/Development/GitHub" \
   -e GIULIA_COOKIE=giulia_dev \
   -v "C:/Development/GitHub:/projects" \
@@ -468,6 +500,8 @@ curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/MyApp
 - **Build 99**: Complete Metric Caching — `dead_code` and `coupling` added to `compute_cached_metrics/2` with cache-first reads in Store. Single Sourceror pass via `collect_remote_calls/1` eliminates double-parse (coupling + coupling_map). New `dead_code_with_asts/3`, `coupling_from_calls/1`, `build_coupling_map_from_calls/1`. All 5 heavy metrics now sub-10ms on warm reads. Dashboard 100% green.
 - **Build 100**: Semantic Tool Injection — Preflight now returns `suggested_tools` ranked by cosine similarity to prompt. SemanticIndex embeds all 55 skill intents from 9 routers, lazy-inits on first search. `search_skills/2` uses Nx.dot + Nx.top_k for ranking. Graceful degradation: returns `[]` if EmbeddingServing unavailable. Zero breaking changes to Preflight API.
 - **Build 102-104**: AST Persistence + Merkle Tree — CubDB-backed persistence layer eliminates cold restarts. 4 new modules in `lib/giulia/persistence/`: `Store` (CubDB lifecycle per project), `Writer` (async write-behind with 100ms debounce batching), `Loader` (startup recovery with content-hash staleness detection), `Merkle` (SHA-256 Merkle tree for integrity verification). Warm start restores 93 AST entries + knowledge graph (1243 vertices, 1544 edges) + metric caches + embeddings (93 module + 626 function vectors) from disk — zero re-scanning. Cache stored at `{project}/.giulia/cache/cubdb/`. 2 new endpoints: `POST /api/index/verify` (Merkle integrity check), `POST /api/index/compact` (CubDB compaction). `/api/index/status` enriched with `cache_status` and `merkle_root`. Invalidation: build mismatch → cold start, file hash mismatch → incremental re-scan. 57 total routes.
+- **Build 136**: ArcadeDB L2 Storage — Multi-model graph database as persistent L2 storage alongside ETS+libgraph L1. `Giulia.Storage.Arcade.Client` (Req-based HTTP client: schema management, SQL/Cypher/sqlscript queries, graph write helpers, batch snapshot). `Giulia.Storage.Arcade.Indexer` hooks into `{:graph_ready}` to snapshot completed builds automatically. Typed schema (Module/Function/File vertices, DEPENDS_ON/CALLS/DEFINED_IN edges) with `project`, `build_id`, `indexed_at` on every record. Composite unique indexes per (project, name). ArcadeDB added to docker-compose.yml on same network. Spike validated: Cypher bidirectional impact map finds 52 upstream modules libgraph misses, 100ms warm latency acceptable for L2. ETS+libgraph stays L1 (sub-ms). ArcadeDB is for history, consolidation, cross-build analysis.
+- **Build 137**: Store Readers + Indexer Refactor + Consolidator — 3 new `Knowledge.Store.Reader` functions (`all_modules/1`, `all_functions/1`, `all_dependencies/1`) for bulk graph extraction via ETS. Indexer refactored to read from Store instead of taking `(project_path, graph)` — decoupled, callable from anywhere. Full snapshot: 138 modules, 1,418 functions, 617 edges (243 DEPENDS_ON), 14.4s. `Giulia.Storage.Arcade.Consolidator` GenServer added to supervision tree — 30-minute schedule, manual trigger via `consolidate/0`, status reporting. Skeleton ready for Build 138 consolidation queries (complexity drift, coupling drift, hotspot detection).
 
 ## Next Steps
 

@@ -26,7 +26,7 @@ x-common-env: &common-env
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-  LM_STUDIO_URL: ${LM_STUDIO_URL:-http://192.168.33.1:1234/v1/chat/completions}
+  LM_STUDIO_URL: ${LM_STUDIO_URL:-http://host.docker.internal:1234/v1/chat/completions}
 
 x-common-volumes: &common-volumes
   - giulia_data:/data
@@ -65,16 +65,19 @@ services:
 
     command: >-
       /bin/sh -c "cd /app && mix deps.get &&
-      elixir --sname ${GIULIA_WORKER_NODE_NAME:-worker}
+      elixir --name ${GIULIA_WORKER_NODE_NAME:-worker}@giulia-worker
       --cookie ${GIULIA_COOKIE:-giulia_dev}
       --erl '-kernel inet_dist_listen_min 9100 inet_dist_listen_max 9105'
       -S mix run --no-halt"
 
     environment:
       <<: *common-env
-      GIULIA_NODE_NAME: ${GIULIA_WORKER_NODE_NAME:-worker}
+      GIULIA_NODE_NAME: ${GIULIA_WORKER_NODE_NAME:-worker}@giulia-worker
       GIULIA_ROLE: worker
       GIULIA_PORT: "4000"
+      # ArcadeDB runs as an external standalone container, not managed by this compose file.
+      # Use host.docker.internal to reach it from inside the Giulia containers.
+      ARCADEDB_URL: ${ARCADEDB_URL:-http://host.docker.internal:2480}
 
     volumes: *common-volumes
 
@@ -117,14 +120,14 @@ services:
 
     command: >-
       /bin/sh -c "cd /app && mix deps.get &&
-      elixir --sname ${GIULIA_MONITOR_NODE_NAME:-monitor}
+      elixir --name ${GIULIA_MONITOR_NODE_NAME:-monitor}@giulia-monitor
       --cookie ${GIULIA_COOKIE:-giulia_dev}
       --erl '-kernel inet_dist_listen_min 9110 inet_dist_listen_max 9115'
       -S mix run --no-halt"
 
     environment:
       <<: *common-env
-      GIULIA_NODE_NAME: ${GIULIA_MONITOR_NODE_NAME:-monitor}
+      GIULIA_NODE_NAME: ${GIULIA_MONITOR_NODE_NAME:-monitor}@giulia-monitor
       GIULIA_ROLE: monitor
       GIULIA_PORT: "4001"
       # AutoConnect: target node to watch via distributed Erlang
@@ -159,6 +162,10 @@ services:
       timeout: 10s
       start_period: 20s
       retries: 3
+
+  # NOTE: ArcadeDB runs as an external standalone container (not managed here).
+  # Start it separately: docker run -d --name arcadedb -p 2480:2480 arcadedata/arcadedb:latest
+  # Worker reaches it via ARCADEDB_URL=http://host.docker.internal:2480
 
 volumes:
   giulia_data:

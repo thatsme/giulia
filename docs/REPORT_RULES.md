@@ -293,6 +293,10 @@ Function-level edges: <count> MFA→MFA call edges
   meaningful duplication." Never dismiss with just "noise" or "ignore" — the reader needs to
   understand the mechanism.
 - If EmbeddingServing is unavailable (503), note: "Semantic duplicates unavailable — EmbeddingServing not loaded"
+- **Transitive cluster bug (fixed Build 138+)**: pre-Build-138 versions may return
+  mega-clusters with avg_similarity well below the threshold due to BFS transitive
+  expansion. If you see a cluster with avg_similarity < threshold, discard it — it's
+  a chain artifact, not real duplication.
 
 ### Section 12: Architecture Health
 

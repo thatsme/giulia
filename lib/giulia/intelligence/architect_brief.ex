@@ -24,15 +24,16 @@ defmodule Giulia.Intelligence.ArchitectBrief do
 
   @spec build(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def build(project_path, _opts \\ []) do
-    {:ok, %{
-      brief_version: @brief_version,
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
-      project: section_project(project_path),
-      topology: section_topology(project_path),
-      health: section_health(project_path),
-      runtime: section_runtime(project_path),
-      constitution: section_constitution(project_path)
-    }}
+    {:ok,
+     %{
+       brief_version: @brief_version,
+       timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+       project: section_project(project_path),
+       topology: section_topology(project_path),
+       health: section_health(project_path),
+       runtime: section_runtime(project_path),
+       constitution: section_constitution(project_path)
+     }}
   rescue
     e ->
       Logger.warning("ArchitectBrief: build failed: #{Exception.message(e)}")
@@ -55,7 +56,7 @@ defmodule Giulia.Intelligence.ArchitectBrief do
   defp parse_summary_string(summary) when is_binary(summary) do
     extract = fn key ->
       case Regex.run(~r/#{key}:\s*(\d+)/i, summary) do
-        [_, n] -> String.to_integer(n)
+        [_, n] -> elem(Integer.parse(n), 0)
         _ -> 0
       end
     end
@@ -89,19 +90,27 @@ defmodule Giulia.Intelligence.ArchitectBrief do
       end)
       |> Enum.reject(&is_nil/1)
 
-    cycles = safe_call(fn ->
-      case KnowledgeStore.find_cycles(project_path) do
-        {:ok, result} -> result[:cycles] || []
-        _ -> []
-      end
-    end, [])
+    cycles =
+      safe_call(
+        fn ->
+          case KnowledgeStore.find_cycles(project_path) do
+            {:ok, result} -> result[:cycles] || []
+            _ -> []
+          end
+        end,
+        []
+      )
 
-    god_modules = safe_call(fn ->
-      case KnowledgeStore.find_god_modules(project_path) do
-        {:ok, %{modules: mods}} -> Enum.take(mods, 10)
-        _ -> []
-      end
-    end, [])
+    god_modules =
+      safe_call(
+        fn ->
+          case KnowledgeStore.find_god_modules(project_path) do
+            {:ok, %{modules: mods}} -> Enum.take(mods, 10)
+            _ -> []
+          end
+        end,
+        []
+      )
 
     %{
       vertices: stats.vertices || 0,
@@ -112,7 +121,16 @@ defmodule Giulia.Intelligence.ArchitectBrief do
       god_modules: god_modules
     }
   rescue
-    _ -> %{vertices: 0, edges: 0, components: 0, hubs: [], cycles: [], god_modules: [], error: "topology unavailable"}
+    _ ->
+      %{
+        vertices: 0,
+        edges: 0,
+        components: 0,
+        hubs: [],
+        cycles: [],
+        god_modules: [],
+        error: "topology unavailable"
+      }
   end
 
   # ============================================================================
@@ -120,37 +138,57 @@ defmodule Giulia.Intelligence.ArchitectBrief do
   # ============================================================================
 
   defp section_health(project_path) do
-    heatmap_data = safe_call(fn ->
-      case KnowledgeStore.heatmap(project_path) do
-        {:ok, %{modules: modules}} -> modules
-        _ -> []
-      end
-    end, [])
+    heatmap_data =
+      safe_call(
+        fn ->
+          case KnowledgeStore.heatmap(project_path) do
+            {:ok, %{modules: modules}} -> modules
+            _ -> []
+          end
+        end,
+        []
+      )
 
     # Summarize zones
     zone_counts = Enum.frequencies_by(heatmap_data, fn m -> m[:zone] || m["zone"] end)
+
     red_zones =
       heatmap_data
       |> Enum.filter(fn m -> (m[:zone] || m["zone"]) == "red" end)
       |> Enum.take(10)
-      |> Enum.map(fn m -> %{module: m[:module] || m["module"], score: m[:score] || m["score"]} end)
+      |> Enum.map(fn m ->
+        %{module: m[:module] || m["module"], score: m[:score] || m["score"]}
+      end)
 
     # Unprotected hubs
-    unprotected = safe_call(fn ->
-      case KnowledgeStore.find_unprotected_hubs(project_path) do
-        {:ok, result} -> result
-        _ -> %{count: 0, modules: []}
-      end
-    end, %{count: 0, modules: []})
+    unprotected =
+      safe_call(
+        fn ->
+          case KnowledgeStore.find_unprotected_hubs(project_path) do
+            {:ok, result} -> result
+            _ -> %{count: 0, modules: []}
+          end
+        end,
+        %{count: 0, modules: []}
+      )
 
     # Behaviour integrity
-    integrity = safe_call(fn ->
-      case KnowledgeStore.check_all_behaviours(project_path) do
-        {:ok, :consistent} -> "consistent"
-        {:error, fractures} when is_map(fractures) -> "fractured (#{map_size(fractures)} behaviours)"
-        _ -> "unknown"
-      end
-    end, "unknown")
+    integrity =
+      safe_call(
+        fn ->
+          case KnowledgeStore.check_all_behaviours(project_path) do
+            {:ok, :consistent} ->
+              "consistent"
+
+            {:error, fractures} when is_map(fractures) ->
+              "fractured (#{map_size(fractures)} behaviours)"
+
+            _ ->
+              "unknown"
+          end
+        end,
+        "unknown"
+      )
 
     %{
       heatmap_summary: %{
@@ -166,7 +204,14 @@ defmodule Giulia.Intelligence.ArchitectBrief do
       integrity: integrity
     }
   rescue
-    _ -> %{heatmap_summary: %{red: 0, yellow: 0, green: 0}, red_zones: [], unprotected_hubs: %{count: 0}, integrity: "unknown", error: "health unavailable"}
+    _ ->
+      %{
+        heatmap_summary: %{red: 0, yellow: 0, green: 0},
+        red_zones: [],
+        unprotected_hubs: %{count: 0},
+        integrity: "unknown",
+        error: "health unavailable"
+      }
   end
 
   # ============================================================================
@@ -175,21 +220,29 @@ defmodule Giulia.Intelligence.ArchitectBrief do
 
   defp section_runtime(project_path) do
     if Giulia.Runtime.Collector.active?() do
-      pulse = safe_call(fn ->
-        case Giulia.Runtime.Inspector.pulse(:local) do
-          {:ok, p} -> p
-          _ -> nil
-        end
-      end, nil)
+      pulse =
+        safe_call(
+          fn ->
+            case Giulia.Runtime.Inspector.pulse(:local) do
+              {:ok, p} -> p
+              _ -> nil
+            end
+          end,
+          nil
+        )
 
       alerts = safe_call(fn -> Giulia.Runtime.Collector.alerts(:local) end, [])
 
-      hot_spots = safe_call(fn ->
-        case Giulia.Runtime.Inspector.hot_spots(:local, project_path) do
-          {:ok, spots} -> spots
-          _ -> []
-        end
-      end, [])
+      hot_spots =
+        safe_call(
+          fn ->
+            case Giulia.Runtime.Inspector.hot_spots(:local, project_path) do
+              {:ok, spots} -> spots
+              _ -> []
+            end
+          end,
+          []
+        )
 
       %{
         available: true,
@@ -226,11 +279,13 @@ defmodule Giulia.Intelligence.ArchitectBrief do
 
   defp extract_constitution_sections(constitution) when is_binary(constitution) do
     # Extract key sections from GIULIA.md
-    tech_stack = extract_section(constitution, "Tech Stack") ||
-                 extract_section(constitution, "Technology")
+    tech_stack =
+      extract_section(constitution, "Tech Stack") ||
+        extract_section(constitution, "Technology")
 
-    taboos = extract_section(constitution, "Taboos") ||
-             extract_section(constitution, "Never Do")
+    taboos =
+      extract_section(constitution, "Taboos") ||
+        extract_section(constitution, "Never Do")
 
     %{
       present: true,

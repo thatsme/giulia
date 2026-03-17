@@ -42,35 +42,14 @@ defmodule Giulia.AST.Processor do
   @type doc_info :: %{function: atom(), arity: non_neg_integer(), doc: String.t(), line: non_neg_integer()}
 
   # ============================================================================
-  # Parsing (implemented here — used by sub-modules)
+  # Parsing (delegated to AST.Parser — shared with Analysis)
   # ============================================================================
 
-  @doc """
-  Parse Elixir source code using Sourceror.
-  Returns {:ok, ast, source} or {:error, reason}.
-  """
   @spec parse(String.t()) :: parse_result()
-  def parse(source) when is_binary(source) do
-    case Sourceror.parse_string(source) do
-      {:ok, ast} -> {:ok, ast, source}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  defdelegate parse(source), to: Giulia.AST.Parser
 
-  @doc """
-  Parse a file from disk.
-  """
   @spec parse_file(String.t()) :: parse_result()
-  def parse_file(path) do
-    with {:ok, source} <- File.read(path),
-         true <- String.valid?(source),
-         {:ok, ast} <- Sourceror.parse_string(source) do
-      {:ok, ast, source}
-    else
-      false -> {:error, :invalid_utf8}
-      error -> error
-    end
-  end
+  defdelegate parse_file(path), to: Giulia.AST.Parser
 
   # ============================================================================
   # Extraction delegates

@@ -132,8 +132,17 @@ defmodule Giulia.Inference.ContextBuilder.Preview do
 
   defp extract_old_function(content, func_name, arity) do
     source = String.replace(content, "\r\n", "\n")
-    func_atom = String.to_atom(func_name)
-    arity = if is_binary(arity), do: String.to_integer(arity), else: arity
+    func_atom = String.to_existing_atom(func_name)
+
+    arity =
+      if is_binary(arity) do
+        case Integer.parse(arity) do
+          {n, _} -> n
+          :error -> 0
+        end
+      else
+        arity
+      end
 
     case Sourceror.parse_string(source) do
       {:ok, {:defmodule, _meta, [_alias, [do: body]]}} ->
@@ -146,7 +155,14 @@ defmodule Giulia.Inference.ContextBuilder.Preview do
         nil
     end
   rescue
-    _ -> nil
+    e ->
+      require Logger
+
+      Logger.warning(
+        "extract_old_function failed for #{func_name}/#{arity}: #{Exception.message(e)}"
+      )
+
+      nil
   end
 
   defp extract_function_from_body(source, {:__block__, _meta, statements}, func_atom, arity) do

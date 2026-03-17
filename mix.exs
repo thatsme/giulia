@@ -3,7 +3,7 @@ defmodule Giulia.MixProject do
 
   @version "0.1.0"
   # Build number - increment on each release
-  @build 132
+  @build 138
 
   def project do
     [
@@ -39,7 +39,7 @@ defmodule Giulia.MixProject do
       giulia: [
         include_executables_for: [:unix],
         applications: [runtime_tools: :permanent],
-        cookie: "giulia_cluster_secret",
+        cookie: String.to_atom(System.get_env("GIULIA_COOKIE", "giulia_dev")),
         steps: [:assemble],
         rel_templates_path: "rel"
       ],
