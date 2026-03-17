@@ -448,9 +448,11 @@ defmodule Giulia.Intelligence.SemanticIndex do
           # Build connected components via BFS
           clusters = build_clusters(pairs, entries)
 
-          # Sort by avg similarity, take top N
+          # Filter clusters below the requested threshold (BFS can create
+          # transitive mega-clusters where A~B and B~C but A≁C) then sort
           clusters =
             clusters
+            |> Enum.filter(fn c -> c.avg_similarity >= threshold end)
             |> Enum.sort_by(fn c -> -c.avg_similarity end)
             |> Enum.take(max_clusters)
 
