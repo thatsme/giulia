@@ -56,3 +56,4 @@ start-work.bat
 # Personal env files
 .env.home
 .env.work
+CLAUDE.md
