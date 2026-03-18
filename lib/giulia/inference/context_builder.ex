@@ -17,36 +17,64 @@ defmodule Giulia.Inference.ContextBuilder do
   # Delegates — Messages
   # ============================================================================
 
+  @spec build_initial_messages(String.t(), map(), module()) :: [map()]
   defdelegate build_initial_messages(prompt, state, provider_module), to: Messages
+
+  @spec inject_distilled_context([map()], map()) :: [map()]
   defdelegate inject_distilled_context(messages, state), to: Messages
+
+  @spec build_context_reminder(map()) :: String.t()
   defdelegate build_context_reminder(state), to: Messages
+
+  @spec count_recent_thinks([tuple()]) :: non_neg_integer()
   defdelegate count_recent_thinks(action_history), to: Messages
 
   # ============================================================================
   # Delegates — Intervention
   # ============================================================================
 
+  @spec build_intervention_message(map(), String.t() | nil, String.t() | nil) :: String.t()
   defdelegate build_intervention_message(state, target_file, fresh_content), to: Intervention
+
+  @spec build_test_failure_intervention(map(), map()) :: String.t()
   defdelegate build_test_failure_intervention(test_params, state), to: Intervention
+
+  @spec build_readonly_intervention(String.t(), map()) :: String.t()
   defdelegate build_readonly_intervention(tool_name, state), to: Intervention
+
+  @spec build_write_intervention(map(), String.t() | nil, String.t() | nil) :: String.t()
   defdelegate build_write_intervention(state, target_file, fresh_content), to: Intervention
 
   # ============================================================================
   # Delegates — Preview
   # ============================================================================
 
+  @spec generate_preview(String.t(), map(), map()) :: String.t()
   defdelegate generate_preview(tool_name, params, state), to: Preview
 
   # ============================================================================
   # Delegates — Helpers
   # ============================================================================
 
+  @spec build_tool_opts(map()) :: keyword()
   defdelegate build_tool_opts(state), to: Helpers
+
+  @spec extract_target_file(map()) :: String.t() | nil
   defdelegate extract_target_file(state), to: Helpers
+
+  @spec read_fresh_content(String.t(), map()) :: String.t() | nil
   defdelegate read_fresh_content(file_path, state), to: Helpers
+
+  @spec resolve_tool_path(String.t() | nil, map()) :: String.t() | nil
   defdelegate resolve_tool_path(path, state), to: Helpers
+
+  @spec format_params_brief(map()) :: String.t()
   defdelegate format_params_brief(params), to: Helpers
+
+  @spec sanitize_params_for_broadcast(map() | term()) :: map() | term()
   defdelegate sanitize_params_for_broadcast(params), to: Helpers
+
+  @spec get_working_directory(map()) :: String.t()
   defdelegate get_working_directory(state), to: Helpers
 
   # ============================================================================

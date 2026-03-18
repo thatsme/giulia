@@ -94,28 +94,73 @@ defmodule Giulia.Knowledge.Store do
   # Client API — Reads (delegated to Reader, bypass GenServer)
   # ============================================================================
 
+  @spec stats(project_path()) :: graph_stats()
   defdelegate stats(project_path), to: Reader
+
+  @spec centrality(project_path(), vertex_id()) :: {:ok, centrality_info()} | {:error, {:not_found, vertex_id()}}
   defdelegate centrality(project_path, module), to: Reader
+
+  @spec dependents(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate dependents(project_path, module), to: Reader
+
+  @spec dependencies(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate dependencies(project_path, module), to: Reader
+
+  @spec trace_path(project_path(), vertex_id(), vertex_id()) :: {:ok, :no_path | [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate trace_path(project_path, from, to), to: Reader
+
+  @spec find_cycles(project_path()) :: {:ok, map()}
   defdelegate find_cycles(project_path), to: Reader
+
+  @spec find_fan_in_out(project_path()) :: {:ok, map()}
   defdelegate find_fan_in_out(project_path), to: Reader
+
+  @spec find_dead_code(project_path()) :: {:ok, map()}
   defdelegate find_dead_code(project_path), to: Reader
+
+  @spec find_god_modules(project_path()) :: {:ok, map()}
   defdelegate find_god_modules(project_path), to: Reader
+
+  @spec find_orphan_specs(project_path()) :: {:ok, map()}
   defdelegate find_orphan_specs(project_path), to: Reader
+
+  @spec find_coupling(project_path()) :: {:ok, map()}
   defdelegate find_coupling(project_path), to: Reader
+
+  @spec find_api_surface(project_path()) :: {:ok, map()}
   defdelegate find_api_surface(project_path), to: Reader
+
+  @spec heatmap(project_path()) :: {:ok, map()}
   defdelegate heatmap(project_path), to: Reader
+
+  @spec change_risk_score(project_path()) :: {:ok, map()}
   defdelegate change_risk_score(project_path), to: Reader
+
+  @spec get_test_targets(project_path(), vertex_id()) :: {:ok, test_targets()} | {:error, term()}
   defdelegate get_test_targets(project_path, module), to: Reader
+
+  @spec check_behaviour_integrity(project_path(), vertex_id()) :: {:ok, :consistent} | {:error, :not_found | [map()]}
   defdelegate check_behaviour_integrity(project_path, behaviour), to: Reader
+
+  @spec check_all_behaviours(project_path()) :: {:ok, :consistent} | {:error, map()}
   defdelegate check_all_behaviours(project_path), to: Reader
+
+  @spec all_modules(project_path()) :: {:ok, [map()]}
   defdelegate all_modules(project_path), to: Reader
+
+  @spec all_functions(project_path()) :: {:ok, [map()]}
   defdelegate all_functions(project_path), to: Reader
+
+  @spec all_dependencies(project_path()) :: {:ok, [{vertex_id(), vertex_id(), atom()}]}
   defdelegate all_dependencies(project_path), to: Reader
+
+  @spec graph(project_path()) :: Graph.t()
   defdelegate graph(project_path), to: Reader
+
+  @spec get_implementers(project_path(), vertex_id()) :: {:ok, [vertex_id()]}
   defdelegate get_implementers(project_path, behaviour), to: Reader
+
+  @spec pre_impact_check(project_path(), map()) :: {:ok, map()}
   defdelegate pre_impact_check(project_path, params), to: Reader
 
   # Default-arg wrappers (defdelegate can't express defaults)

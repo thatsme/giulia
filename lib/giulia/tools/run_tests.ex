@@ -40,13 +40,16 @@ defmodule Giulia.Tools.RunTests do
   end
 
   @impl true
+  @spec name() :: String.t()
   def name, do: "run_tests"
 
   @impl true
+  @spec description() :: String.t()
   def description,
     do: "Run ExUnit tests with structured failure analysis. Preferred over run_mix for testing."
 
   @impl true
+  @spec parameters() :: map()
   def parameters do
     %{
       type: "object",
@@ -64,12 +67,14 @@ defmodule Giulia.Tools.RunTests do
     }
   end
 
+  @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(params) do
     %__MODULE__{}
     |> cast(params, [:file, :test_name])
   end
 
   @impl true
+  @spec execute(map() | %__MODULE__{}, keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(params, opts \\ [])
 
   def execute(%__MODULE__{file: file, test_name: test_name}, opts) do

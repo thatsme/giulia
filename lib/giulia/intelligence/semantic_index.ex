@@ -34,6 +34,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -42,6 +43,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
   Trigger async embedding of all modules and functions in a project.
   No-op if EmbeddingServing is not available.
   """
+  @spec embed_project(String.t()) :: :ok
   def embed_project(project_path) do
     GenServer.cast(__MODULE__, {:embed_project, project_path})
   end
@@ -49,6 +51,8 @@ defmodule Giulia.Intelligence.SemanticIndex do
   @doc """
   Two-stage semantic search: modules first, then functions within top modules.
   """
+  @spec search(String.t(), String.t(), non_neg_integer()) ::
+          {:ok, %{modules: [map()], functions: [map()]}} | {:error, String.t()}
   def search(project_path, concept, top_k \\ 5) do
     GenServer.call(__MODULE__, {:search, project_path, concept, top_k}, 30_000)
   end
@@ -58,6 +62,8 @@ defmodule Giulia.Intelligence.SemanticIndex do
   Returns top_k skills ranked by cosine similarity.
   Lazy-inits skill vectors on first call if needed.
   """
+  @spec search_skills(Nx.Tensor.t(), non_neg_integer()) ::
+          {:ok, [map()]} | {:error, String.t()}
   def search_skills(query_vector, top_k \\ 5) do
     GenServer.call(__MODULE__, {:search_skills, query_vector, top_k}, 30_000)
   end
@@ -65,6 +71,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
   @doc """
   Check if semantic search is available.
   """
+  @spec available?() :: boolean()
   def available? do
     EmbeddingServing.available?()
   end
@@ -72,6 +79,13 @@ defmodule Giulia.Intelligence.SemanticIndex do
   @doc """
   Get embedding status for a project.
   """
+  @spec status(String.t()) :: %{
+          available: boolean(),
+          module_vectors: non_neg_integer(),
+          function_vectors: non_neg_integer(),
+          model: String.t(),
+          embedding_in_progress: boolean()
+        }
   def status(project_path) do
     GenServer.call(__MODULE__, {:status, project_path})
   end
