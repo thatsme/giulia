@@ -53,6 +53,7 @@ defmodule Giulia.Daemon.SkillRouter do
 
     quote do
       @doc "Returns all @skill annotations declared in this router."
+      @spec __skills__() :: [map()]
       def __skills__, do: unquote(Macro.escape(skills))
     end
   end
