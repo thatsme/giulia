@@ -153,6 +153,13 @@ Three sub-tables: Red (>= 60), Yellow (30-59), Green (< 30).
 - Green zone: count only, optionally list notable modules
 - `has_test` comes from real file cross-referencing (`suggest_test_file` maps `lib/foo.ex` to `test/foo_test.exs` and checks `File.exists?`). It is NOT inferred. If has_test is false, there is genuinely no matching `_test.exs` file by naming convention. Note: non-standard test locations (e.g., `test/livebook_teams/` for a `Livebook.Hubs` module) will show as false — the detection uses path convention only.
 - See "Key Scoring Formulas" above for the test weight interaction — verify `has_test` values are plausible before interpreting red-zone counts
+- **Test Coverage Gap Analysis (MANDATORY)**: After the heatmap tables, include a sub-section listing
+  ALL modules that lack test files, grouped by reason. Every untested module must have an explanation:
+  - Why it has no test (requires daemon, external service, distributed Erlang, etc.)
+  - Whether the gap is **actionable** (should be tested, just wasn't prioritized) or **by-design**
+    (integration-tested elsewhere, external dependency, or impractical to unit-test)
+  - Which untested modules are **quick wins** (standard interface, simple setup)
+  - Never leave a test gap unexplained — "no test" without a reason is a red flag for any reader
 
 ### Section 3: Top 5 Hubs
 
