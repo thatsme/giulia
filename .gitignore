@@ -45,6 +45,11 @@ nul
 
 # Personal launch scripts — copy start-local.bat.example for your own
 start-local.bat
+start-home.bat
+start-work.bat
+
+# Per-project Giulia cache (CubDB, embeddings)
+.giulia/
 
 # Generated reports (dynamic output, not source)
 /reports/
