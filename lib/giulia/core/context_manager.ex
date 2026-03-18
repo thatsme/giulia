@@ -74,6 +74,7 @@ defmodule Giulia.Core.ContextManager do
   # ============================================================================
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_opts) do
     # ETS table: {normalized_path, pid, started_at}
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
@@ -83,6 +84,7 @@ defmodule Giulia.Core.ContextManager do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, term(), map()}
   def handle_call({:get_context, path}, _from, state) do
     normalized = normalize_path(path)
 
@@ -167,6 +169,7 @@ defmodule Giulia.Core.ContextManager do
   end
 
   @impl true
+  @spec handle_info(term(), map()) :: {:noreply, map()}
   def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
     # A ProjectContext died - clean up the ETS entry
     Logger.warning("ProjectContext #{inspect(pid)} died: #{inspect(reason)}")

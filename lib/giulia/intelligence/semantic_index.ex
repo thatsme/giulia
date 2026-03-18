@@ -93,11 +93,13 @@ defmodule Giulia.Intelligence.SemanticIndex do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     {:ok, %{embedding_in_progress: MapSet.new(), skill_vectors: nil}}
   end
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:embed_project, project_path}, state) do
     if EmbeddingServing.available?() and not MapSet.member?(state.embedding_in_progress, project_path) do
       new_state = %{state | embedding_in_progress: MapSet.put(state.embedding_in_progress, project_path)}
@@ -133,6 +135,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, term(), map()}
   def handle_call({:search, project_path, concept, top_k}, _from, state) do
     result = do_search(project_path, concept, top_k)
     {:reply, result, state}

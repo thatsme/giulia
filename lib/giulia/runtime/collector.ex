@@ -59,6 +59,7 @@ defmodule Giulia.Runtime.Collector do
   # Public API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -147,15 +148,6 @@ defmodule Giulia.Runtime.Collector do
   end
 
   @doc """
-  Register a PID to receive `{:profile_ready, node, snapshots}` messages
-  when a burst ends. Called by the Monitor GenServer on init.
-  """
-  @spec set_profile_callback(pid()) :: :ok
-  def set_profile_callback(pid) when is_pid(pid) do
-    GenServer.cast(__MODULE__, {:set_profile_callback, pid})
-  end
-
-  @doc """
   Returns the current collector mode (:idle or :capturing) and watched nodes.
   """
   @spec status() :: map()
@@ -168,6 +160,7 @@ defmodule Giulia.Runtime.Collector do
   # ============================================================================
 
   @impl true
+  @spec init(keyword()) :: {:ok, map()}
   def init(opts) do
     idle_interval = Keyword.get(opts, :idle_interval_ms, @default_idle_interval)
     capture_interval = Keyword.get(opts, :capture_interval_ms, @default_capture_interval)
@@ -202,6 +195,7 @@ defmodule Giulia.Runtime.Collector do
   end
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:watch_node, node_atom}, state) do
     if node_atom in state.nodes do
       {:noreply, state}
@@ -212,22 +206,18 @@ defmodule Giulia.Runtime.Collector do
   end
 
   def handle_cast({:set_profile_callback, pid}, state) do
-    Logger.info("Collector: profile callback registered — #{inspect(pid)}")
-    {:noreply, %{state | profile_callback: pid}}
-  end
-
-  @impl true
-  def handle_cast({:set_profile_callback, pid}, state) do
     Logger.info("Collector: profile callback set to #{inspect(pid)}")
     {:noreply, %{state | profile_callback: pid}}
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, term(), map()}
   def handle_call(:status, _from, state) do
     {:reply, %{mode: state.mode, nodes: state.nodes, tick_count: state.tick_count}, state}
   end
 
   @impl true
+  @spec handle_info(term(), map()) :: {:noreply, map()}
   def handle_info(:collect, state) do
     state = do_collect_all(state)
 

@@ -16,6 +16,7 @@ defmodule Giulia.Persistence.Writer do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -66,11 +67,13 @@ defmodule Giulia.Persistence.Writer do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     {:ok, %{pending: %{}, timer_ref: nil}}
   end
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:persist_ast, project_path, file_path, ast_data, content_hash}, state) do
     # Accumulate in pending map
     project_pending = Map.get(state.pending, project_path, %{})
@@ -191,6 +194,7 @@ defmodule Giulia.Persistence.Writer do
   end
 
   @impl true
+  @spec handle_info(term(), map()) :: {:noreply, map()}
   def handle_info(:flush, state) do
     flush_pending(state.pending)
     {:noreply, %{state | pending: %{}, timer_ref: nil}}

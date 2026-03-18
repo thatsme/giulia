@@ -111,6 +111,7 @@ defmodule Giulia.Inference.Approval do
   # ============================================================================
 
   @impl true
+  @spec init(term()) :: {:ok, %__MODULE__{}}
   def init(_opts) do
     # Schedule periodic cleanup of expired requests
     schedule_cleanup()
@@ -122,6 +123,7 @@ defmodule Giulia.Inference.Approval do
   # ============================================================================
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), %__MODULE__{}) :: {:reply, term(), %__MODULE__{}} | {:noreply, %__MODULE__{}}
   def handle_call({:request_approval, request_id, tool, params, preview, timeout}, from, state) do
     Logger.info("Approval requested (blocking) for #{tool}: #{request_id}")
 
@@ -184,6 +186,7 @@ defmodule Giulia.Inference.Approval do
 
   # Async approval request handler
   @impl true
+  @spec handle_cast(term(), %__MODULE__{}) :: {:noreply, %__MODULE__{}}
   def handle_cast({:request_approval_async, approval_id, tool, params, preview, callback_pid, timeout}, state) do
     Logger.info("Approval requested (async) for #{tool}: #{approval_id}")
 
@@ -237,6 +240,7 @@ defmodule Giulia.Inference.Approval do
   end
 
   @impl true
+  @spec handle_info(term(), %__MODULE__{}) :: {:noreply, %__MODULE__{}}
   def handle_info({:timeout, request_id}, state) do
     case Map.pop(state.pending, request_id) do
       {nil, _} ->
