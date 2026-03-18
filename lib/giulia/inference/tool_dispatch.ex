@@ -25,8 +25,13 @@ defmodule Giulia.Inference.ToolDispatch do
           | {:halt, State.t()}
 
   # Delegated public helpers
+  @spec extract_downstream_dependents(String.t()) :: [String.t()]
   defdelegate extract_downstream_dependents(result_str), to: Guards
+
+  @spec module_to_path(String.t()) :: String.t()
   defdelegate module_to_path(module_name), to: Guards
+
+  @spec find_last_successful_observation(map()) :: String.t() | nil
   defdelegate find_last_successful_observation(state), to: Guards
 
   # ============================================================================
@@ -107,6 +112,7 @@ defmodule Giulia.Inference.ToolDispatch do
   # ============================================================================
 
   @doc "Execute tool directly (no approval needed or already approved)."
+  @spec execute_direct(String.t(), map(), map(), State.t()) :: directive()
   def execute_direct(tool_name, params, response, state) do
     cond do
       # Intercept commit_changes — route back to Engine
