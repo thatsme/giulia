@@ -37,6 +37,7 @@ defmodule Giulia.Inference.Engine.Helpers do
   @doc """
   Broadcast escalation failure via SSE events.
   """
+  @spec broadcast_escalation_failed(State.t(), String.t()) :: :ok
   def broadcast_escalation_failed(state, message) do
     maybe_broadcast(state, %{type: :escalation_failed, message: message})
   end
@@ -45,6 +46,7 @@ defmodule Giulia.Inference.Engine.Helpers do
   Build a BUILD GREEN observation from verification result and append to messages.
   Returns `{:next, :step, state}`.
   """
+  @spec build_green_observation(String.t(), term(), [String.t()], State.t(), String.t() | nil) :: {:next, :step, State.t()}
   def build_green_observation(tool_name, result, warnings, state, test_summary) do
     test_hint = ContextBuilder.build_test_hint(state)
     observation = Verification.build_green_observation(tool_name, result, warnings, test_hint, test_summary)

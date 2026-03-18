@@ -39,6 +39,7 @@ defmodule Giulia.Inference.Events do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, :ok, map()}
   def handle_call({:subscribe, request_id, pid}, _from, state) do
     require Logger
     Logger.info("EVENTS: Subscribe #{inspect(pid)} to #{request_id}")
@@ -48,6 +49,7 @@ defmodule Giulia.Inference.Events do
   end
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:unsubscribe, request_id, pid}, state) do
     subs = Map.get(state.subscriptions, request_id, [])
     new_subs = Map.put(state.subscriptions, request_id, List.delete(subs, pid))

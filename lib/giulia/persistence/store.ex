@@ -25,6 +25,7 @@ defmodule Giulia.Persistence.Store do
 
   # Client API
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(_opts) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
@@ -76,11 +77,13 @@ defmodule Giulia.Persistence.Store do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     {:ok, %{dbs: %{}}}
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, term(), map()}
   def handle_call({:open, project_path}, _from, state) do
     case Map.get(state.dbs, project_path) do
       nil ->

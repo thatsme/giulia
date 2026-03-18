@@ -87,6 +87,7 @@ defmodule Giulia.Tools.Registry do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
 
@@ -97,6 +98,7 @@ defmodule Giulia.Tools.Registry do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, term(), map()}
   def handle_call({:register, module}, _from, state) do
     result = do_register(module)
     {:reply, result, state}
@@ -132,6 +134,7 @@ defmodule Giulia.Tools.Registry do
   end
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast(:discover_tools, state) do
     do_discover_tools()
     {:noreply, state}

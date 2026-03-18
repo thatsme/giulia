@@ -107,6 +107,7 @@ defmodule Giulia.Context.Indexer do
   # Server Callbacks
 
   @impl true
+  @spec init(term()) :: {:ok, map()}
   def init(_) do
     state = %{
       project_path: nil,
@@ -122,6 +123,7 @@ defmodule Giulia.Context.Indexer do
   @project_markers ["mix.exs", "GIULIA.md", "package.json", "Cargo.toml", "go.mod"]
 
   @impl true
+  @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:scan, project_path}, state) do
     if valid_project_root?(project_path) do
       Logger.info("Starting project scan: #{project_path}")
@@ -228,6 +230,7 @@ defmodule Giulia.Context.Indexer do
   end
 
   @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, map(), map()}
   def handle_call(:status, _from, state) do
     {:reply, state, state}
   end
