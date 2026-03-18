@@ -48,3 +48,6 @@ start-local.bat
 
 # Generated reports (dynamic output, not source)
 /reports/
+# Personal env files
+.env.home
+.env.work
