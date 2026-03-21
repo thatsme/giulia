@@ -2,13 +2,13 @@
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
-Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Knowledge Graph, runtime BEAM introspection, and semantic search -- all via a REST API.
+Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- all via a REST API.
 
 ## Why Giulia Exists
 
 AI coding assistants restart from zero every session. They lose context, re-index files, and grep for everything on every interaction. Giulia solves this by running as a long-lived daemon on the BEAM VM:
 
-- **Warm state**: AST indexes, Knowledge Graphs, and embeddings stay in ETS between sessions.
+- **Warm state**: AST indexes, Property Graphs, and embeddings stay in ETS between sessions.
 - **Multi-project**: Switch terminals and projects instantly -- each gets its own isolated context.
 - **No cold starts**: CubDB persistence restores full state on restart without re-scanning.
 - **Deep analysis**: Dependency graphs, blast radius, coupling metrics, and dead code detection -- precomputed and cached, not computed on every query.
@@ -25,7 +25,7 @@ Connect to any running BEAM node via distributed Erlang. Inspect memory, top pro
 
 ### Persistent Intelligence
 
-- **CubDB warm starts**: AST entries, knowledge graph, metric caches, and embeddings survive restarts. Merkle tree integrity verification detects stale files for incremental re-scanning.
+- **CubDB warm starts**: AST entries, property graph, metric caches, and embeddings survive restarts. Merkle tree integrity verification detects stale files for incremental re-scanning.
 - **ArcadeDB L2**: Multi-model graph database for cross-build history, consolidation queries, complexity drift detection, and coupling trend analysis.
 
 ## Quick Start

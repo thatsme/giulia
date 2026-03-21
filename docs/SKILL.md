@@ -2,7 +2,7 @@
 
 ## What is Giulia?
 
-Giulia is a REST API daemon (port 4000) that provides AST-level code intelligence for Elixir projects. It maintains a persistent Knowledge Graph, ETS-backed module/function index, and Sourceror-parsed AST cache across sessions. Prefer Giulia's API over shell tools (grep, find, cat) when the daemon is available — it returns structured, pre-indexed data instantly.
+Giulia is a REST API daemon (port 4000) that provides AST-level code intelligence for Elixir projects. It maintains a persistent Property Graph, ETS-backed module/function index, and Sourceror-parsed AST cache across sessions. Prefer Giulia's API over shell tools (grep, find, cat) when the daemon is available — it returns structured, pre-indexed data instantly.
 
 ## Detection
 
@@ -23,7 +23,7 @@ Before any work, always call the Architect Brief to get full project situational
 curl -s "http://localhost:4000/api/brief/architect?path=<CWD>"
 ```
 
-This single call returns: project stats (files, modules, functions, specs), topology (vertices, edges, hubs, cycles, god modules), health (heatmap summary, red zones, unprotected hubs, behaviour integrity), runtime (BEAM pulse, alerts, hot spots with Knowledge Graph fusion), and constitution (GIULIA.md tech stack + taboos). Zero manual prompting — start every session with this.
+This single call returns: project stats (files, modules, functions, specs), topology (vertices, edges, hubs, cycles, god modules), health (heatmap summary, red zones, unprotected hubs, behaviour integrity), runtime (BEAM pulse, alerts, hot spots with Property Graph fusion), and constitution (GIULIA.md tech stack + taboos). Zero manual prompting — start every session with this.
 
 ## Tool Categories
 
@@ -85,7 +85,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 
 ### 3. Intelligence (Pre-Processing Layers)
 
-Giulia's intelligence layer runs **before** the LLM. It combines semantic search (Bumblebee embeddings) with Knowledge Graph enrichment to produce structured context automatically.
+Giulia's intelligence layer runs **before** the LLM. It combines semantic search (Bumblebee embeddings) with Property Graph enrichment to produce structured context automatically.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
@@ -115,7 +115,7 @@ One call replaces the 4 separate queries previously required for planning mode.
 
 **Surgical Briefing** (`GET /api/intelligence/briefing`) is the lighter alternative, used automatically during inference:
 1. **Layer 1** (Bumblebee): Finds the top 3 most relevant modules and top 5 functions via cosine similarity
-2. **Layer 2** (Knowledge Graph): Enriches each module with centrality (hub score), dependents count, and file path
+2. **Layer 2** (Property Graph): Enriches each module with centrality (hub score), dependents count, and file path
 3. Returns a formatted briefing with hub warnings for high-centrality modules (in_degree >= 3)
 
 ### 4. Runtime Introspection (Build 92)
@@ -126,18 +126,18 @@ Live BEAM runtime awareness — what your code is *doing* right now, not just wh
 |--------|----------|---------|
 | **BEAM health** | `GET /api/runtime/pulse` | Processes, memory (with breakdown), schedulers, uptime, run queue, ETS tables (top 5 "god tables"), warnings |
 | **Top processes** | `GET /api/runtime/top_processes?metric=M` | Top 10 processes by metric (`reductions`, `memory`, `message_queue`). Shows PID, module, registered name, current function |
-| **Hot spots** | `GET /api/runtime/hot_spots?path=P` | Top 5 modules by runtime activity, fused with Knowledge Graph data (zone, complexity, centrality). The differentiator: PID → Module → Graph in one response |
+| **Hot spots** | `GET /api/runtime/hot_spots?path=P` | Top 5 modules by runtime activity, fused with Property Graph data (zone, complexity, centrality). The differentiator: PID → Module → Graph in one response |
 | **Function trace** | `GET /api/runtime/trace?module=M&duration=5000` | Short-lived per-module call frequency trace. Hard limits: max 1,000 events OR 5 seconds (whichever first). Returns sorted call counts with `aborted` flag if kill switch fires |
 | **Snapshot history** | `GET /api/runtime/history?last=N` | Last N Collector snapshots (default 20, 30s interval = 10 min window). Each snapshot includes pulse + top processes |
 | **Metric trend** | `GET /api/runtime/trend?metric=M` | Time-series for one metric (`memory`, `processes`, `run_queue`, `ets_memory`) — for charting and leak detection |
 | **Active alerts** | `GET /api/runtime/alerts` | Warnings with duration: high memory, process count, run queue pressure, message queue buildup, memory growth (>20% over window) |
 | **Connect remote node** | `POST /api/runtime/connect` | Connect to a remote BEAM node. Body: `{"node":"myapp@host","cookie":"secret"}` |
 
-All runtime endpoints accept an optional `?node=N` parameter (default: local Giulia node). The `?path=P` parameter on `hot_spots` enables Knowledge Graph fusion.
+All runtime endpoints accept an optional `?node=N` parameter (default: local Giulia node). The `?path=P` parameter on `hot_spots` enables Property Graph fusion.
 
 ### 5. Plan Validation Gate (Build 93)
 
-**After planning, before writing code**: validate your plan against the Knowledge Graph.
+**After planning, before writing code**: validate your plan against the Property Graph.
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
@@ -242,7 +242,7 @@ Send natural language commands through Giulia's OODA orchestrator. Two endpoints
 
 ### Planning Mode (MANDATORY)
 
-When entering plan mode for any Elixir code modification, you **MUST** query Giulia's analysis endpoints BEFORE writing the plan. Do NOT use grep, awk, sed, or find to discover module dependencies — Giulia's Knowledge Graph has this data pre-indexed from AST analysis.
+When entering plan mode for any Elixir code modification, you **MUST** query Giulia's analysis endpoints BEFORE writing the plan. Do NOT use grep, awk, sed, or find to discover module dependencies — Giulia's Property Graph has this data pre-indexed from AST analysis.
 
 **First call MUST be Preflight:**
 ```bash
@@ -288,7 +288,7 @@ When formulating a multi-file refactor or any modification touching 2+ modules:
 
 ### AST Cache + Warm Starts (Build 102-104)
 
-Giulia persists all AST data, the Knowledge Graph, metric caches, and embeddings to disk via CubDB at `{project}/.giulia/cache/cubdb/`. On restart, the daemon restores from cache instead of re-scanning — **zero cold starts** for unchanged files. The cache lives on the bind-mounted volume, so it survives Docker image rebuilds.
+Giulia persists all AST data, the Property Graph, metric caches, and embeddings to disk via CubDB at `{project}/.giulia/cache/cubdb/`. On restart, the daemon restores from cache instead of re-scanning — **zero cold starts** for unchanged files. The cache lives on the bind-mounted volume, so it survives Docker image rebuilds.
 
 **Check cache status before triggering a scan:**
 ```bash
@@ -307,7 +307,7 @@ Response includes `cache_status` (`"warm"`, `"cold"`, or `"no_project"`) and `me
 
 ### Critical Rule: Re-index After Direct Edits
 
-If you edit Elixir files directly (using file write/edit tools instead of Giulia's command/stream), the ETS index and Knowledge Graph become stale. **Always call `POST /api/index/scan` after direct file modifications.** Without this, subsequent calls to `/api/index/*` and `/api/knowledge/*` will return outdated information. The cache layer ensures only modified files are actually re-scanned.
+If you edit Elixir files directly (using file write/edit tools instead of Giulia's command/stream), the ETS index and Property Graph become stale. **Always call `POST /api/index/scan` after direct file modifications.** Without this, subsequent calls to `/api/index/*` and `/api/knowledge/*` will return outdated information. The cache layer ensures only modified files are actually re-scanned.
 
 ### Choosing Giulia vs Shell Tools
 
@@ -337,7 +337,7 @@ The report must be saved in the project root. Do not skip file creation — a ve
 
 ### Path Convention
 
-**All index and knowledge endpoints require a `?path=P` query parameter** identifying which project to query. This is because Giulia supports multi-project isolation — each scanned project has its own ETS namespace and Knowledge Graph. Without `?path=`, these endpoints return a 400 error.
+**All index and knowledge endpoints require a `?path=P` query parameter** identifying which project to query. This is because Giulia supports multi-project isolation — each scanned project has its own ETS namespace and Property Graph. Without `?path=`, these endpoints return a 400 error.
 
 Use the host path (e.g., `path=C:/Development/GitHub/Giulia`). The daemon translates to container paths automatically via PathMapper.
 

@@ -74,7 +74,7 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 | `GET /api/index/status` | files_scanned, state, cache_status | Executive Summary |
 | `GET /api/index/complexity` | per-function cognitive complexity, sorted desc | God Modules drill-down |
 
-### Stage 2: Knowledge Graph Topology (graph-backed)
+### Stage 2: Property Graph Topology (graph-backed)
 
 | Endpoint | Key Fields | Report Section |
 |----------|-----------|----------------|
@@ -417,7 +417,7 @@ pattern matching in Elixir — STOP. Delete it. Rewrite in Elixir terms.**
 
 ## Anti-Patterns (Do NOT Do These)
 
-1. **Don't grep for dependencies** — use the knowledge graph. Grep misses indirect deps.
+1. **Don't grep for dependencies** — use the property graph. Grep misses indirect deps.
 2. **Don't infer test existence** — `has_test` is real file detection, not inference. If it says false, the file doesn't exist (by naming convention).
 3. **Don't report stdlib coupling as a problem** — Enum/Map/String coupling is normal Elixir.
 4. **Don't report god modules without fan-in context** — a 200-complexity leaf module is a refactoring opportunity, not a risk.

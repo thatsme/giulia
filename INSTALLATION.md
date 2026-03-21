@@ -134,7 +134,7 @@ curl -X POST http://localhost:4000/api/runtime/connect \
 4. Query with fused static + runtime data:
 
 ```bash
-# Hot spots: PID -> Module -> Knowledge Graph fusion
+# Hot spots: PID -> Module -> Property Graph fusion
 curl "http://localhost:4000/api/runtime/hot_spots?path=D:/Development/GitHub/MyApp&node=myapp@192.168.1.50"
 ```
 

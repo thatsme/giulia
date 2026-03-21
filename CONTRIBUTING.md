@@ -47,7 +47,7 @@ your right to use your own contributions however you wish.
 
 - **New tools** — code analysis, refactoring aids, project health checks
 - **New LLM providers** — additional provider integrations for the router
-- **Bug fixes** — especially around CubDB persistence, Knowledge Graph edge cases
+- **Bug fixes** — especially around CubDB persistence, Property Graph edge cases
 - **Documentation** — architecture explanations, API usage examples
 - **Observability** — new telemetry events, monitor dashboard improvements
 - **Docker improvements** — build performance, multi-platform support
