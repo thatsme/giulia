@@ -23,7 +23,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   78 API endpoints          |
+ |   70 API endpoints          |
  +-----------------------------+
 ```
 
@@ -53,7 +53,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 78 API endpoints          |    | - Performance profiling   | |
+|  | - 70 API endpoints          |    | - Performance profiling   | |
 |  | - CubDB persistence         |    |                           | |
 |  | - ArcadeDB L2 snapshots     |    | Skips:                    | |
 |  |                             |    |  EmbeddingServing (~90MB) | |
@@ -76,7 +76,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
 scanning, knowledge graph construction, semantic embeddings), the inference engine
-(OODA loop with LLM providers), and serves all 57+ API endpoints. Memory limit: 4GB.
+(OODA loop with LLM providers), and serves all 70 API endpoints. Memory limit: 4GB.
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
 via distributed Erlang on startup (AutoConnect GenServer). Its job is runtime
@@ -108,6 +108,7 @@ Giulia.Supervisor (:one_for_one)
 |   |-- Tools.Registry (auto-discovers tool modules on boot)
 |   |-- Context.Indexer (background AST scanner, Task.async_stream)
 |   |-- Knowledge.Store (libgraph in-memory directed graph)
+|   |-- Storage.Arcade.Indexer (L2 graph sync on {:graph_ready})
 |   +-- Storage.Arcade.Consolidator (periodic cross-build analysis)
 |
 |-- TIER 2: Heavy (skipped when GIULIA_ROLE=monitor)
@@ -292,7 +293,7 @@ Plug.Logger
 Plug.Router (:match, :fetch_query_params, Plug.Parsers)
     |
     v
-Endpoint.ex                     ~50 lines, core routes + forward declarations
+Endpoint.ex                     core routes + forward declarations
     |
     +-- forward "/api/index"        --> Routers.Index
     +-- forward "/api/knowledge"    --> Routers.Knowledge
@@ -337,8 +338,8 @@ Core routes that remain in Endpoint.ex (not forwarded):
 ## 7. Sub-Router Architecture (Build 94)
 
 Before Build 94, Endpoint.ex was 1,331 lines containing all route handlers. The
-refactoring split it into 9 domain-specific sub-routers (now 10), reducing Endpoint
-to approximately 50 lines of forwarding declarations.
+refactoring split it into 9 domain-specific sub-routers, reducing Endpoint
+to forwarding declarations plus core route handlers.
 
 Each sub-router uses the `Giulia.Daemon.SkillRouter` macro:
 
@@ -373,14 +374,14 @@ Sub-routers and their domains:
 
 | Prefix              | Router                 | Routes | Domain                              |
 |---------------------|------------------------|--------|-------------------------------------|
-| /api/index          | Routers.Index          | 6      | Module/function index, scan, status |
+| /api/index          | Routers.Index          | 9      | Module/function index, scan, verify, compact, complexity |
 | /api/knowledge      | Routers.Knowledge      | 23     | Graph queries, metrics, insights    |
-| /api/intelligence   | Routers.Intelligence   | 4      | Briefing, preflight, validate       |
-| /api/runtime        | Routers.Runtime        | 8      | BEAM introspection, trace, connect  |
+| /api/intelligence   | Routers.Intelligence   | 5      | Briefing, preflight, architect, validate, report_rules |
+| /api/runtime        | Routers.Runtime        | 16     | BEAM introspection, trace, connect, profiles, ingest, observations |
 | /api/search         | Routers.Search         | 3      | Text search, semantic search        |
 | /api/transaction    | Routers.Transaction    | 3      | Transactional file operations       |
 | /api/approval       | Routers.Approval       | 2      | Interactive consent gate            |
-| /api/monitor        | Routers.Monitor        | 3      | Dashboard, SSE stream, history      |
+| /api/monitor        | Routers.Monitor        | 6      | Dashboard, SSE stream, history, observe start/stop/status |
 | /api/discovery      | Routers.Discovery      | 3      | Skill introspection, search         |
 
 Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
@@ -405,7 +406,7 @@ SemanticIndex computes cosine similarity against all stored vectors using `Nx.do
 then ranks results with `Nx.top_k`.
 
 **Preflight integration**: The `/api/briefing/preflight` endpoint uses semantic
-search to match a user's prompt against the 55+ skill intents declared across all
+search to match a user's prompt against the 70 skill intents declared across all
 sub-routers. The response includes a `suggested_tools` list ranked by cosine
 similarity, allowing clients to discover which API endpoints are most relevant to
 their current task. Graceful degradation: if EmbeddingServing is unavailable (model
