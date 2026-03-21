@@ -17,8 +17,8 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 1. [Core](#core) (10 endpoints)
 2. [Index](#index) (9 endpoints)
 3. [Knowledge](#knowledge) (23 endpoints)
-4. [Intelligence](#intelligence) (4 endpoints)
-5. [Runtime](#runtime) (15 endpoints)
+4. [Intelligence](#intelligence) (5 endpoints)
+5. [Runtime](#runtime) (16 endpoints)
 6. [Search](#search) (3 endpoints)
 7. [Transaction](#transaction) (3 endpoints)
 8. [Approval](#approval) (2 endpoints)
@@ -1501,6 +1501,29 @@ curl -X POST http://localhost:4000/api/plan/validate \
 
 ---
 
+### GET /api/intelligence/report_rules
+
+Get canonical report generation rules (section order, scoring formulas, formatting, and Elixir idiom rules).
+
+**Parameters:** None.
+
+**Example:**
+
+```bash
+curl http://localhost:4000/api/intelligence/report_rules
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "rules": "# Report Generation Rules\n..."
+}
+```
+
+---
+
 ## Runtime
 
 BEAM runtime introspection endpoints. Managed by `Giulia.Daemon.Routers.Runtime`. Supports both self-introspection and remote node inspection via the optional `?node` parameter.
@@ -2495,10 +2518,10 @@ curl http://localhost:4000/api/discovery/categories
     {"category": "approval", "count": 2},
     {"category": "discovery", "count": 3},
     {"category": "index", "count": 9},
-    {"category": "intelligence", "count": 4},
+    {"category": "intelligence", "count": 5},
     {"category": "knowledge", "count": 23},
     {"category": "monitor", "count": 6},
-    {"category": "runtime", "count": 15},
+    {"category": "runtime", "count": 16},
     {"category": "search", "count": 3},
     {"category": "transaction", "count": 3}
   ],
@@ -2574,13 +2597,13 @@ Common HTTP status codes:
 | Core         | 10    | `/health`, `/api/*`   |
 | Index        | 9     | `/api/index/*`        |
 | Knowledge    | 23    | `/api/knowledge/*`    |
-| Intelligence | 4     | `/api/intelligence/*`, `/api/briefing/*`, `/api/brief/*`, `/api/plan/*` |
-| Runtime      | 15    | `/api/runtime/*`      |
+| Intelligence | 5     | `/api/intelligence/*`, `/api/briefing/*`, `/api/brief/*`, `/api/plan/*` |
+| Runtime      | 16    | `/api/runtime/*`      |
 | Search       | 3     | `/api/search/*`       |
 | Transaction  | 3     | `/api/transaction/*`  |
 | Approval     | 2     | `/api/approval/*`     |
 | Monitor      | 6     | `/api/monitor/*`      |
 | Discovery    | 3     | `/api/discovery/*`    |
-| **Total**    | **78**|                       |
+| **Total**    | **80**|                       |
 
-Note: The 78 total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 68 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API.
+Note: The 80 total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 70 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API.
