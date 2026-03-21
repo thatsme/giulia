@@ -11,12 +11,12 @@ for historical context. Active items are ordered by priority.
 |---------|-------|--------|
 | ETS multi-table optimization | - | Deferred (current O(files) scan is fast enough at 141 files) |
 | Incremental indexing | 102 | DONE — SHA-256 content hashes, only stale files re-scanned |
-| Cross-reference index | 94 | DONE — Knowledge Graph tracks module + function call edges |
+| Cross-reference index | 94 | DONE — Property Graph tracks module + function call edges |
 | Semantic search | 100 | DONE — Bumblebee embeddings, Nx.dot cosine similarity |
 | CubDB persistence | 104 | DONE — warm starts, Merkle tree verification |
 | ArcadeDB L2 | 137 | DONE — graph snapshots, consolidation queries |
 | Dual-container architecture | 131 | DONE — worker + monitor via distributed Erlang |
-| Discovery engine | 98 | DONE — 78 self-describing endpoints |
+| Discovery engine | 98 | DONE — 70 self-describing endpoints |
 
 ---
 
@@ -184,4 +184,4 @@ already handles incremental updates — this just adds the trigger.
 
 Sourceror handles Elixir natively. For Python/TypeScript/Go analysis,
 add tree-sitter as an optional sidecar (separate container or NIF).
-The Knowledge Graph schema is language-agnostic — only the parser changes.
+The Property Graph schema is language-agnostic — only the parser changes.

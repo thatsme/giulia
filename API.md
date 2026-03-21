@@ -462,7 +462,7 @@ curl http://localhost:4000/api/index/status
 
 ### POST /api/index/scan
 
-Trigger a full re-index of a project. Scans all `.ex` files, builds AST entries, knowledge graph, and embeddings.
+Trigger a full re-index of a project. Scans all `.ex` files, builds AST entries, property graph, and embeddings.
 
 **Parameters (JSON body):**
 
@@ -586,7 +586,7 @@ curl "http://localhost:4000/api/index/complexity?path=C:/Development/GitHub/Giul
 
 ## Knowledge
 
-Knowledge Graph topology analysis endpoints. Managed by `Giulia.Daemon.Routers.Knowledge`. This is the largest category with 23 endpoints.
+Property Graph topology analysis endpoints. Managed by `Giulia.Daemon.Routers.Knowledge`. This is the largest category with 23 endpoints.
 
 All GET endpoints require `?path=P` in the query string.
 
@@ -1409,7 +1409,7 @@ curl -X POST http://localhost:4000/api/briefing/preflight \
     }
   ],
   "suggested_tools": [
-    {"endpoint": "GET /api/knowledge/stats", "intent": "Get Knowledge Graph statistics", "score": 0.87}
+    {"endpoint": "GET /api/knowledge/stats", "intent": "Get Property Graph statistics", "score": 0.87}
   ],
   "module_count": 3
 }
@@ -1468,7 +1468,7 @@ curl "http://localhost:4000/api/brief/architect?path=C:/Development/GitHub/Giuli
 
 ### POST /api/plan/validate
 
-Validate a proposed plan against the Knowledge Graph. Checks for dependency violations, blast radius, and risk.
+Validate a proposed plan against the Property Graph. Checks for dependency violations, blast radius, and risk.
 
 **Parameters (JSON body):**
 
@@ -1600,7 +1600,7 @@ curl "http://localhost:4000/api/runtime/top_processes?metric=memory"
 
 ### GET /api/runtime/hot_spots
 
-Top runtime modules fused with Knowledge Graph data. Combines process reduction counts with static analysis metrics.
+Top runtime modules fused with Property Graph data. Combines process reduction counts with static analysis metrics.
 
 **Parameters (query string):**
 
@@ -2485,7 +2485,7 @@ curl "http://localhost:4000/api/discovery/skills?category=knowledge"
 {
   "skills": [
     {
-      "intent": "Get Knowledge Graph statistics (vertices, edges, components, hubs)",
+      "intent": "Get Property Graph statistics (vertices, edges, components, hubs)",
       "endpoint": "GET /api/knowledge/stats",
       "params": {"path": "required"},
       "returns": "JSON graph stats with top hub modules",

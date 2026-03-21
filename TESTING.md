@@ -375,7 +375,7 @@ downstream dependencies. Instead, we test the real pipeline end-to-end:
 
 ### Key insight
 
-In a test environment, the knowledge graph may be empty (no project scanned).
+In a test environment, the property graph may be empty (no project scanned).
 Tests for module-specific queries (centrality, dependents, etc.) accept both
 200 (graph populated) and 404 (module not found) — they validate the HTTP
 layer, not the business logic.

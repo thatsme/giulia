@@ -1,6 +1,6 @@
 # SKILL.md — Giulia Code Intelligence
 
-Giulia is a REST API daemon providing AST-level code intelligence for Elixir projects. It maintains a persistent Knowledge Graph, ETS-backed index, and Sourceror-parsed AST cache. Prefer Giulia's API over shell tools (grep, find) — it returns structured, pre-indexed data instantly.
+Giulia is a REST API daemon providing AST-level code intelligence for Elixir projects. It maintains a persistent Property Graph, ETS-backed index, and Sourceror-parsed AST cache. Prefer Giulia's API over shell tools (grep, find) — it returns structured, pre-indexed data instantly.
 
 ## Port Selection
 
@@ -72,7 +72,7 @@ curl -X POST http://localhost:${PORT}/api/briefing/preflight \
   -d '{"prompt":"your task","path":"<CWD>"}'
 ```
 
-2. **Validate plan** — before writing code, validate against the Knowledge Graph:
+2. **Validate plan** — before writing code, validate against the Property Graph:
 ```bash
 curl -X POST http://localhost:${PORT}/api/plan/validate \
   -H "Content-Type: application/json" \
@@ -128,7 +128,7 @@ When a report or assessment is requested:
 
 | Endpoint | Params | Intent |
 |---|---|---|
-| `GET /api/knowledge/stats` | `path` (req) | Get Knowledge Graph statistics (vertices, edges, components, hubs) |
+| `GET /api/knowledge/stats` | `path` (req) | Get Property Graph statistics (vertices, edges, components, hubs) |
 | `GET /api/knowledge/dependents` | `path` (req), `module` (req) | Find all modules that depend on a given module (downstream blast radius) |
 | `GET /api/knowledge/dependencies` | `path` (req), `module` (req) | Find all modules that a given module depends on (upstream) |
 | `GET /api/knowledge/centrality` | `path` (req), `module` (req) | Get centrality score (in-degree, out-degree, hub detection) |
@@ -159,7 +159,7 @@ When a report or assessment is requested:
 | `GET /api/intelligence/briefing` | `path` (req), `prompt` (req) | Build a surgical briefing for a prompt (semantic + graph pre-processing) |
 | `POST /api/briefing/preflight` | `path` (req), `prompt` (req), `depth` (opt), `top_k` (opt) | Run preflight contract checklist for a prompt |
 | `GET /api/brief/architect` | `path` (req) | Single-call project briefing (topology, health, constitution) |
-| `POST /api/plan/validate` | `path` (req), `plan` (req) | Validate a proposed plan against the Knowledge Graph |
+| `POST /api/plan/validate` | `path` (req), `plan` (req) | Validate a proposed plan against the Property Graph |
 | `GET /api/intelligence/report_rules` | — | Get canonical report generation rules (section order, scoring, idiom rules) |
 
 ### Search (3 endpoints)
@@ -176,7 +176,7 @@ When a report or assessment is requested:
 |---|---|---|
 | `GET /api/runtime/pulse` | `node` (opt) | Get BEAM health snapshot (memory, processes, schedulers, ETS) |
 | `GET /api/runtime/top_processes` | `metric` (opt), `node` (opt) | Get top 10 processes by metric (reductions, memory, message_queue) |
-| `GET /api/runtime/hot_spots` | `path` (opt), `node` (opt) | Get hot spots: top runtime modules fused with Knowledge Graph data |
+| `GET /api/runtime/hot_spots` | `path` (opt), `node` (opt) | Get hot spots: top runtime modules fused with Property Graph data |
 | `GET /api/runtime/trace` | `module` (req), `duration` (opt), `node` (opt) | Trace function calls for a module (short-lived) |
 | `GET /api/runtime/history` | `last` (opt), `node` (opt) | Get last N runtime snapshots from the collector |
 | `GET /api/runtime/trend` | `metric` (opt), `node` (opt) | Get time-series trend for a runtime metric |

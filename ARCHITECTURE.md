@@ -6,7 +6,7 @@ Giulia is a high-performance, local-first AI development agent built in Elixir/O
 It runs as a persistent background daemon inside Docker, exposing an HTTP REST API
 on port 4000. Any client -- Claude Code, a CLI escript, an editor plugin -- talks
 to the daemon over plain HTTP/JSON. The daemon never restarts between terminal
-sessions; it keeps AST caches, knowledge graphs, and embedding vectors warm in
+sessions; it keeps AST caches, property graphs, and embedding vectors warm in
 memory across invocations.
 
 ```
@@ -27,7 +27,7 @@ memory across invocations.
  +-----------------------------+
 ```
 
-The daemon holds per-project state in ETS tables, a libgraph-based knowledge graph,
+The daemon holds per-project state in ETS tables, a libgraph-based property graph,
 CubDB persistence for warm restarts, and an optional ArcadeDB connection for
 cross-build historical analysis.
 
@@ -49,7 +49,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | Ports 9100-9105 (dist)      |    | Ports 9110-9115 (dist)    | |
 |  |                             |    |                           | |
 |  | - AST indexing              |    | - Distributed Erlang      | |
-|  | - Knowledge Graph           |    |   connection to worker    | |
+|  | - Property Graph           |    |   connection to worker    | |
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
@@ -75,7 +75,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 ```
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
-scanning, knowledge graph construction, semantic embeddings), the inference engine
+scanning, property graph construction, semantic embeddings), the inference engine
 (OODA loop with LLM providers), and serves all 70 API endpoints. Memory limit: 4GB.
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
@@ -173,7 +173,7 @@ On-disk key-value store for surviving restarts without re-scanning.
   In test mode (`MIX_ENV=test`), routed to `/tmp` to avoid corrupting the dev
   daemon's data.
 
-- **Contents**: AST entries, serialized knowledge graph, metric caches, embedding
+- **Contents**: AST entries, serialized property graph, metric caches, embedding
   vectors (module + function).
 
 - **Writer**: `Persistence.Writer` batches writes with a 100ms debounce. Multiple
@@ -266,7 +266,7 @@ The `/api/runtime/hot_spots` endpoint is the fusion point. It:
 
 1. Reads top processes from the target BEAM node (by reductions or memory)
 2. Resolves PIDs to module names via `Process.info(pid, :dictionary)`
-3. Looks up each module in the Knowledge Graph for centrality, complexity, and zone
+3. Looks up each module in the Property Graph for centrality, complexity, and zone
 4. Returns a merged view: runtime activity annotated with static analysis metadata
 
 The Observer (running on the monitor node) pushes snapshots to the worker via HTTP.

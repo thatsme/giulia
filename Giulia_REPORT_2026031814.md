@@ -28,7 +28,7 @@
 | Dead Code | 0 functions |
 | Test Files | 92 (65.2% module coverage) |
 
-**How this data was collected**: Giulia scans all `.ex` files under `lib/`, parses each with Sourceror (pure Elixir AST parser), extracts module/function/type/spec/struct/callback metadata, and stores it in ETS (`Context.Store`). The Knowledge Graph is built from import/alias/use/require relationships plus function-level call edges extracted via xref analysis of compiled BEAM files. All metrics are computed from this graph using `libgraph` (directed graph library). Spec coverage is calculated as `specs / public def count` (excluding defp, defmacro, defstruct, etc.).
+**How this data was collected**: Giulia scans all `.ex` files under `lib/`, parses each with Sourceror (pure Elixir AST parser), extracts module/function/type/spec/struct/callback metadata, and stores it in ETS (`Context.Store`). The Property Graph is built from import/alias/use/require relationships plus function-level call edges extracted via xref analysis of compiled BEAM files. All metrics are computed from this graph using `libgraph` (directed graph library). Spec coverage is calculated as `specs / public def count` (excluding defp, defmacro, defstruct, etc.).
 
 **Verdict**: Structurally healthy codebase with strong spec coverage (70.7%) and zero dead code. Three circular dependency cycles and 31 untested modules are the primary gaps. Context.Store dominates risk with a 67-module blast radius.
 
@@ -185,7 +185,7 @@ No module is untestable. Every gap is a prioritization decision, not a technical
 
 ## Section 3: Top 5 Hubs
 
-Hubs are identified by the Knowledge Graph's fan-in metric — the number of modules that depend on (import/alias/use) a given module. High fan-in means high blast radius: changing the module's interface breaks many consumers.
+Hubs are identified by the Property Graph's fan-in metric — the number of modules that depend on (import/alias/use) a given module. High fan-in means high blast radius: changing the module's interface breaks many consumers.
 
 | Module | In-Degree | Out-Degree | Risk Profile |
 |---|---|---|---|
@@ -268,7 +268,7 @@ God modules are identified by a composite score of function count, complexity, a
 
 ## Section 6: Blast Radius (Top 3 Risk Modules)
 
-Blast radius is computed by traversing the Knowledge Graph outward from a module to depth 2. Depth 1 = direct dependents. Depth 2 = modules that depend on depth-1 modules.
+Blast radius is computed by traversing the Property Graph outward from a module to depth 2. Depth 1 = direct dependents. Depth 2 = modules that depend on depth-1 modules.
 
 ### Context.Store (change_risk rank #1)
 
@@ -342,7 +342,7 @@ The only project-internal pair in the top 10 is **Engine -> State** (39 calls, 1
 
 ## Section 9: Dead Code
 
-Dead code is detected by the Knowledge Graph: any function that exists as a vertex but has zero incoming call edges.
+Dead code is detected by the Property Graph: any function that exists as a vertex but has zero incoming call edges.
 
 **0 functions detected as dead code out of 1,477 total (0.0%).**
 
@@ -390,7 +390,7 @@ No copy-paste patterns or structurally redundant implementations detected.
 
 ### Circular Dependency Details (P0)
 
-Cycles are detected by finding strongly connected components in the Knowledge Graph (Tarjan's algorithm). A cycle means A depends on B depends on C depends on A — making it impossible to reason about changes in isolation.
+Cycles are detected by finding strongly connected components in the Property Graph (Tarjan's algorithm). A cycle means A depends on B depends on C depends on A — making it impossible to reason about changes in isolation.
 
 **Cycle 1**: Client -> Client.Commands -> Client.Daemon -> Client.REPL
 Lives within the Client escript subsystem. REPL needs Commands for dispatch, Commands needs Daemon for lifecycle, Daemon needs REPL for interactive mode. A shared types/behaviour module could break the loop.
@@ -411,7 +411,7 @@ Runtime data is collected via `:erlang` BIFs (memory/0, system_info/1, statistic
 |---|---|---|---|---|---|
 | 546 | 137.36 MB | 24 | 0 | ~3.3 hours | 71 |
 
-**Run queue is 0** — no scheduler pressure. Memory at 137 MB is healthy for a daemon with full AST index, knowledge graph, embedding vectors (384-dim x 700+ entries), and ArcadeDB client loaded.
+**Run queue is 0** — no scheduler pressure. Memory at 137 MB is healthy for a daemon with full AST index, property graph, embedding vectors (384-dim x 700+ entries), and ArcadeDB client loaded.
 
 ### ETS Memory (Top 5)
 
