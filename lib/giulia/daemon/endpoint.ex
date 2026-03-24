@@ -298,13 +298,13 @@ defmodule Giulia.Daemon.Endpoint do
 
     response = cond do
       String.contains?(message_lower, "module") ->
-        modules = Giulia.Context.Store.list_modules(project_path)
+        modules = Giulia.Context.Store.Query.list_modules(project_path)
         module_list = Enum.map_join(modules, "\n", &"- #{&1.name}")
         "Indexed modules:\n#{module_list}"
 
       String.contains?(message_lower, "function") ->
         module_filter = extract_module_name(message)
-        functions = Giulia.Context.Store.list_functions(project_path, module_filter)
+        functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
 
         header = if module_filter, do: "Functions in #{module_filter}:", else: "Functions (showing first 20):"
         func_list = Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
@@ -318,7 +318,7 @@ defmodule Giulia.Daemon.Endpoint do
         "Index: #{stats.ast_files} files, #{stats.total_entries} entries"
 
       String.contains?(message_lower, "summary") ->
-        Giulia.Context.Store.project_summary(project_path)
+        Giulia.Context.Store.Formatter.project_summary(project_path)
 
       true ->
         "I can answer questions about modules, functions, status, or summary without using the LLM."

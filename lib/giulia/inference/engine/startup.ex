@@ -124,12 +124,12 @@ defmodule Giulia.Inference.Engine.Startup do
 
     cond do
       String.contains?(prompt_lower, "module") ->
-        modules = Store.list_modules(project_path)
+        modules = Store.Query.list_modules(project_path)
         list = Enum.map_join(modules, "\n", &"- #{&1.name} (#{&1.file})")
         {:ok, "Indexed modules:\n#{list}"}
 
       String.contains?(prompt_lower, "function") ->
-        functions = Store.list_functions(project_path)
+        functions = Store.Query.list_functions(project_path, nil)
 
         list =
           functions
@@ -143,7 +143,7 @@ defmodule Giulia.Inference.Engine.Startup do
         {:ok, "Index: #{stats.ast_files} files, #{stats.total_entries} entries"}
 
       String.contains?(prompt_lower, "summary") ->
-        {:ok, Store.project_summary(project_path)}
+        {:ok, Store.Formatter.project_summary(project_path)}
 
       true ->
         {:ok, "Native command not recognized. Ask about modules, functions, status, or summary."}

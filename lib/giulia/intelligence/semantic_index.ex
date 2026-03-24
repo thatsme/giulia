@@ -240,7 +240,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
       Enum.map(modules, fn mod ->
         # Get moduledoc
         moduledoc =
-          case Store.get_moduledoc(project_path, mod.name) do
+          case Store.Query.get_moduledoc(project_path, mod.name) do
             {:ok, doc} -> doc
             :not_found -> ""
           end
@@ -286,14 +286,14 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
         # Get @doc
         doc_text =
-          case Store.get_function_doc(project_path, module_name, func.name, func.arity) do
+          case Store.Query.get_function_doc(project_path, module_name, func.name, func.arity) do
             %{doc: doc} when is_binary(doc) -> doc
             _ -> nil
           end
 
         # Get @spec
         spec_text =
-          case Store.get_spec(project_path, module_name, func.name, func.arity) do
+          case Store.Query.get_spec(project_path, module_name, func.name, func.arity) do
             %{spec: spec} when is_binary(spec) and spec != "" -> spec
             _ -> nil
           end

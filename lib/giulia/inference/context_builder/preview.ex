@@ -88,7 +88,7 @@ defmodule Giulia.Inference.ContextBuilder.Preview do
     arity = params["arity"] || params[:arity]
     new_code = params["code"] || params[:code] || ""
 
-    case Store.find_module(state.project_path, module) do
+    case Store.Query.find_module(state.project_path, module) do
       {:ok, %{file: file_path}} ->
         resolved = Helpers.resolve_tool_path(file_path, state)
 

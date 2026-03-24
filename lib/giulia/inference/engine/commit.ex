@@ -201,7 +201,7 @@ defmodule Giulia.Inference.Engine.Commit do
 
     all_test_targets =
       Enum.flat_map(staged_files, fn path ->
-        case Store.find_module_by_file(project_path, path) do
+        case Store.Query.find_module_by_file(project_path, path) do
           {:ok, %{name: module_name}} ->
             case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
               {:ok, %{all_paths: paths}} when paths != [] -> paths

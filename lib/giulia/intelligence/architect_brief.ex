@@ -45,7 +45,7 @@ defmodule Giulia.Intelligence.ArchitectBrief do
   # ============================================================================
 
   defp section_project(project_path) do
-    summary = Store.project_summary(project_path)
+    summary = Store.Formatter.project_summary(project_path)
 
     # project_summary returns a formatted string — parse the key counts
     parse_summary_string(summary)

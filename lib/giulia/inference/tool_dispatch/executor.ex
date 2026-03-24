@@ -242,7 +242,7 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
   defp lookup_module_file(nil, _project_path), do: nil
 
   defp lookup_module_file(module_name, project_path) do
-    case Store.find_module(project_path, module_name) do
+    case Store.Query.find_module(project_path, module_name) do
       {:ok, %{file: file_path}} -> file_path
       :not_found -> nil
     end

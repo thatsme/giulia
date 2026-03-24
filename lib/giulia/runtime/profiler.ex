@@ -23,7 +23,7 @@ defmodule Giulia.Runtime.Profiler do
   """
 
   alias Giulia.Knowledge.Store, as: KnowledgeStore
-  alias Giulia.Context.Store, as: ContextStore
+  # Context.Store.Query used directly (fully qualified) in fetch_hottest_functions
 
   @doc """
   Produce a performance profile from burst snapshots.
@@ -209,7 +209,7 @@ defmodule Giulia.Runtime.Profiler do
 
   defp fetch_hottest_functions(project_path, module_name) do
     # Get functions from Context.Store and find those with complexity data
-    case ContextStore.list_functions(project_path, module_name) do
+    case Giulia.Context.Store.Query.list_functions(project_path, module_name) do
       functions when is_list(functions) and functions != [] ->
         functions
         |> Enum.filter(fn f -> (f[:complexity] || 0) >= 5 end)

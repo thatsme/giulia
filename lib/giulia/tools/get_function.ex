@@ -103,7 +103,7 @@ defmodule Giulia.Tools.GetFunction do
   def execute(%{"module" => module, "function_name" => _func_name} = params, opts) do
     project_path = opts[:project_path]
 
-    case Giulia.Context.Store.find_module(project_path, module) do
+    case Giulia.Context.Store.Query.find_module(project_path, module) do
       {:ok, %{file: file_path}} ->
         new_params = Map.put(params, "file", file_path) |> Map.delete("module")
         execute(new_params, opts)

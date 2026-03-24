@@ -11,6 +11,7 @@ defmodule Giulia.Context.StoreTest do
   use ExUnit.Case, async: false
 
   alias Giulia.Context.Store
+  alias Giulia.Context.Store.{Query, Formatter}
 
   @project "/test/project"
 
@@ -229,7 +230,7 @@ defmodule Giulia.Context.StoreTest do
   describe "list_modules/1" do
     test "lists all modules sorted by name" do
       populate_store()
-      modules = Store.list_modules(@project)
+      modules = Query.list_modules(@project)
       assert length(modules) == 2
       names = Enum.map(modules, & &1.name)
       assert "MyApp.Repo" in names
@@ -239,12 +240,12 @@ defmodule Giulia.Context.StoreTest do
     end
 
     test "returns empty list for empty project" do
-      assert Store.list_modules(@project) == []
+      assert Query.list_modules(@project) == []
     end
 
     test "includes file and line info" do
       populate_store()
-      mod = Enum.find(Store.list_modules(@project), &(&1.name == "MyApp.Users"))
+      mod = Enum.find(Query.list_modules(@project), &(&1.name == "MyApp.Users"))
       assert mod.file == "lib/my_app/users.ex"
       assert mod.line == 1
     end
@@ -257,26 +258,26 @@ defmodule Giulia.Context.StoreTest do
   describe "list_functions/2" do
     test "lists all functions across all modules" do
       populate_store()
-      funcs = Store.list_functions(@project)
+      funcs = Query.list_functions(@project, nil)
       # Users has 3, Repo has 2 = 5 total
       assert length(funcs) == 5
     end
 
     test "filters by module name" do
       populate_store()
-      funcs = Store.list_functions(@project, "MyApp.Users")
+      funcs = Query.list_functions(@project, "MyApp.Users")
       assert length(funcs) == 3
       assert Enum.all?(funcs, &(&1.module == "MyApp.Users"))
     end
 
     test "returns empty for unknown module" do
       populate_store()
-      assert Store.list_functions(@project, "NonExistent") == []
+      assert Query.list_functions(@project, "NonExistent") == []
     end
 
     test "includes type information" do
       populate_store()
-      funcs = Store.list_functions(@project, "MyApp.Users")
+      funcs = Query.list_functions(@project, "MyApp.Users")
       public = Enum.filter(funcs, &(&1.type == :def))
       private = Enum.filter(funcs, &(&1.type == :defp))
       assert length(public) == 2
@@ -291,37 +292,37 @@ defmodule Giulia.Context.StoreTest do
   describe "find_module/2" do
     test "finds module by name" do
       populate_store()
-      assert {:ok, result} = Store.find_module(@project, "MyApp.Users")
+      assert {:ok, result} = Query.find_module(@project, "MyApp.Users")
       assert result.file == "lib/my_app/users.ex"
       assert is_map(result.ast_data)
     end
 
     test "returns :not_found for unknown module" do
       populate_store()
-      assert :not_found = Store.find_module(@project, "Unknown")
+      assert :not_found = Query.find_module(@project, "Unknown")
     end
   end
 
   describe "find_function/3" do
     test "finds function by name across all modules" do
       populate_store()
-      results = Store.find_function(@project, :create)
+      results = Query.find_function(@project, :create, nil)
       assert length(results) == 1
       assert hd(results).module == "MyApp.Users"
     end
 
     test "finds function filtered by arity" do
       populate_store()
-      results = Store.find_function(@project, :create, 1)
+      results = Query.find_function(@project, :create, 1)
       assert length(results) == 1
 
-      results = Store.find_function(@project, :create, 99)
+      results = Query.find_function(@project, :create, 99)
       assert results == []
     end
 
     test "returns empty list for unknown function" do
       populate_store()
-      assert Store.find_function(@project, :nonexistent) == []
+      assert Query.find_function(@project, :nonexistent, nil) == []
     end
   end
 
@@ -333,19 +334,19 @@ defmodule Giulia.Context.StoreTest do
     test "finds module by file path" do
       populate_store()
       assert {:ok, %{name: "MyApp.Users"}} =
-               Store.find_module_by_file(@project, "lib/my_app/users.ex")
+               Query.find_module_by_file(@project, "lib/my_app/users.ex")
     end
 
     test "handles path with different separators" do
       populate_store()
       # Backslash should still match
       assert {:ok, %{name: "MyApp.Users"}} =
-               Store.find_module_by_file(@project, "lib\\my_app\\users.ex")
+               Query.find_module_by_file(@project, "lib\\my_app\\users.ex")
     end
 
     test "returns :not_found for unknown file" do
       populate_store()
-      assert :not_found = Store.find_module_by_file(@project, "lib/unknown.ex")
+      assert :not_found = Query.find_module_by_file(@project, "lib/unknown.ex")
     end
   end
 
@@ -356,29 +357,29 @@ defmodule Giulia.Context.StoreTest do
   describe "list_types/2" do
     test "lists all types" do
       populate_store()
-      types = Store.list_types(@project)
+      types = Query.list_types(@project, nil)
       assert length(types) >= 1
       assert Enum.any?(types, &(&1.name == :t))
     end
 
     test "filters by module" do
       populate_store()
-      types = Store.list_types(@project, "MyApp.Users")
+      types = Query.list_types(@project, "MyApp.Users")
       assert length(types) == 1
-      assert Store.list_types(@project, "MyApp.Repo") == []
+      assert Query.list_types(@project, "MyApp.Repo") == []
     end
   end
 
   describe "list_specs/2" do
     test "lists all specs" do
       populate_store()
-      specs = Store.list_specs(@project)
+      specs = Query.list_specs(@project, nil)
       assert length(specs) >= 1
     end
 
     test "filters by module" do
       populate_store()
-      specs = Store.list_specs(@project, "MyApp.Users")
+      specs = Query.list_specs(@project, "MyApp.Users")
       assert length(specs) == 1
       assert hd(specs).function == :create
     end
@@ -387,44 +388,44 @@ defmodule Giulia.Context.StoreTest do
   describe "get_spec/4" do
     test "finds spec for specific function" do
       populate_store()
-      spec = Store.get_spec(@project, "MyApp.Users", :create, 1)
+      spec = Query.get_spec(@project, "MyApp.Users", :create, 1)
       assert spec != nil
       assert spec.function == :create
     end
 
     test "returns nil for missing spec" do
       populate_store()
-      assert Store.get_spec(@project, "MyApp.Users", :nonexistent, 0) == nil
+      assert Query.get_spec(@project, "MyApp.Users", :nonexistent, 0) == nil
     end
   end
 
   describe "list_callbacks/2" do
     test "lists all callbacks" do
       populate_store()
-      callbacks = Store.list_callbacks(@project)
+      callbacks = Query.list_callbacks(@project, nil)
       assert length(callbacks) >= 1
       assert Enum.any?(callbacks, &(&1.function == :init))
     end
 
     test "filters by module" do
       populate_store()
-      cbs = Store.list_callbacks(@project, "MyApp.Repo")
+      cbs = Query.list_callbacks(@project, "MyApp.Repo")
       assert length(cbs) == 1
-      assert Store.list_callbacks(@project, "MyApp.Users") == []
+      assert Query.list_callbacks(@project, "MyApp.Users") == []
     end
   end
 
   describe "list_structs/1 and get_struct/2" do
     test "lists all structs" do
       populate_store()
-      structs = Store.list_structs(@project)
+      structs = Query.list_structs(@project)
       assert length(structs) >= 1
       assert Enum.any?(structs, &(&1.module == "MyApp.Users"))
     end
 
     test "gets specific struct" do
       populate_store()
-      struct = Store.get_struct(@project, "MyApp.Users")
+      struct = Query.get_struct(@project, "MyApp.Users")
       assert struct != nil
       assert :name in struct.fields
       assert :email in struct.fields
@@ -432,27 +433,27 @@ defmodule Giulia.Context.StoreTest do
 
     test "returns nil for module without struct" do
       populate_store()
-      assert Store.get_struct(@project, "MyApp.Repo") == nil
+      assert Query.get_struct(@project, "MyApp.Repo") == nil
     end
   end
 
   describe "list_docs/2 and get_function_doc/4" do
     test "lists all docs" do
       populate_store()
-      docs = Store.list_docs(@project)
+      docs = Query.list_docs(@project, nil)
       assert length(docs) >= 1
     end
 
     test "gets doc for specific function" do
       populate_store()
-      doc = Store.get_function_doc(@project, "MyApp.Users", :create, 1)
+      doc = Query.get_function_doc(@project, "MyApp.Users", :create, 1)
       assert doc != nil
       assert doc.doc == "Creates a new user."
     end
 
     test "returns nil for undocumented function" do
       populate_store()
-      assert Store.get_function_doc(@project, "MyApp.Users", :update, 2) == nil
+      assert Query.get_function_doc(@project, "MyApp.Users", :update, 2) == nil
     end
   end
 
@@ -463,7 +464,7 @@ defmodule Giulia.Context.StoreTest do
   describe "get_moduledoc/2" do
     test "returns moduledoc for module" do
       populate_store()
-      assert {:ok, doc} = Store.get_moduledoc(@project, "MyApp.Users")
+      assert {:ok, doc} = Query.get_moduledoc(@project, "MyApp.Users")
       assert doc == "User management"
     end
 
@@ -479,11 +480,11 @@ defmodule Giulia.Context.StoreTest do
         docs: []
       }
       Store.put_ast(@project, "lib/no_doc.ex", data)
-      assert :not_found = Store.get_moduledoc(@project, "NoDoc")
+      assert :not_found = Query.get_moduledoc(@project, "NoDoc")
     end
 
     test "returns :not_found for unknown module" do
-      assert :not_found = Store.get_moduledoc(@project, "Unknown")
+      assert :not_found = Query.get_moduledoc(@project, "Unknown")
     end
   end
 
@@ -494,7 +495,7 @@ defmodule Giulia.Context.StoreTest do
   describe "project_summary/1" do
     test "returns formatted summary string" do
       populate_store()
-      summary = Store.project_summary(@project)
+      summary = Formatter.project_summary(@project)
       assert is_binary(summary)
       assert summary =~ "PROJECT INDEX"
       assert summary =~ "Modules: 2"
@@ -503,7 +504,7 @@ defmodule Giulia.Context.StoreTest do
     end
 
     test "empty project returns summary with zeroes" do
-      summary = Store.project_summary(@project)
+      summary = Formatter.project_summary(@project)
       assert summary =~ "Files: 0"
       assert summary =~ "Modules: 0"
     end
@@ -516,7 +517,7 @@ defmodule Giulia.Context.StoreTest do
   describe "module_details/2" do
     test "returns detailed summary for known module" do
       populate_store()
-      details = Store.module_details(@project, "MyApp.Users")
+      details = Formatter.module_details(@project, "MyApp.Users")
       assert details =~ "MyApp.Users"
       assert details =~ "create/1"
       assert details =~ "validate/1"
@@ -525,7 +526,7 @@ defmodule Giulia.Context.StoreTest do
     end
 
     test "returns not-found message for unknown module" do
-      details = Store.module_details(@project, "Unknown")
+      details = Formatter.module_details(@project, "Unknown")
       assert details =~ "not found"
     end
   end
@@ -542,8 +543,8 @@ defmodule Giulia.Context.StoreTest do
       Store.put_ast(project_a, "lib/a.ex", %{modules: [%{name: "Alpha", line: 1}], functions: [], imports: [], structs: [], callbacks: [], types: [], specs: [], docs: []})
       Store.put_ast(project_b, "lib/b.ex", %{modules: [%{name: "Beta", line: 1}], functions: [], imports: [], structs: [], callbacks: [], types: [], specs: [], docs: []})
 
-      a_modules = Store.list_modules(project_a)
-      b_modules = Store.list_modules(project_b)
+      a_modules = Query.list_modules(project_a)
+      b_modules = Query.list_modules(project_b)
 
       assert length(a_modules) == 1
       assert hd(a_modules).name == "Alpha"

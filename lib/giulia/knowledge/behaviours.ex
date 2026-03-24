@@ -21,7 +21,7 @@ defmodule Giulia.Knowledge.Behaviours do
       {:error, :not_found}
     else
       # Get declared callbacks from ETS
-      callbacks = Giulia.Context.Store.list_callbacks(project_path, behaviour)
+      callbacks = Giulia.Context.Store.Query.list_callbacks(project_path, behaviour)
 
       if callbacks == [] do
         # Not a behaviour (no callbacks declared)
@@ -54,7 +54,7 @@ defmodule Giulia.Knowledge.Behaviours do
           Enum.map(implementers, fn impl_mod ->
             # Get public functions of the implementer
             impl_functions =
-              Giulia.Context.Store.list_functions(project_path, impl_mod)
+              Giulia.Context.Store.Query.list_functions(project_path, impl_mod)
               |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
               |> Enum.map(fn f -> {to_string(f.name), f.arity} end)
               |> MapSet.new()
@@ -116,7 +116,7 @@ defmodule Giulia.Knowledge.Behaviours do
   def all_behaviours(graph, project_path) do
     # Find behaviour modules from ETS (modules that declare @callback).
     behaviour_modules =
-      Giulia.Context.Store.list_callbacks(project_path)
+      Giulia.Context.Store.Query.list_callbacks(project_path, nil)
       |> Enum.map(& &1.module)
       |> Enum.uniq()
       |> Enum.filter(&Graph.has_vertex?(graph, &1))
@@ -158,7 +158,7 @@ defmodule Giulia.Knowledge.Behaviours do
       implementer = edge.v1
       behaviour = edge.v2
 
-      callbacks = Giulia.Context.Store.list_callbacks(project_path, behaviour)
+      callbacks = Giulia.Context.Store.Query.list_callbacks(project_path, behaviour)
 
       Enum.reduce(callbacks, acc, fn cb, set ->
         MapSet.put(set, {implementer, to_string(cb.function), cb.arity})
@@ -220,7 +220,7 @@ defmodule Giulia.Knowledge.Behaviours do
 
   # Get use directives for a module from ETS
   defp get_use_directives(project_path, module_name) do
-    case Giulia.Context.Store.find_module(project_path, module_name) do
+    case Giulia.Context.Store.Query.find_module(project_path, module_name) do
       {:ok, %{ast_data: ast_data}} ->
         (ast_data[:imports] || [])
         |> Enum.filter(fn imp -> imp.type == :use end)

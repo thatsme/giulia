@@ -137,7 +137,7 @@ defmodule Giulia.Prompt.Builder do
   @spec build_system_prompt(keyword()) :: String.t()
   def build_system_prompt(opts \\ []) do
     tools = Registry.list_tools()
-    project_summary = opts[:project_summary] || Store.project_summary(opts[:project_path])
+    project_summary = opts[:project_summary] || Store.Formatter.project_summary(opts[:project_path])
     constitution = opts[:constitution]
 
     """
@@ -598,7 +598,7 @@ defmodule Giulia.Prompt.Builder do
 
     if relevant_asts == [] do
       # No specific context, use project summary
-      opts[:project_summary] || Store.project_summary(project_path)
+      opts[:project_summary] || Store.Formatter.project_summary(project_path)
     else
       format_relevant_context(relevant_asts)
     end
@@ -732,7 +732,7 @@ defmodule Giulia.Prompt.Builder do
 
       String.contains?(module_or_file, ".") ->
         # It's a module name
-        case Store.find_module(project_path, module_or_file) do
+        case Store.Query.find_module(project_path, module_or_file) do
           {:ok, %{file: file, ast_data: ast}} -> {file, ast}
           _ -> nil
         end
