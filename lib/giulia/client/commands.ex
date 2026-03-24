@@ -3,18 +3,13 @@ defmodule Giulia.Client.Commands do
   Slash command dispatch — routes /init, /status, /modules, etc.
   """
 
-  alias Giulia.Client
-  alias Giulia.Client.{HTTP, Output, Renderer, REPL}
+  alias Giulia.Client.{Config, HTTP, Output, Renderer}
 
   @spec process([String.t()]) :: :ok
-  def process([]) do
-    REPL.start()
-  end
-
   def process(["/init" | rest]) do
-    path = List.first(rest) || Client.get_working_directory()
+    path = List.first(rest) || Config.working_directory()
 
-    case Client.init_project(path) do
+    case HTTP.post("/api/init", %{path: path}) do
       {:ok, %{"status" => "initialized"}} ->
         Output.success("Project initialized at #{path}")
         Output.info("Created GIULIA.md - edit this to define your project's constitution.")
@@ -28,7 +23,7 @@ defmodule Giulia.Client.Commands do
   end
 
   def process(["/status"]) do
-    case Client.status() do
+    case HTTP.get("/api/status") do
       {:ok, status} ->
         Output.print_status(status)
 
@@ -38,7 +33,7 @@ defmodule Giulia.Client.Commands do
   end
 
   def process(["/projects"]) do
-    case Client.list_projects() do
+    case HTTP.get("/api/projects") do
       {:ok, %{"projects" => projects}} ->
         Output.print_projects(projects)
 
@@ -64,7 +59,7 @@ defmodule Giulia.Client.Commands do
 
       terms ->
         pattern = Enum.join(terms, " ")
-        host_path = Client.get_working_directory()
+        host_path = Config.working_directory()
 
         case HTTP.get("/api/search?pattern=#{URI.encode(pattern)}&path=#{URI.encode(host_path)}") do
           {:ok, %{"results" => results}} ->
@@ -122,7 +117,7 @@ defmodule Giulia.Client.Commands do
   end
 
   def process(["/scan"]) do
-    host_path = Client.get_working_directory()
+    host_path = Config.working_directory()
 
     case HTTP.post("/api/index/scan", %{path: host_path}) do
       {:ok, %{"status" => "scanning", "path" => path}} ->
@@ -150,7 +145,7 @@ defmodule Giulia.Client.Commands do
   end
 
   def process(["/transaction"]) do
-    host_path = Client.get_working_directory()
+    host_path = Config.working_directory()
 
     case HTTP.post("/api/transaction/enable", %{path: host_path}) do
       {:ok, %{"status" => "enabled", "transaction_mode" => true}} ->
@@ -169,7 +164,7 @@ defmodule Giulia.Client.Commands do
   end
 
   def process(["/staged"]) do
-    host_path = Client.get_working_directory()
+    host_path = Config.working_directory()
 
     case HTTP.get("/api/transaction/staged?path=#{URI.encode(host_path)}") do
       {:ok, %{"transaction_mode" => true, "staged_files" => files, "count" => count}} ->
@@ -253,7 +248,7 @@ defmodule Giulia.Client.Commands do
   def process(args) do
     # Treat as chat message
     message = Enum.join(args, " ")
-    host_path = Client.get_working_directory()
+    host_path = Config.working_directory()
     Renderer.execute_input(message, host_path)
   end
 end

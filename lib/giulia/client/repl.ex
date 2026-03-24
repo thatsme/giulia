@@ -3,15 +3,14 @@ defmodule Giulia.Client.REPL do
   Interactive REPL — multiline input, history, command dispatch.
   """
 
-  alias Giulia.Client
-  alias Giulia.Client.{Commands, Output, HTTP, Renderer}
+  alias Giulia.Client.{Commands, Config, Output, HTTP, Renderer}
 
   @heredoc_delim ~s(""")
 
   @spec start() :: :ok
   def start do
     Output.print_banner()
-    host_path = Client.get_working_directory()
+    host_path = Config.working_directory()
 
     # Check if project is initialized (lightweight ping - no inference)
     case HTTP.post("/api/ping", %{path: host_path}) do
@@ -19,7 +18,7 @@ defmodule Giulia.Client.REPL do
         Output.warning("No GIULIA.md found.")
 
         if Output.confirm?("Initialize Giulia in current directory?") do
-          Client.init_project(host_path)
+          HTTP.post("/api/init", %{path: host_path})
           Output.success("Initialized!")
         end
 

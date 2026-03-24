@@ -83,6 +83,6 @@ defmodule Giulia.Client.Daemon do
   end
 
   defp default_projects_path do
-    Giulia.Client.get_working_directory() |> Path.dirname()
+    Giulia.Client.Config.working_directory() |> Path.dirname()
   end
 end

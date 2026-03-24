@@ -12,7 +12,7 @@ defmodule Giulia.Client do
   - `Client.Output`    — Terminal formatting + colored messages
   """
 
-  alias Giulia.Client.{HTTP, Daemon, Commands, Output}
+  alias Giulia.Client.{HTTP, Daemon, Commands, REPL, Output}
 
   # ============================================================================
   # Public API
@@ -25,7 +25,11 @@ defmodule Giulia.Client do
 
     case Daemon.ensure_running() do
       :ok ->
-        Commands.process(args)
+        if args == [] do
+          REPL.start()
+        else
+          Commands.process(args)
+        end
 
       {:error, reason} ->
         Output.error("Failed to start daemon: #{inspect(reason)}")
@@ -61,13 +65,7 @@ defmodule Giulia.Client do
 
   @doc "Get the real working directory (where user launched from)."
   @spec get_working_directory() :: String.t()
-  def get_working_directory do
-    case System.get_env("GIULIA_CLIENT_CWD") do
-      nil -> File.cwd!()
-      "" -> File.cwd!()
-      dir -> dir
-    end
-  end
+  defdelegate get_working_directory(), to: Giulia.Client.Config, as: :working_directory
 
   # Fix MSYS/Git Bash path mangling on Windows.
   defp fix_msys_path(arg) do
