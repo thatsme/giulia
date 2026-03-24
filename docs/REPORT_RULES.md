@@ -69,15 +69,16 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 ### Stage 1: Index (fast, ETS-backed)
 
 | Endpoint | Key Fields | Report Section |
-|----------|-----------|----------------|
+|---|---|---|
 | `GET /api/index/summary` | modules, functions, types, specs, structs, callbacks | Executive Summary |
 | `GET /api/index/status` | files_scanned, state, cache_status | Executive Summary |
 | `GET /api/index/complexity` | per-function cognitive complexity, sorted desc | God Modules drill-down |
+| `GET /api/knowledge/api_surface` | public/private function ratio per module | Executive Summary, API Surface |
 
 ### Stage 2: Property Graph Topology (graph-backed)
 
 | Endpoint | Key Fields | Report Section |
-|----------|-----------|----------------|
+|---|---|---|
 | `GET /api/knowledge/stats` | vertices, edges, components, hubs, type_counts | Executive Summary |
 | `GET /api/knowledge/cycles` | cycles list | Architecture Health |
 | `GET /api/knowledge/integrity` | status, fractures | Architecture Health |
@@ -88,28 +89,54 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 ### Stage 3: Risk Analysis (graph + AST, heavier)
 
 | Endpoint | Key Fields | Report Section |
-|----------|-----------|----------------|
+|---|---|---|
 | `GET /api/knowledge/heatmap` | per-module score, zone, breakdown (complexity, centrality, coupling, has_test) | Heatmap Zones |
 | `GET /api/knowledge/change_risk` | ranked modules with composite scores | Change Risk |
 | `GET /api/knowledge/god_modules` | functions, complexity, score | God Modules |
 | `GET /api/knowledge/coupling` | caller/callee pairs with call counts | Coupling Analysis |
 | `GET /api/knowledge/unprotected_hubs` | hub modules with low spec/doc coverage | Unprotected Hubs |
 
-### Stage 4: Deep Analysis (struct lifecycle, duplicates, preflight)
+### Stage 4: Deep Analysis (audit, lifecycle, duplicates, preflight)
+
+**Optimization (Build 140+):** Use `GET /api/knowledge/audit` as a single call to retrieve
+unprotected_hubs + struct_lifecycle + duplicates + behaviour integrity combined. This replaces
+4 separate calls. Fall back to individual endpoints only if audit returns an error.
 
 | Endpoint | Key Fields | Report Section |
-|----------|-----------|----------------|
-| `GET /api/knowledge/struct_lifecycle` | struct data flow, logic leaks, users | Struct Lifecycle |
-| `GET /api/knowledge/duplicates` | semantic duplicate function clusters | Semantic Duplicates |
+|---|---|---|
+| `GET /api/knowledge/audit` | combined: unprotected_hubs, struct_lifecycle, duplicates, integrity | Sections 7, 10, 11, 12 |
+| `GET /api/knowledge/struct_lifecycle` | struct data flow, logic leaks, users | Struct Lifecycle (fallback) |
+| `GET /api/knowledge/duplicates` | semantic duplicate function clusters | Semantic Duplicates (fallback) |
 | `POST /api/briefing/preflight` | per-module 6-contract checklist | Preflight (appendix) |
 
-### Stage 5: Runtime (if daemon is analyzing itself or connected node)
+### Stage 5: Blast Radius Enrichment (Build 140+)
+
+For the top 3 change_risk modules, optionally enrich with function-level detail:
 
 | Endpoint | Key Fields | Report Section |
-|----------|-----------|----------------|
+|---|---|---|
+| `GET /api/knowledge/logic_flow` | step-by-step function call path between two MFAs | Blast Radius (Section 6) |
+| `POST /api/knowledge/pre_impact_check` | callers, risk score, phased migration plan | Change Risk enrichment |
+
+`logic_flow` takes `?from=<MFA>&to=<MFA>&path=<path>` — use it to trace HOW a change in
+module A reaches module B at the function level. This makes blast radius concrete: not just
+"A affects B" but "A.foo/2 → C.bar/1 → B.handle/3".
+
+`pre_impact_check` takes `{"module": "<name>", "action": "rename|remove", "path": "<path>"}` —
+use it for the top 3 risk modules to show what a rename/remove would actually break, with
+a phased migration plan. Include this as a sub-section under each blast radius entry when
+the action is relevant (e.g., god module split recommendations).
+
+### Stage 6: Runtime (if daemon is analyzing itself or connected node)
+
+| Endpoint | Key Fields | Report Section |
+|---|---|---|
 | `GET /api/runtime/pulse` | processes, memory, schedulers, run_queue, uptime | Runtime Health |
 | `GET /api/runtime/top_processes` | top N by reductions/memory | Hot Spots |
 | `GET /api/runtime/hot_spots` | module-level CPU/memory fusion | Hot Spots |
+| `GET /api/runtime/profile/latest` | hot modules, bottleneck analysis, peak metrics | Performance Profile |
+| `GET /api/runtime/observations` | fused observation sessions (static + runtime) | Fused Observations |
+| `GET /api/runtime/observation/:session_id` | full fused profile with correlation data | Fused Observations |
 
 ---
 
@@ -124,6 +151,7 @@ A single table with all key metrics. This is the first thing the reader sees.
 
 **Required fields:**
 - Source files, Modules, Functions, Types, Specs (with coverage %), Structs, Callbacks
+- API surface: total public functions, total private functions, public ratio
 - Graph vertices, edges, connected components
 - Circular dependencies count
 - Behaviour fractures count
@@ -136,9 +164,13 @@ A single table with all key metrics. This is the first thing the reader sees.
   specs by total functions understates coverage. To get the correct denominator:
   1. Preferred: use `change_risk` endpoint which reports `public_functions` and `private_functions`
      per module — sum `public_functions` across all modules.
-  2. Fallback: if change_risk is paginated, grep source files:
+  2. Alternative: use `api_surface` endpoint which reports public/private per module directly.
+  3. Fallback: if both are paginated, grep source files:
      `grep -r "^\s*def " lib/ --include="*.ex"` excluding defp/defmodule/defmacro/defstruct/etc.
-  3. Report BOTH numbers: "469 specs / 912 public functions (51.4%)" — never divide by total.
+  4. Report BOTH numbers: "469 specs / 912 public functions (51.4%)" — never divide by total.
+- **API surface ratio**: include the project-wide public/private split from `api_surface`.
+  A healthy ratio is typically 30-50% public. Above 70% suggests too many internals are exposed.
+  Below 20% suggests over-encapsulation or heavy use of macros.
 - End with a 1-2 sentence **Verdict** — overall health assessment with the single biggest gap called out
 
 ### Section 2: Heatmap Zones
@@ -233,13 +265,27 @@ Function-level edges: <count> MFA→MFA call edges
   (Section 3), flag it as "cascading hub risk — modifying <root> could cascade through
   <hub> to its N dependents." Use the Top 5 Hubs list as the threshold, not a fixed
   in-degree number — this scales naturally with project size.
+- **Function-level call chains (Build 140+)**: For the #1 risk module, use
+  `GET /api/knowledge/logic_flow?from=<caller_MFA>&to=<callee_MFA>&path=<path>` to trace
+  one representative call chain from the risk module to a high-fan-in dependent. This shows
+  HOW the blast propagates, not just that it does. Include as a sub-section:
+
+  ```
+  Call chain: A.foo/2 → C.bar/1 → B.handle/3
+  ```
+
+  Skip if logic_flow returns no path (modules connected only via behaviour/protocol dispatch).
+- **Migration plan (Build 140+)**: For god modules flagged for splitting in Section 5,
+  optionally call `POST /api/knowledge/pre_impact_check` with `action: "rename"` to show
+  what callers would break. Include the phased migration steps if the endpoint returns them.
+  This is supplementary — do NOT block the report if pre_impact_check is unavailable.
 
 ### Section 7: Unprotected Hubs
 
 **Table columns:** Module | In-Degree | Spec Coverage | Severity (red/yellow)
 
 **Rules:**
-- Use `unprotected_hubs` endpoint
+- Use `unprotected_hubs` endpoint (or extract from `audit` response)
 - Only show red and yellow severity (green hubs are adequately protected)
 - Add a key insight line: how many specs exist project-wide and where they're concentrated
 
@@ -269,7 +315,7 @@ Function-level edges: <count> MFA→MFA call edges
 **Table columns:** Struct | Defining Module | User Count | Logic Leaks | Leak Count
 
 **Rules:**
-- Use `struct_lifecycle` endpoint
+- Use `struct_lifecycle` endpoint (or extract from `audit` response)
 - **Logic leaks**: modules that reference a struct but are not the defining module — this is
   a COUPLING METRIC, not an encapsulation violation. Pattern matching on struct fields is
   idiomatic Elixir. The metric tracks how many modules would need updating if the struct
@@ -286,7 +332,7 @@ Function-level edges: <count> MFA→MFA call edges
 ### Section 11: Semantic Duplicates
 
 **Rules:**
-- Use `duplicates` endpoint
+- Use `duplicates` endpoint (or extract from `audit` response)
 - Report: "N clusters found at >= X% similarity threshold"
 - List top 3 clusters with their similarity score and member function names
 - **False positive caveat**: large clusters of accessor functions (`get_x/1`, `set_x/2`),
@@ -310,7 +356,7 @@ Function-level edges: <count> MFA→MFA call edges
 A pass/fail checklist table:
 
 | Check | Status |
-|-------|--------|
+|---|---|
 | Circular dependencies | 0 — Clean DAG / N cycles found |
 | Behaviour integrity | Consistent / N fractures |
 | Orphan specs | 0 / N orphans found |
@@ -320,6 +366,7 @@ A pass/fail checklist table:
 - Cycles > 0 is a P0 issue — list the cycle chains
 - Fractures > 0 is a P1 issue — list which behaviours/implementers are broken
 - Orphan specs indicate refactoring debris — list them for cleanup
+- Behaviour integrity can be extracted from `audit` response instead of a separate call
 
 ### Section 13: Runtime Health (if available)
 
@@ -332,6 +379,26 @@ A pass/fail checklist table:
 - Run queue > 0 sustained = scheduler pressure, flag as warning
 - Memory > 500MB = investigate, flag largest ETS tables
 - Hot spots: top 5 by reductions, note if expected (e.g., supervisor at startup) or anomalous
+
+**Performance Profile (Build 140+):** If `GET /api/runtime/profile/latest` returns a profile,
+add a sub-section with:
+- Hot modules from burst analysis (top 5 by reductions during the burst window)
+- Bottleneck analysis summary (if available)
+- Peak metrics vs baseline comparison
+
+This is supplementary to the standard pulse/hot_spots data. The profile captures a specific
+burst window, while pulse is a point-in-time snapshot. Both are valuable — pulse for current
+state, profile for worst-case behavior.
+
+**Fused Observations (Build 140+):** If `GET /api/runtime/observations` returns sessions,
+include a sub-section listing available observation sessions with:
+- Session ID, target node, duration, status
+- For the most recent completed session, call `GET /api/runtime/observation/:session_id`
+  and include the fused profile summary (static analysis correlated with runtime metrics).
+  This is the highest-fidelity view available — it maps runtime hot processes back to
+  Knowledge Graph modules.
+
+Skip the fused observations sub-section if no sessions exist (monitor hasn't observed any nodes).
 
 ### Section 14: Recommended Actions (Priority Order)
 
@@ -375,7 +442,7 @@ module at 0% spec coverage — because 17 consumers are flying blind vs 3. Sort 
    - **Use uniform short separators.** Write `|---|---|---|` not `|--------|---------|----------|`.
      Variable-width separators add no value and some parsers handle them inconsistently.
 7. **Commentary**: Keep per-row commentary to 1 sentence max. Longer analysis goes after the table.
-8. **Footer**: Always include: `Generated by Giulia v<version> — <project_path> — <endpoint_count> endpoints, <date>`
+8. **Footer**: Always include: `Generated by Giulia v<version> — <project_path> — 70 endpoints, <date>`
 
 ---
 
@@ -426,3 +493,4 @@ pattern matching in Elixir — STOP. Delete it. Rewrite in Elixir terms.**
 7. **Don't use a fixed in-degree threshold for cascading hub risk** — use the Top 5 Hubs list from the same report. What counts as a "hub" scales with project size.
 8. **Don't interpret heatmap red zones without checking test detection** — a broken test detector inflates all scores by 25 points (see scoring formula interaction).
 9. **Don't use OOP framing for Elixir code** — no "encapsulation leaks", no "Law of Demeter violations", no "information hiding concerns" for struct pattern matching. This is Elixir, not Java. See the **ELIXIR IDIOM RULE** section above.
+10. **Don't call 4 separate endpoints when audit covers it** — use `GET /api/knowledge/audit` for unprotected_hubs + struct_lifecycle + duplicates + integrity. Fall back to individual calls only on error.
