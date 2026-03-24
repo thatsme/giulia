@@ -21,7 +21,7 @@ defmodule Giulia.Daemon.Routers.Index do
     case resolve_project_path(conn) do
       nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
       project_path ->
-        modules = Giulia.Context.Store.list_modules(project_path)
+        modules = Giulia.Context.Store.Query.list_modules(project_path)
         send_json(conn, 200, %{modules: modules, count: length(modules)})
     end
   end
@@ -41,7 +41,7 @@ defmodule Giulia.Daemon.Routers.Index do
       nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
       project_path ->
         module_filter = conn.query_params["module"]
-        functions = Giulia.Context.Store.list_functions(project_path, module_filter)
+        functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
         send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
     end
   end
@@ -63,7 +63,7 @@ defmodule Giulia.Daemon.Routers.Index do
         module = conn.query_params["module"]
 
         if module do
-          details = Giulia.Context.Store.module_details(project_path, module)
+          details = Giulia.Context.Store.Formatter.module_details(project_path, module)
           send_json(conn, 200, %{module: module, details: details})
         else
           send_json(conn, 400, %{error: "Missing required query param: module"})
@@ -85,7 +85,7 @@ defmodule Giulia.Daemon.Routers.Index do
     case resolve_project_path(conn) do
       nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
       project_path ->
-        summary = Giulia.Context.Store.project_summary(project_path)
+        summary = Giulia.Context.Store.Formatter.project_summary(project_path)
         send_json(conn, 200, %{summary: summary})
     end
   end
@@ -226,7 +226,7 @@ defmodule Giulia.Daemon.Routers.Index do
         result_limit = parse_int(conn.query_params["limit"], 50)
 
         functions =
-          Giulia.Context.Store.list_functions(project_path, module_filter)
+          Giulia.Context.Store.Query.list_functions(project_path, module_filter)
           |> Enum.filter(fn f -> f.complexity >= min_complexity end)
           |> Enum.sort_by(& &1.complexity, :desc)
           |> Enum.take(result_limit)

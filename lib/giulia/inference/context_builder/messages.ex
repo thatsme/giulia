@@ -16,7 +16,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
     constitution = Helpers.get_constitution(state.project_pid)
     minimal = provider_module == Giulia.Provider.LMStudio
 
-    project_summary = Store.project_summary(state.project_path)
+    project_summary = Store.Formatter.project_summary(state.project_path)
     cwd = Helpers.get_working_directory(state)
 
     opts = [
@@ -74,7 +74,7 @@ defmodule Giulia.Inference.ContextBuilder.Messages do
       end)
       |> Enum.join("\n")
 
-    modules_count = length(Store.list_modules(state.project_path))
+    modules_count = length(Store.Query.list_modules(state.project_path))
 
     """
     [CONTEXT REMINDER]

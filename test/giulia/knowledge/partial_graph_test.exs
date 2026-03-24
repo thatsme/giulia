@@ -15,6 +15,7 @@ defmodule Giulia.Knowledge.PartialGraphTest do
   use ExUnit.Case, async: false
 
   alias Giulia.Context.Store
+  alias Giulia.Context.Store.Query
   alias Giulia.Knowledge.{Topology, Insights}
 
   setup do
@@ -94,14 +95,14 @@ defmodule Giulia.Knowledge.PartialGraphTest do
     end
 
     test "list_modules only shows indexed modules", %{project: project} do
-      modules = Store.list_modules(project)
+      modules = Query.list_modules(project)
       module_names = Enum.map(modules, & &1.name)
       assert "App.A" in module_names
       refute "App.B" in module_names
     end
 
     test "find_module returns :not_found for unindexed module", %{project: project} do
-      assert :not_found = Store.find_module(project, "App.B")
+      assert :not_found = Query.find_module(project, "App.B")
     end
 
     test "orphan_specs works with partial data", %{project: project} do
@@ -170,11 +171,11 @@ defmodule Giulia.Knowledge.PartialGraphTest do
       })
 
       # foo should no longer be found
-      result = Store.find_function(project, :foo, 1)
+      result = Query.find_function(project, :foo, 1)
       assert result == []
 
       # bar should be found
-      result = Store.find_function(project, :bar, 0)
+      result = Query.find_function(project, :bar, 0)
       assert length(result) == 1
     end
   end

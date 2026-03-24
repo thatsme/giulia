@@ -74,7 +74,7 @@ defmodule Giulia.Inference.RenameMFA do
     # === PHASE 1: Discovery via Knowledge Graph + ETS ===
     Logger.info("RENAME_MFA: Phase 1 — Discovery for #{module}.#{old_name}/#{arity}")
 
-    all_modules = Store.list_modules(project_path)
+    all_modules = Store.Query.list_modules(project_path)
     target_entry = Enum.find(all_modules, fn m -> m.name == module end)
 
     if is_nil(target_entry) do
@@ -108,7 +108,7 @@ defmodule Giulia.Inference.RenameMFA do
         end
 
       # Get implementers ONLY if old_name is a declared @callback
-      callbacks = Store.list_callbacks(project_path, module)
+      callbacks = Store.Query.list_callbacks(project_path, module)
 
       is_callback =
         Enum.any?(callbacks, fn cb ->

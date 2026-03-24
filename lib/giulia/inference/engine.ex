@@ -333,7 +333,7 @@ defmodule Giulia.Inference.Engine do
         {t, params} when t in ["edit_file", "write_file"] ->
           path = params["file"] || params["path"] || params[:file] || params[:path]
 
-          case Giulia.Context.Store.find_module_by_file(state.project_path, path || "") do
+          case Giulia.Context.Store.Query.find_module_by_file(state.project_path, path || "") do
             {:ok, %{name: name}} -> name
             _ -> nil
           end

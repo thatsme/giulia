@@ -204,7 +204,7 @@ defmodule Giulia.Inference.ContextBuilder do
   defp module_from_file_path(nil, _project_path), do: nil
 
   defp module_from_file_path(path, project_path) do
-    case Store.find_module_by_file(project_path, path) do
+    case Store.Query.find_module_by_file(project_path, path) do
       {:ok, %{name: name}} -> name
       _ -> nil
     end

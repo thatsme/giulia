@@ -8,12 +8,10 @@ defmodule Giulia.Context.Store do
   All AST data is namespaced by project_path to support multi-project isolation.
   ETS keys: {:ast, project_path, file_path}
 
-  This module is the public facade. Query logic is delegated to `Store.Query`,
-  formatted output to `Store.Formatter`. Extracted in Build 111.
+  Pure ETS CRUD — query logic lives in `Store.Query`,
+  formatted output in `Store.Formatter`. Narrowed in Build 146.
   """
   use GenServer
-
-  alias Giulia.Context.Store
 
   @table __MODULE__
 
@@ -23,8 +21,6 @@ defmodule Giulia.Context.Store do
   @type ast_data :: map()
   @type embedding_type :: :module | :function
   @type embedding_entry :: %{id: term(), vector: binary(), metadata: map()}
-  @type module_entry :: %{name: String.t(), file: String.t(), line: non_neg_integer()}
-  @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: atom(), file: String.t(), line: non_neg_integer(), complexity: non_neg_integer()}
   @type store_stats :: %{ast_files: non_neg_integer(), total_entries: non_neg_integer()}
 
   # ============================================================================
@@ -240,63 +236,4 @@ defmodule Giulia.Context.Store do
     }
   end
 
-  # ============================================================================
-  # Delegated: Query (17 functions)
-  # ============================================================================
-
-  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: ast_data()}} | :not_found
-  defdelegate find_module(project_path, module_name), to: Store.Query
-
-  @spec find_module_by_file(project_path(), file_path()) :: {:ok, %{name: module_name()}} | :not_found
-  defdelegate find_module_by_file(project_path, file_path), to: Store.Query
-
-  @spec get_spec(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
-  defdelegate get_spec(project_path, module_name, function_name, arity), to: Store.Query
-
-  @spec list_optional_callbacks(project_path(), module_name() | nil) :: [map()]
-  defdelegate list_optional_callbacks(project_path, module_filter), to: Store.Query
-
-  @spec list_structs(project_path()) :: [map()]
-  defdelegate list_structs(project_path), to: Store.Query
-
-  @spec get_struct(project_path(), module_name()) :: map() | nil
-  defdelegate get_struct(project_path, module_name), to: Store.Query
-
-  @spec get_function_doc(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
-  defdelegate get_function_doc(project_path, module_name, function_name, arity), to: Store.Query
-
-  @spec get_moduledoc(project_path(), module_name()) :: {:ok, String.t()} | :not_found
-  defdelegate get_moduledoc(project_path, module_name), to: Store.Query
-
-  # Default-arg wrappers — can't use defdelegate with \\ defaults
-  @spec list_modules(project_path()) :: [module_entry()]
-  def list_modules(project_path), do: Store.Query.list_modules(project_path)
-
-  @spec list_functions(project_path(), module_name() | nil) :: [function_entry()]
-  def list_functions(project_path, module_filter \\ nil), do: Store.Query.list_functions(project_path, module_filter)
-
-  @spec find_function(project_path(), atom() | String.t(), non_neg_integer() | nil) :: [function_entry()]
-  def find_function(project_path, function_name, arity \\ nil), do: Store.Query.find_function(project_path, function_name, arity)
-
-  @spec list_types(project_path(), module_name() | nil) :: [map()]
-  def list_types(project_path, module_filter \\ nil), do: Store.Query.list_types(project_path, module_filter)
-
-  @spec list_specs(project_path(), module_name() | nil) :: [map()]
-  def list_specs(project_path, module_filter \\ nil), do: Store.Query.list_specs(project_path, module_filter)
-
-  @spec list_callbacks(project_path(), module_name() | nil) :: [map()]
-  def list_callbacks(project_path, module_filter \\ nil), do: Store.Query.list_callbacks(project_path, module_filter)
-
-  @spec list_docs(project_path(), module_name() | nil) :: [map()]
-  def list_docs(project_path, module_filter \\ nil), do: Store.Query.list_docs(project_path, module_filter)
-
-  # ============================================================================
-  # Delegated: Formatter (2 functions)
-  # ============================================================================
-
-  @spec project_summary(project_path()) :: String.t()
-  defdelegate project_summary(project_path), to: Store.Formatter
-
-  @spec module_details(project_path(), module_name()) :: String.t()
-  defdelegate module_details(project_path, module_name), to: Store.Formatter
 end

@@ -149,7 +149,7 @@ defmodule Giulia.Intelligence.Preflight do
 
   defp behaviour_contract(project_path, module_name) do
     # Callbacks this module DEFINES
-    all_callbacks = Store.list_callbacks(project_path, module_name)
+    all_callbacks = Store.Query.list_callbacks(project_path, module_name)
     defines_callbacks = Enum.map(all_callbacks, fn cb -> "#{cb.function}/#{cb.arity}" end)
 
     # Optional callbacks this module defines
@@ -160,7 +160,7 @@ defmodule Giulia.Intelligence.Preflight do
 
     # Behaviours this module IMPLEMENTS (use directives)
     implements =
-      case Store.find_module(project_path, module_name) do
+      case Store.Query.find_module(project_path, module_name) do
         {:ok, %{ast_data: ast_data}} ->
           (ast_data[:imports] || [])
           |> Enum.filter(fn imp -> imp.type == :use end)
@@ -239,11 +239,11 @@ defmodule Giulia.Intelligence.Preflight do
   # ============================================================================
 
   defp type_contract(project_path, module_name) do
-    specs = Store.list_specs(project_path, module_name)
-    types = Store.list_types(project_path, module_name)
+    specs = Store.Query.list_specs(project_path, module_name)
+    types = Store.Query.list_types(project_path, module_name)
 
     public_functions =
-      Store.list_functions(project_path, module_name)
+      Store.Query.list_functions(project_path, module_name)
       |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
     public_count = length(public_functions)
@@ -284,7 +284,7 @@ defmodule Giulia.Intelligence.Preflight do
   # ============================================================================
 
   defp data_contract(project_path, module_name) do
-    struct_info = Store.get_struct(project_path, module_name)
+    struct_info = Store.Query.get_struct(project_path, module_name)
 
     dependents_count =
       case KnowledgeStore.dependents(project_path, module_name) do
@@ -315,7 +315,7 @@ defmodule Giulia.Intelligence.Preflight do
 
   defp macro_contract(project_path, module_name) do
     use_directives =
-      case Store.find_module(project_path, module_name) do
+      case Store.Query.find_module(project_path, module_name) do
         {:ok, %{ast_data: ast_data}} ->
           (ast_data[:imports] || [])
           |> Enum.filter(fn imp -> imp.type == :use end)
@@ -390,7 +390,7 @@ defmodule Giulia.Intelligence.Preflight do
   defp semantic_integrity(project_path, module_name, query_vector) do
     # Get moduledoc excerpt
     moduledoc_excerpt =
-      case Store.get_moduledoc(project_path, module_name) do
+      case Store.Query.get_moduledoc(project_path, module_name) do
         {:ok, doc} when is_binary(doc) ->
           String.slice(doc, 0, 200)
 

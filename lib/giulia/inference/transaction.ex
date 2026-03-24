@@ -122,7 +122,7 @@ defmodule Giulia.Inference.Transaction do
     resolve_fn = Keyword.fetch!(opts, :resolve_fn)
     tool_opts = Keyword.fetch!(opts, :tool_opts)
 
-    case Store.find_module(project_path, module) do
+    case Store.Query.find_module(project_path, module) do
       {:ok, %{file: file_path}} ->
         resolved_path = resolve_fn.(file_path)
 
@@ -243,7 +243,7 @@ defmodule Giulia.Inference.Transaction do
     # Collect test targets for all modified modules
     all_test_targets =
       Enum.flat_map(staged_files, fn path ->
-        case Store.find_module_by_file(project_path, path) do
+        case Store.Query.find_module_by_file(project_path, path) do
           {:ok, %{name: module_name}} ->
             case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
               {:ok, %{all_paths: paths}} when paths != [] -> paths

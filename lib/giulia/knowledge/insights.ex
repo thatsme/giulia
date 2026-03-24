@@ -145,13 +145,13 @@ defmodule Giulia.Knowledge.Insights do
             line = result.metadata.line
 
             spec =
-              case Giulia.Context.Store.get_spec(project_path, module, function, arity) do
+              case Giulia.Context.Store.Query.get_spec(project_path, module, function, arity) do
                 %{spec: s} when is_binary(s) and s != "" -> s
                 _ -> nil
               end
 
             doc =
-              case Giulia.Context.Store.get_function_doc(project_path, module, function, arity) do
+              case Giulia.Context.Store.Query.get_function_doc(project_path, module, function, arity) do
                 %{doc: d} when is_binary(d) and d != "" -> d
                 _ -> nil
               end
@@ -235,11 +235,11 @@ defmodule Giulia.Knowledge.Insights do
       |> Enum.map(fn {mod, in_degree} ->
         # Query ETS for spec/doc/function coverage
         public_functions =
-          Giulia.Context.Store.list_functions(project_path, mod)
+          Giulia.Context.Store.Query.list_functions(project_path, mod)
           |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
-        specs = Giulia.Context.Store.list_specs(project_path, mod)
-        docs = Giulia.Context.Store.list_docs(project_path, mod)
+        specs = Giulia.Context.Store.Query.list_specs(project_path, mod)
+        docs = Giulia.Context.Store.Query.list_docs(project_path, mod)
 
         public_count = length(public_functions)
         spec_count = length(specs)
@@ -250,7 +250,7 @@ defmodule Giulia.Knowledge.Insights do
 
         # Check test file existence (broad detection: exact, variant, subdirectory)
         has_test =
-          case Giulia.Context.Store.find_module(project_path, mod) do
+          case Giulia.Context.Store.Query.find_module(project_path, mod) do
             {:ok, %{file: file}} ->
               Giulia.Tools.RunTests.has_test_file?(file, project_path)
 
@@ -315,7 +315,7 @@ defmodule Giulia.Knowledge.Insights do
           {:ok, %{structs: [map()], count: non_neg_integer()}}
   def struct_lifecycle(project_path, struct_filter \\ nil) do
     # Get all defined structs
-    all_structs = Giulia.Context.Store.list_structs(project_path)
+    all_structs = Giulia.Context.Store.Query.list_structs(project_path)
 
     # Optionally filter to a single struct
     target_structs =
@@ -466,7 +466,7 @@ defmodule Giulia.Knowledge.Insights do
   # Convert a module name to its conventional test file path.
   # Returns the path if the file exists, nil otherwise.
   defp module_to_test_path(module_name, project_path) do
-    case Giulia.Context.Store.find_module(project_path, module_name) do
+    case Giulia.Context.Store.Query.find_module(project_path, module_name) do
       {:ok, %{file: source_file}} ->
         Giulia.Tools.RunTests.find_test_file(source_file, project_path)
 

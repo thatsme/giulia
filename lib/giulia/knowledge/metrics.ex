@@ -326,7 +326,7 @@ defmodule Giulia.Knowledge.Metrics do
   @spec dead_code_with_asts(Graph.t(), String.t(), map()) :: {:ok, map()}
   def dead_code_with_asts(graph, project_path, all_asts) do
     # Step 1: Get all defined functions
-    all_functions = Giulia.Context.Store.list_functions(project_path, nil)
+    all_functions = Giulia.Context.Store.Query.list_functions(project_path, nil)
 
     # Step 2: Build set of behaviour callback signatures per implementer module
     impl_callbacks = Giulia.Knowledge.Behaviours.collect_behaviour_callbacks(graph, project_path)

@@ -47,7 +47,7 @@ defmodule Giulia.Knowledge.Insights.Impact do
     case parse_mfa_vertex(mfa) do
       {:ok, module, function, arity} ->
         {file, line} =
-          case Giulia.Context.Store.find_module(project_path, module) do
+          case Giulia.Context.Store.Query.find_module(project_path, module) do
             {:ok, %{file: file, ast_data: ast_data}} ->
               func_line =
                 (ast_data[:functions] || [])
@@ -203,7 +203,7 @@ defmodule Giulia.Knowledge.Insights.Impact do
 
           affected =
             Enum.map(deps, fn dep ->
-              case Giulia.Context.Store.find_module(project_path, dep) do
+              case Giulia.Context.Store.Query.find_module(project_path, dep) do
                 {:ok, %{file: file}} -> %{module: dep, file: file}
                 _ -> %{module: dep, file: nil}
               end

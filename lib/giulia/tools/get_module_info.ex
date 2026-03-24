@@ -50,7 +50,7 @@ defmodule Giulia.Tools.GetModuleInfo do
 
   def execute(%__MODULE__{module_name: module_name}, opts) do
     project_path = opts[:project_path]
-    case Store.find_module(project_path, module_name) do
+    case Store.Query.find_module(project_path, module_name) do
       {:ok, %{file: file, ast_data: ast_data}} ->
         format_module_info(module_name, file, ast_data)
 
@@ -108,7 +108,7 @@ defmodule Giulia.Tools.GetModuleInfo do
   end
 
   defp suggest_modules(partial_name, project_path) do
-    modules = Store.list_modules(project_path)
+    modules = Store.Query.list_modules(project_path)
     partial_lower = String.downcase(partial_name)
 
     matches = modules

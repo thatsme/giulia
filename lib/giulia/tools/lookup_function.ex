@@ -91,7 +91,7 @@ defmodule Giulia.Tools.LookupFunction do
 
   defp do_lookup(function_name, module_filter, arity, include_deps, project_path) do
     # Step 1: Query the index
-    matches = Store.find_function(project_path, function_name, arity)
+    matches = Store.Query.find_function(project_path, function_name, arity)
 
     # Step 2: Filter by module if specified
     matches = if module_filter do
@@ -151,7 +151,7 @@ defmodule Giulia.Tools.LookupFunction do
 
   defp suggest_similar(function_name, project_path) do
     # Get all function names from the index
-    all_functions = Store.list_functions(project_path)
+    all_functions = Store.Query.list_functions(project_path, nil)
     |> Enum.map(&to_string(&1.name))
     |> Enum.uniq()
 

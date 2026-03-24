@@ -13,6 +13,7 @@ defmodule Giulia.Context.StoreConcurrencyTest do
   use ExUnit.Case, async: false
 
   alias Giulia.Context.Store
+  alias Giulia.Context.Store.Query
 
   @project "/tmp/concurrency_test_#{:rand.uniform(100_000)}"
 
@@ -154,7 +155,7 @@ defmodule Giulia.Context.StoreConcurrencyTest do
               # These should never crash, even if data disappears mid-read
               _all = Store.all_asts(@project)
               _stats = Store.stats(@project)
-              _modules = Store.list_modules(@project)
+              _modules = Query.list_modules(@project)
             end
 
             :ok
