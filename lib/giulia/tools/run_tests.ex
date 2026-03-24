@@ -126,6 +126,65 @@ defmodule Giulia.Tools.RunTests do
     |> String.replace_suffix(".ex", "_test.exs")
   end
 
+  @doc """
+  Check if a module has ANY test coverage — not just the exact 1:1 mirror.
+
+  Strategy (short-circuit on first hit):
+  1. Exact mirror: `lib/foo/bar.ex` → `test/foo/bar_test.exs`
+  2. Variant glob: `test/foo/bar_*_test.exs` — catches adversarial, race, concurrency variants
+  3. Subdirectory glob: `test/foo/bar/*_test.exs` — catches `test/foo/bar/bar_test.exs`
+  4. Full tree scan: `test/**/bar_*test.exs` — catches tests in unexpected locations
+
+  Returns true if any test file is found by any strategy.
+  """
+  @spec has_test_file?(String.t(), String.t()) :: boolean()
+  def has_test_file?(source_path, project_path) do
+    find_test_file(source_path, project_path) != nil
+  end
+
+  @doc """
+  Find the test file path for a source file, using broad detection.
+
+  Returns the relative test path (e.g. `"test/foo/bar_test.exs"`) or nil.
+  Same strategy as `has_test_file?/2` but returns the path for use in test runners.
+  """
+  @spec find_test_file(String.t(), String.t()) :: String.t() | nil
+  def find_test_file(source_path, project_path) do
+    rel =
+      case Regex.run(~r"(lib/.+)$", source_path) do
+        [_, match] -> match
+        nil -> source_path
+      end
+
+    base = Path.basename(rel, ".ex")
+    test_dir = rel |> String.replace_prefix("lib/", "test/") |> Path.dirname()
+    abs_test_dir = Path.join(project_path, test_dir)
+
+    # Strategy 1: exact mirror (fast path)
+    exact = rel |> String.replace_prefix("lib/", "test/") |> String.replace_suffix(".ex", "_test.exs")
+    full_exact = Path.join(project_path, exact)
+
+    cond do
+      File.exists?(full_exact) ->
+        exact
+
+      # Strategy 2: variant glob — test/foo/bar_*_test.exs
+      (hits = Path.wildcard(Path.join(abs_test_dir, "#{base}_*_test.exs"))) != [] ->
+        Path.relative_to(hd(hits), project_path)
+
+      # Strategy 3: subdirectory glob — test/foo/bar/*_test.exs
+      (hits = Path.wildcard(Path.join([abs_test_dir, base, "*_test.exs"]))) != [] ->
+        Path.relative_to(hd(hits), project_path)
+
+      # Strategy 4: full tree scan — test/**/bar_*test.exs (catches weird locations)
+      (hits = Path.wildcard(Path.join(project_path, "test/**/#{base}_*test.exs"))) != [] ->
+        Path.relative_to(hd(hits), project_path)
+
+      true ->
+        nil
+    end
+  end
+
   # ============================================================================
   # Test Execution
   # ============================================================================
