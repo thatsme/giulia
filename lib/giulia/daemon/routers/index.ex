@@ -96,12 +96,16 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Check indexer status (idle/scanning, file count, last scan time)",
     endpoint: "GET /api/index/status",
-    params: %{},
+    params: %{path: "optional — project path for per-project status"},
     returns: "JSON indexer status",
     category: "index"
   }
   get "/status" do
-    status = Giulia.Context.Indexer.status()
+    status =
+      case resolve_project_path(conn) do
+        nil -> Giulia.Context.Indexer.status()
+        resolved -> Giulia.Context.Indexer.status(resolved)
+      end
 
     # Enrich with cache status
     cache_status =
