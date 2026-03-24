@@ -225,6 +225,9 @@ defmodule Giulia.Context.Indexer do
     # Debug: Inspect what's actually in ETS
     Giulia.Context.Store.debug_inspect(project_path)
 
+    # Ensure project is compiled so xref has BEAM files for graph building
+    ensure_compiled(project_path)
+
     # Rebuild knowledge graph from fresh AST data
     Giulia.Knowledge.Store.rebuild(project_path)
 
@@ -402,6 +405,58 @@ defmodule Giulia.Context.Indexer do
       :exit, reason ->
         Logger.warning("AST parse exit in #{file_path}: #{inspect(reason)}")
         {:error, {:parse_exit, reason}}
+    end
+  end
+
+  defp ensure_compiled(project_path) do
+    mix_file = Path.join(project_path, "mix.exs")
+
+    if File.exists?(mix_file) do
+      app_name = infer_app_name(project_path)
+      ebin = Path.join([project_path, "_build", "dev", "lib", app_name, "ebin"])
+
+      unless File.dir?(ebin) do
+        Logger.info("Compiling #{project_path} for xref analysis...")
+
+        try do
+          # Fetch deps first if needed, then compile
+          deps_dir = Path.join(project_path, "deps")
+
+          unless File.dir?(deps_dir) do
+            Logger.info("Fetching deps for #{project_path}...")
+            System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
+          end
+
+          {output, exit_code} =
+            System.cmd("mix", ["compile"],
+              cd: project_path,
+              stderr_to_stdout: true,
+              env: [{"MIX_ENV", "dev"}]
+            )
+
+          if exit_code == 0 do
+            Logger.info("Compiled #{project_path} successfully")
+          else
+            Logger.warning("Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}")
+          end
+        rescue
+          e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
+        end
+      end
+    end
+  end
+
+  defp infer_app_name(project_path) do
+    mix_path = Path.join(project_path, "mix.exs")
+
+    case File.read(mix_path) do
+      {:ok, content} ->
+        case Regex.run(~r/app:\s*:(\w+)/, content) do
+          [_, name] -> name
+          _ -> Path.basename(project_path)
+        end
+
+      _ -> Path.basename(project_path)
     end
   end
 
