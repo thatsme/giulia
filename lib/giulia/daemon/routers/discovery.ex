@@ -92,14 +92,61 @@ defmodule Giulia.Daemon.Routers.Discovery do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/discovery/report_rules — Report generation rules location + content
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get REPORT_RULES.md path and content for analysis report generation",
+    endpoint: "GET /api/discovery/report_rules",
+    params: %{},
+    returns: "JSON with host_path (for Claude Code to read) and content (full rules text)",
+    category: "discovery"
+  }
+  get "/report_rules" do
+    # System-wide Claude Code config path on the host
+    host_home = System.get_env("GIULIA_HOST_HOME") || infer_host_home()
+    host_path = Path.join([host_home, ".claude", "REPORT_RULES.md"])
+
+    # Read from the project docs/ copy inside the container (always available)
+    container_path = "/projects/Giulia/docs/REPORT_RULES.md"
+
+    content =
+      case File.read(container_path) do
+        {:ok, text} -> text
+        _ -> nil
+      end
+
+    send_json(conn, 200, %{
+      host_path: host_path,
+      container_path: container_path,
+      content: content,
+      hint: "Read host_path with your file tools. Content included as fallback."
+    })
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end
 
   # -------------------------------------------------------------------
-  # Private: aggregate skills from all routers
+  # Private
   # -------------------------------------------------------------------
   defp all_skills do
     Enum.flat_map(@routers, & &1.__skills__())
+  end
+
+  defp infer_host_home do
+    # Derive from GIULIA_HOST_PROJECTS_PATH (e.g. "D:/Development/GitHub" → "D:/Users/...")
+    # Fall back to a sensible default based on OS conventions
+    case System.get_env("GIULIA_HOST_PROJECTS_PATH") do
+      nil -> "~"
+      path ->
+        # Windows: "D:/Development/GitHub" → drive letter, then look for Users
+        # Best effort: use USERPROFILE-style path
+        case Regex.run(~r/^([A-Za-z]:)/, path) do
+          [_, drive] -> drive <> "/Users/" <> (System.get_env("GIULIA_HOST_USER") || "user")
+          _ -> "~"
+        end
+    end
   end
 end
