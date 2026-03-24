@@ -22,6 +22,7 @@ x-common-env: &common-env
   MIX_DEPS_PATH: /tmp/giulia_deps
   XLA_TARGET: cpu
   GIULIA_HOST_PROJECTS_PATH: ${GIULIA_HOST_PROJECTS_PATH:-D:/Development/GitHub}
+  GIULIA_HOST_HOME: ${GIULIA_HOST_HOME:-C:/Users/alessio.battistutta}
   GIULIA_PATH_MAPPING: ${GIULIA_PATH_MAPPING:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
