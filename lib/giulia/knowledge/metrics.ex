@@ -82,11 +82,7 @@ defmodule Giulia.Knowledge.Metrics do
         # Factor 3: Test fragility (does a test file exist?)
         has_test =
           if path do
-            # path is absolute (/projects/foo/lib/mod.ex) — make relative before suggest
-            rel_path = Path.relative_to(path, project_path)
-            test_file = Giulia.Tools.RunTests.suggest_test_file(rel_path)
-            full_test = Path.join(project_path, test_file)
-            File.exists?(full_test)
+            Giulia.Tools.RunTests.has_test_file?(path, project_path)
           else
             false
           end

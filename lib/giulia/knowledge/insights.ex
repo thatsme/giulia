@@ -248,14 +248,11 @@ defmodule Giulia.Knowledge.Insights do
         spec_ratio = if public_count > 0, do: Float.round(spec_count / public_count, 2), else: 1.0
         doc_ratio = if public_count > 0, do: Float.round(doc_count / public_count, 2), else: 1.0
 
-        # Check test file existence
+        # Check test file existence (broad detection: exact, variant, subdirectory)
         has_test =
           case Giulia.Context.Store.find_module(project_path, mod) do
             {:ok, %{file: file}} ->
-              rel_file = Path.relative_to(file, project_path)
-              test_file = Giulia.Tools.RunTests.suggest_test_file(rel_file)
-              full_path = Path.join(project_path, test_file)
-              File.exists?(full_path)
+              Giulia.Tools.RunTests.has_test_file?(file, project_path)
 
             _ ->
               false
@@ -471,10 +468,7 @@ defmodule Giulia.Knowledge.Insights do
   defp module_to_test_path(module_name, project_path) do
     case Giulia.Context.Store.find_module(project_path, module_name) do
       {:ok, %{file: source_file}} ->
-        rel_file = Path.relative_to(source_file, project_path)
-        test_file = Giulia.Tools.RunTests.suggest_test_file(rel_file)
-        full_path = Path.join(project_path, test_file)
-        if File.exists?(full_path), do: test_file, else: nil
+        Giulia.Tools.RunTests.find_test_file(source_file, project_path)
 
       _ ->
         nil
