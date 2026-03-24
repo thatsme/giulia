@@ -103,24 +103,35 @@ defmodule Giulia.Daemon.Routers.Discovery do
     category: "discovery"
   }
   get "/report_rules" do
-    # System-wide Claude Code config path on the host
-    host_home = System.get_env("GIULIA_HOST_HOME") || infer_host_home()
-    host_path = Path.join([host_home, ".claude", "REPORT_RULES.md"])
-
-    # Read from the project docs/ copy inside the container (always available)
-    container_path = "/projects/Giulia/docs/REPORT_RULES.md"
-
-    content =
-      case File.read(container_path) do
-        {:ok, text} -> text
-        _ -> nil
+    # Host path: use env var if set, otherwise use portable ~ notation
+    # The CLIENT (Claude Code) resolves ~ since it runs on the host
+    host_path =
+      case System.get_env("GIULIA_HOST_HOME") do
+        nil -> "~/.claude/REPORT_RULES.md"
+        "" -> "~/.claude/REPORT_RULES.md"
+        home -> Path.join([home, ".claude", "REPORT_RULES.md"])
       end
+
+    # Also check for a project-local copy (works inside container)
+    project_path = conn.query_params["path"]
+    local_path = if project_path, do: Path.join([project_path, "docs", "REPORT_RULES.md"]), else: nil
+
+    # Read content: try project-local first, then Giulia's own copy
+    content =
+      [local_path, "/projects/Giulia/docs/REPORT_RULES.md"]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.find_value(fn path ->
+        case File.read(path) do
+          {:ok, text} -> text
+          _ -> nil
+        end
+      end)
 
     send_json(conn, 200, %{
       host_path: host_path,
-      container_path: container_path,
+      local_path: local_path,
       content: content,
-      hint: "Read host_path with your file tools. Content included as fallback."
+      hint: "host_path uses ~ (client resolves). Content included as fallback."
     })
   end
 
@@ -135,18 +146,4 @@ defmodule Giulia.Daemon.Routers.Discovery do
     Enum.flat_map(@routers, & &1.__skills__())
   end
 
-  defp infer_host_home do
-    # Derive from GIULIA_HOST_PROJECTS_PATH (e.g. "D:/Development/GitHub" → "D:/Users/...")
-    # Fall back to a sensible default based on OS conventions
-    case System.get_env("GIULIA_HOST_PROJECTS_PATH") do
-      nil -> "~"
-      path ->
-        # Windows: "D:/Development/GitHub" → drive letter, then look for Users
-        # Best effort: use USERPROFILE-style path
-        case Regex.run(~r/^([A-Za-z]:)/, path) do
-          [_, drive] -> drive <> "/Users/" <> (System.get_env("GIULIA_HOST_USER") || "user")
-          _ -> "~"
-        end
-    end
-  end
 end
