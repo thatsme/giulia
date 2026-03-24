@@ -48,8 +48,9 @@ defmodule Giulia.Knowledge.Builder do
       |> add_implements_edges(data, all_modules)
     end)
 
-    # Pass 3: Add xref call edges (if compiled BEAM files exist)
-    graph = add_xref_edges(graph)
+    # Pass 3: Add xref call edges (if target project has compiled BEAM files)
+    project_root = infer_project_root(ast_data)
+    graph = add_xref_edges(graph, project_root)
 
     # Pass 4: Function-level call edges (AST-based)
     # Walks each function body to find calls to other project functions,
@@ -166,31 +167,80 @@ defmodule Giulia.Knowledge.Builder do
   # Pass 3: xref Call Edges
   # ============================================================================
 
-  defp add_xref_edges(graph) do
-    # Try multiple approaches to find BEAM files
-    beam_dir = find_beam_directory()
+  defp add_xref_edges(graph, nil) do
+    Logger.debug("No project root found, skipping xref call edges")
+    graph
+  end
+
+  defp add_xref_edges(graph, project_root) do
+    beam_dir = find_beam_directory(project_root)
 
     if beam_dir do
       Logger.info("Found BEAM files at #{beam_dir}, running xref analysis")
       run_xref_analysis(graph, beam_dir)
     else
-      Logger.debug("No BEAM directory found, skipping xref call edges")
+      Logger.debug("No BEAM directory found for #{project_root}, skipping xref call edges")
       graph
     end
   end
 
-  defp find_beam_directory do
-    # Check common locations for compiled BEAM files
-    candidates = [
-      # Docker container build path
-      "/tmp/giulia_build/lib/giulia/ebin",
-      # Standard mix build
-      "_build/dev/lib/giulia/ebin",
-      # Production
-      "_build/prod/lib/giulia/ebin"
-    ]
+  defp find_beam_directory(project_root) do
+    # Derive the app name from mix.exs or fall back to directory name
+    app_name = infer_app_name(project_root)
+
+    candidates =
+      [
+        # Standard mix build (dev)
+        Path.join([project_root, "_build", "dev", "lib", app_name, "ebin"]),
+        # Standard mix build (prod)
+        Path.join([project_root, "_build", "prod", "lib", app_name, "ebin"]),
+        # Standard mix build (test)
+        Path.join([project_root, "_build", "test", "lib", app_name, "ebin"])
+      ]
 
     Enum.find(candidates, &File.dir?/1)
+  end
+
+  # Infer the project root from AST file paths (common prefix of all source files)
+  defp infer_project_root(ast_data) do
+    paths = Map.keys(ast_data)
+
+    case paths do
+      [] -> nil
+      [single] -> single |> Path.dirname() |> strip_lib_suffix()
+      _ ->
+        paths
+        |> Enum.map(&Path.split/1)
+        |> Enum.reduce(fn parts, acc ->
+          Enum.zip(acc, parts)
+          |> Enum.take_while(fn {a, b} -> a == b end)
+          |> Enum.map(&elem(&1, 0))
+        end)
+        |> Path.join()
+        |> strip_lib_suffix()
+    end
+  end
+
+  defp strip_lib_suffix(path) do
+    if String.ends_with?(path, "/lib") or String.ends_with?(path, "\\lib") do
+      Path.dirname(path)
+    else
+      path
+    end
+  end
+
+  # Infer app name from mix.exs or directory name
+  defp infer_app_name(project_root) do
+    mix_path = Path.join(project_root, "mix.exs")
+
+    case File.read(mix_path) do
+      {:ok, content} ->
+        case Regex.run(~r/app:\s*:(\w+)/, content) do
+          [_, name] -> name
+          _ -> Path.basename(project_root)
+        end
+      _ -> Path.basename(project_root)
+    end
   end
 
   defp run_xref_analysis(graph, beam_dir) do
