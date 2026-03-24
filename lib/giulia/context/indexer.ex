@@ -43,6 +43,7 @@ defmodule Giulia.Context.Indexer do
     .nuxt
   )
 
+  @type project_status :: %{status: :idle | :scanning, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
   @type indexer_status :: %{project_path: String.t() | nil, status: :idle | :scanning, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
 
   # File patterns to ignore
@@ -97,26 +98,30 @@ defmodule Giulia.Context.Indexer do
   def index_file(file_path), do: scan_file(file_path)
 
   @doc """
-  Get the current indexing status.
+  Get the indexing status. Without a path, returns the last-active project's status
+  (backward compatible). With a path, returns that project's status.
   """
   @spec status() :: indexer_status()
-  def status do
-    GenServer.call(__MODULE__, :status)
-  end
+  def status, do: GenServer.call(__MODULE__, :status)
+
+  @spec status(String.t()) :: indexer_status()
+  def status(project_path), do: GenServer.call(__MODULE__, {:status, project_path})
 
   # Server Callbacks
 
   @impl true
   @spec init(term()) :: {:ok, map()}
   def init(_) do
-    state = %{
-      project_path: nil,
-      status: :idle,
-      last_scan: nil,
-      file_count: 0
-    }
+    # Per-project state: %{project_path => %{status, last_scan, file_count}}
+    {:ok, %{projects: %{}, last_project: nil}}
+  end
 
-    {:ok, state}
+  defp get_project_status(state, project_path) do
+    Map.get(state.projects, project_path, %{status: :idle, last_scan: nil, file_count: 0})
+  end
+
+  defp put_project_status(state, project_path, project_state) do
+    %{state | projects: Map.put(state.projects, project_path, project_state), last_project: project_path}
   end
 
   # Project root markers — at least one must exist for a valid scan target
@@ -127,7 +132,7 @@ defmodule Giulia.Context.Indexer do
   def handle_cast({:scan, project_path}, state) do
     if valid_project_root?(project_path) do
       Logger.info("Starting project scan: #{project_path}")
-      new_state = %{state | project_path: project_path, status: :scanning}
+      new_state = put_project_status(state, project_path, %{status: :scanning, last_scan: nil, file_count: 0})
 
       case Giulia.Persistence.Loader.load_project(project_path) do
         {:ok, []} ->
@@ -139,7 +144,7 @@ defmodule Giulia.Context.Indexer do
           Giulia.Persistence.Loader.restore_metrics(project_path)
           Giulia.Persistence.Loader.restore_embeddings(project_path)
 
-          GenServer.cast(__MODULE__, :scan_complete)
+          GenServer.cast(__MODULE__, {:scan_complete, project_path})
           {:noreply, new_state}
 
         {:ok, stale_files} ->
@@ -148,7 +153,7 @@ defmodule Giulia.Context.Indexer do
 
           Task.start(fn ->
             do_incremental_scan(project_path, stale_files)
-            GenServer.cast(__MODULE__, :scan_complete)
+            GenServer.cast(__MODULE__, {:scan_complete, project_path})
           end)
 
           {:noreply, new_state}
@@ -157,7 +162,7 @@ defmodule Giulia.Context.Indexer do
           # Full scan (original behavior)
           Task.start(fn ->
             do_scan(project_path)
-            GenServer.cast(__MODULE__, :scan_complete)
+            GenServer.cast(__MODULE__, {:scan_complete, project_path})
           end)
 
           {:noreply, new_state}
@@ -185,10 +190,10 @@ defmodule Giulia.Context.Indexer do
     {:noreply, state}
   end
 
-  # Legacy compat: scan_file without project_path uses state.project_path
+  # Legacy compat: scan_file without project_path uses last_project
   @impl true
   def handle_cast({:scan_file, file_path}, state) do
-    project_path = state.project_path || File.cwd!()
+    project_path = state.last_project || File.cwd!()
     Task.start(fn ->
       case process_file(file_path) do
         {:ok, ast_data} ->
@@ -204,18 +209,18 @@ defmodule Giulia.Context.Indexer do
   end
 
   @impl true
-  def handle_cast(:scan_complete, state) do
-    project_path = state.project_path
+  def handle_cast({:scan_complete, project_path}, state) do
     stats = Giulia.Context.Store.stats(project_path)
 
-    new_state = %{
-      state
-      | status: :idle,
-        last_scan: DateTime.utc_now(),
-        file_count: stats.ast_files
+    project_state = %{
+      status: :idle,
+      last_scan: DateTime.utc_now(),
+      file_count: stats.ast_files
     }
 
-    Logger.info("Scan complete. Indexed #{stats.ast_files} files.")
+    new_state = put_project_status(state, project_path, project_state)
+
+    Logger.info("Scan complete for #{project_path}. Indexed #{stats.ast_files} files.")
 
     # Debug: Inspect what's actually in ETS
     Giulia.Context.Store.debug_inspect(project_path)
@@ -229,10 +234,37 @@ defmodule Giulia.Context.Indexer do
     {:noreply, new_state}
   end
 
+  # Backward compat: old :scan_complete without project_path
+  @impl true
+  def handle_cast(:scan_complete, state) do
+    if state.last_project do
+      handle_cast({:scan_complete, state.last_project}, state)
+    else
+      Logger.warning("scan_complete received with no project context — ignoring")
+      {:noreply, state}
+    end
+  end
+
   @impl true
   @spec handle_call(term(), GenServer.from(), map()) :: {:reply, map(), map()}
+  def handle_call({:status, project_path}, _from, state) do
+    ps = get_project_status(state, project_path)
+    # Return backward-compatible shape with project_path included
+    reply = Map.put(ps, :project_path, project_path)
+    {:reply, reply, state}
+  end
+
   def handle_call(:status, _from, state) do
-    {:reply, state, state}
+    # Backward compat: return last-active project's status
+    case state.last_project do
+      nil ->
+        {:reply, %{project_path: nil, status: :idle, last_scan: nil, file_count: 0}, state}
+
+      path ->
+        ps = get_project_status(state, path)
+        reply = Map.put(ps, :project_path, path)
+        {:reply, reply, state}
+    end
   end
 
   # Private
