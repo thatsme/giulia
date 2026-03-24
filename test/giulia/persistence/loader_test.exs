@@ -62,6 +62,68 @@ defmodule Giulia.Persistence.LoaderTest do
       assert "/deleted/file.ex" in stale
     end
 
+    test "detects new files on disk that aren't in cache" do
+      {:ok, db} = Store.open(@test_dir)
+
+      # Create lib/ subdirectory structure with an existing cached file
+      lib_dir = Path.join(@test_dir, "lib")
+      File.mkdir_p!(lib_dir)
+
+      existing_file = Path.join(lib_dir, "existing.ex")
+      File.write!(existing_file, "defmodule Existing do\nend\n")
+      content_hash = :crypto.hash(:sha256, File.read!(existing_file))
+
+      ast_data = %{modules: [%{name: "Existing", line: 1}], functions: []}
+
+      CubDB.put_multi(db, [
+        {{:ast, existing_file}, ast_data},
+        {{:content_hash, existing_file}, content_hash},
+        {{:meta, :schema_version}, Store.schema_version()},
+        {{:meta, :build}, Store.current_build()},
+        {{:project_files}, [existing_file]}
+      ])
+
+      # Add NEW files on disk that have no cache entries
+      new_file = Path.join(lib_dir, "brand_new.ex")
+      File.write!(new_file, "defmodule BrandNew do\nend\n")
+
+      sub_dir = Path.join(lib_dir, "commands")
+      File.mkdir_p!(sub_dir)
+      new_subdir_file = Path.join(sub_dir, "skill_commands.ex")
+      File.write!(new_subdir_file, "defmodule Commands.SkillCommands do\nend\n")
+
+      # Load should detect both new files as stale
+      result = Loader.load_project(@test_dir)
+      assert {:ok, stale} = result
+      assert new_file in stale, "new file in lib/ root should be detected"
+      assert new_subdir_file in stale, "new file in lib/ subdirectory should be detected"
+
+      # Existing unchanged file should NOT be in stale list
+      refute existing_file in stale, "unchanged cached file should not be stale"
+    end
+
+    test "returns {:ok, []} only when no stale AND no new files exist" do
+      {:ok, db} = Store.open(@test_dir)
+
+      lib_dir = Path.join(@test_dir, "lib")
+      File.mkdir_p!(lib_dir)
+
+      only_file = Path.join(lib_dir, "only.ex")
+      File.write!(only_file, "defmodule Only do\nend\n")
+      content_hash = :crypto.hash(:sha256, File.read!(only_file))
+
+      CubDB.put_multi(db, [
+        {{:ast, only_file}, %{modules: [%{name: "Only", line: 1}], functions: []}},
+        {{:content_hash, only_file}, content_hash},
+        {{:meta, :schema_version}, Store.schema_version()},
+        {{:meta, :build}, Store.current_build()},
+        {{:project_files}, [only_file]}
+      ])
+
+      # No new files, no stale files — should return {:ok, []}
+      assert {:ok, []} = Loader.load_project(@test_dir)
+    end
+
     test "returns cold_start on schema version mismatch" do
       {:ok, db} = Store.open(@test_dir)
 

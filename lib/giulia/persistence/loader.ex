@@ -185,6 +185,13 @@ defmodule Giulia.Persistence.Loader do
     else
       {restored, stale} = classify_entries(db, project_path, cached_entries)
 
+      # Detect NEW files on disk that aren't in the cache
+      new_files = discover_new_files(project_path, cached_entries)
+
+      if new_files != [] do
+        Logger.info("Cache restore: #{length(new_files)} new files detected on disk")
+      end
+
       # Restore valid entries to ETS
       Enum.each(restored, fn {file_path, ast_data} ->
         Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
@@ -196,11 +203,29 @@ defmodule Giulia.Persistence.Loader do
         files -> Giulia.Context.Store.put_project_files(project_path, files)
       end
 
+      all_stale = stale ++ new_files
+
       Logger.info(
-        "Cache restore for #{project_path}: #{length(restored)} valid, #{length(stale)} stale"
+        "Cache restore for #{project_path}: #{length(restored)} valid, #{length(stale)} stale, #{length(new_files)} new"
       )
 
-      {:ok, stale}
+      {:ok, all_stale}
+    end
+  end
+
+  defp discover_new_files(project_path, cached_entries) do
+    cached_paths = MapSet.new(cached_entries, fn {{:ast, path}, _} -> path end)
+
+    lib_path = Path.join(project_path, "lib")
+
+    if File.dir?(lib_path) do
+      lib_path
+      |> Path.join("**/*.{ex,exs}")
+      |> Path.wildcard()
+      |> Enum.reject(&Giulia.Context.Indexer.ignored?/1)
+      |> Enum.reject(&MapSet.member?(cached_paths, &1))
+    else
+      []
     end
   end
 
