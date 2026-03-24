@@ -8,13 +8,22 @@ defmodule Giulia.Context.Store.Query do
   Extracted from `Context.Store` (Build 111).
   """
 
-  alias Giulia.Context.Store
+  # Types inlined to avoid circular dependency (Store delegates to Query)
+  @type project_path :: String.t()
+  @type file_path :: String.t()
+  @type module_name :: String.t()
+  @type module_entry :: %{name: String.t(), file: String.t(), line: non_neg_integer()}
+  @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: atom(), file: String.t(), line: non_neg_integer(), complexity: non_neg_integer()}
 
-  @type project_path :: Store.project_path()
-  @type file_path :: Store.file_path()
-  @type module_name :: Store.module_name()
-  @type module_entry :: Store.module_entry()
-  @type function_entry :: Store.function_entry()
+  # ETS table name — same as Store's @table
+  @table Giulia.Context.Store
+
+  # Direct ETS read — avoids routing through Store (cycle breaker)
+  defp all_asts(project_path) do
+    :ets.match_object(@table, {{:ast, project_path, :_}, :_})
+    |> Enum.map(fn {{:ast, _proj, path}, data} -> {path, data} end)
+    |> Map.new()
+  end
 
   # ============================================================================
   # Module Queries
@@ -26,7 +35,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_modules(project_path()) :: [module_entry()]
   def list_modules(project_path) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       Enum.map(modules, fn mod ->
@@ -44,9 +53,9 @@ defmodule Giulia.Context.Store.Query do
   Find a specific module by name within a project.
   Returns {:ok, %{file: path, ast_data: data}} or :not_found.
   """
-  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: Store.ast_data()}} | :not_found
+  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: map()}} | :not_found
   def find_module(project_path, module_name) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.find_value(:not_found, fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       if Enum.any?(modules, &(&1.name == module_name)) do
@@ -66,7 +75,7 @@ defmodule Giulia.Context.Store.Query do
     # Normalize path separators for matching
     normalized = String.replace(file_path, "\\", "/")
 
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.find_value(:not_found, fn {path, ast_data} ->
       path_normalized = String.replace(path, "\\", "/")
       if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
@@ -95,7 +104,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_functions(project_path(), module_name() | nil) :: [function_entry()]
   def list_functions(project_path, module_filter) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       functions = ast_data[:functions] || []
       modules = ast_data[:modules] || []
@@ -146,7 +155,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_types(project_path(), module_name() | nil) :: [map()]
   def list_types(project_path, module_filter) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       types = ast_data[:types] || []
       modules = ast_data[:modules] || []
@@ -170,7 +179,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_specs(project_path(), module_name() | nil) :: [map()]
   def list_specs(project_path, module_filter) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       specs = ast_data[:specs] || []
       modules = ast_data[:modules] || []
@@ -209,7 +218,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_callbacks(project_path(), module_name() | nil) :: [map()]
   def list_callbacks(project_path, module_filter) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       callbacks = ast_data[:callbacks] || []
       modules = ast_data[:modules] || []
@@ -246,7 +255,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_structs(project_path()) :: [map()]
   def list_structs(project_path) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       structs = ast_data[:structs] || []
       Enum.map(structs, fn struct ->
@@ -273,7 +282,7 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_docs(project_path(), module_name() | nil) :: [map()]
   def list_docs(project_path, module_filter) do
-    Store.all_asts(project_path)
+    all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       docs = ast_data[:docs] || []
       modules = ast_data[:modules] || []

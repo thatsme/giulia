@@ -8,23 +8,27 @@ defmodule Giulia.Context.Store.Formatter do
   Extracted from `Context.Store` (Build 111).
   """
 
-  alias Giulia.Context.Store
+  alias Giulia.Context.Store.Query
 
-  @type project_path :: Store.project_path()
-  @type module_name :: Store.module_name()
+  # Types inlined to avoid circular dependency (Store delegates to Formatter)
+  @type project_path :: String.t()
+  @type module_name :: String.t()
+
+  # ETS table name — same as Store's @table
+  @table Giulia.Context.Store
 
   @doc """
   Generate a compact project summary for LLM context injection.
   """
   @spec project_summary(project_path()) :: String.t()
   def project_summary(project_path) do
-    modules = Store.list_modules(project_path)
-    functions = Store.list_functions(project_path)
-    types = Store.list_types(project_path)
-    specs = Store.list_specs(project_path)
-    structs = Store.list_structs(project_path)
-    callbacks = Store.list_callbacks(project_path)
-    stats = Store.stats(project_path)
+    modules = Query.list_modules(project_path)
+    functions = Query.list_functions(project_path, nil)
+    types = Query.list_types(project_path, nil)
+    specs = Query.list_specs(project_path, nil)
+    structs = Query.list_structs(project_path)
+    callbacks = Query.list_callbacks(project_path, nil)
+    stats = stats(project_path)
 
     public_functions =
       functions
@@ -60,16 +64,16 @@ defmodule Giulia.Context.Store.Formatter do
   """
   @spec module_details(project_path(), module_name()) :: String.t()
   def module_details(project_path, module_name) do
-    case Store.find_module(project_path, module_name) do
+    case Query.find_module(project_path, module_name) do
       {:ok, %{file: file, ast_data: ast_data}} ->
         modules = ast_data[:modules] || []
         mod = Enum.find(modules, &(&1.name == module_name))
 
-        functions = Store.list_functions(project_path, module_name)
-        types = Store.list_types(project_path, module_name)
-        specs = Store.list_specs(project_path, module_name)
-        callbacks = Store.list_callbacks(project_path, module_name)
-        struct_info = Store.get_struct(project_path, module_name)
+        functions = Query.list_functions(project_path, module_name)
+        types = Query.list_types(project_path, module_name)
+        specs = Query.list_specs(project_path, module_name)
+        callbacks = Query.list_callbacks(project_path, module_name)
+        struct_info = Query.get_struct(project_path, module_name)
 
         public_funcs = Enum.filter(functions, &(&1.type in [:def, :defmacro, :defdelegate, :defguard]))
         private_funcs = Enum.filter(functions, &(&1.type in [:defp, :defmacrop, :defguardp]))
@@ -114,5 +118,14 @@ defmodule Giulia.Context.Store.Formatter do
       :not_found ->
         "Module '#{module_name}' not found in index."
     end
+  end
+
+  # Direct ETS read — avoids routing through Store (cycle breaker)
+  defp stats(project_path) do
+    ast_count =
+      :ets.match_object(@table, {{:ast, project_path, :_}, :_})
+      |> length()
+
+    %{ast_files: ast_count, total_entries: :ets.info(@table, :size)}
   end
 end
