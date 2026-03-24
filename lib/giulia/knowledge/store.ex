@@ -230,14 +230,14 @@ defmodule Giulia.Knowledge.Store do
     Logger.info("Knowledge graph rebuilt for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
 
     ets_put_graph(project_path, graph)
-    ets_clear_metrics(project_path)
+    # Don't clear metrics here — keep serving old cache until new metrics are ready.
+    # This prevents the race where a Reader cold-miss computes from the OLD graph
+    # between cache clear and metrics_ready. Atomic swap happens in metrics_ready.
 
     # Persist graph to CubDB (Build 102-104)
     Giulia.Persistence.Writer.persist_graph(project_path, graph)
 
     # Notify ArcadeDB Indexer that the graph is ready (async, best-effort).
-    # Uses send/2 instead of a direct function call to avoid a circular dependency
-    # (Store -> Indexer -> Store). The Indexer handles {:graph_ready, ...} in handle_info.
     build_id = Giulia.Version.build()
 
     case GenServer.whereis(Giulia.Storage.Arcade.Indexer) do
@@ -260,7 +260,8 @@ defmodule Giulia.Knowledge.Store do
   def handle_cast({:metrics_ready, project_path, metrics}, state) do
     Logger.info("Metric cache warmed for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
 
-    ets_put_metrics(project_path, metrics)
+    # Atomic swap: replace entire cache (not merge) so stale entries can't survive
+    ets_replace_metrics(project_path, metrics)
 
     # Persist metrics to CubDB (Build 102-104)
     Giulia.Persistence.Writer.persist_metrics(project_path, metrics)
@@ -302,7 +303,9 @@ defmodule Giulia.Knowledge.Store do
       end
 
     ets_put_graph(project_path, graph)
-    ets_clear_metrics(project_path)
+    # Sync rebuild: compute metrics inline and atomic-swap
+    metrics = Analyzer.compute_cached_metrics(graph, project_path)
+    ets_replace_metrics(project_path, metrics)
     {:reply, :ok, state}
   end
 
@@ -339,7 +342,7 @@ defmodule Giulia.Knowledge.Store do
     :ets.insert(@table, {{:metrics, project_path}, Map.merge(current, metrics)})
   end
 
-  defp ets_clear_metrics(project_path) do
-    :ets.delete(@table, {:metrics, project_path})
+  defp ets_replace_metrics(project_path, metrics) do
+    :ets.insert(@table, {{:metrics, project_path}, metrics})
   end
 end
