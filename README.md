@@ -2,6 +2,8 @@
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
+![Giulia Blast Radius](docs/screenshot/blast_radius.jpg)
+
 Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- all via a REST API.
 
 ## Why Giulia Exists
