@@ -22,17 +22,21 @@ defmodule Giulia.Daemon.Routers.Monitor do
     category: "monitor"
   }
   get "/" do
-    html_path = Application.app_dir(:giulia, "priv/static/monitor.html")
+    serve_static(conn, "monitor.html")
+  end
 
-    case File.read(html_path) do
-      {:ok, html} ->
-        conn
-        |> put_resp_content_type("text/html")
-        |> send_resp(200, html)
-
-      {:error, _} ->
-        send_json(conn, 500, %{error: "Dashboard file not found"})
-    end
+  # -------------------------------------------------------------------
+  # GET /api/monitor/graph — Graph Explorer visualization
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Open the Graph Explorer (interactive dependency visualization with Cytoscape.js)",
+    endpoint: "GET /api/monitor/graph",
+    params: %{},
+    returns: "HTML graph visualization page",
+    category: "monitor"
+  }
+  get "/graph" do
+    serve_static(conn, "graph.html")
   end
 
   # -------------------------------------------------------------------
@@ -178,6 +182,20 @@ defmodule Giulia.Daemon.Routers.Monitor do
   defp safe_encode(data) when is_pid(data), do: inspect(data)
   defp safe_encode(data) when is_reference(data), do: inspect(data)
   defp safe_encode(data), do: data
+
+  defp serve_static(conn, filename) do
+    html_path = Application.app_dir(:giulia, "priv/static/#{filename}")
+
+    case File.read(html_path) do
+      {:ok, html} ->
+        conn
+        |> put_resp_content_type("text/html")
+        |> send_resp(200, html)
+
+      {:error, _} ->
+        send_json(conn, 500, %{error: "#{filename} not found"})
+    end
+  end
 
   defp safe_encode_value(v) when is_pid(v), do: inspect(v)
   defp safe_encode_value(v) when is_reference(v), do: inspect(v)

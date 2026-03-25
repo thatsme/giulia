@@ -99,9 +99,11 @@ defmodule Giulia.Monitor.Telemetry do
     case conn.query_string do
       "" -> nil
       qs ->
-        qs
-        |> URI.decode_query()
-        |> Map.get("path")
+        case URI.decode_query(qs) do
+          %{"path" => path} when is_binary(path) and path != "" ->
+            Giulia.Core.PathMapper.resolve_path(path)
+          _ -> nil
+        end
     end
   rescue
     _ -> nil

@@ -697,6 +697,70 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/knowledge/topology — Full graph in Cytoscape.js format
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get full module dependency graph in Cytoscape.js-ready format (nodes + edges)",
+    endpoint: "GET /api/knowledge/topology",
+    params: %{path: :required},
+    returns: "JSON with nodes (id, fan_in, fan_out, score, zone) and edges (source, target, label)",
+    category: "knowledge"
+  }
+  get "/topology" do
+    case resolve_project_path(conn) do
+      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+      project_path ->
+        # Get edges
+        {:ok, edges} = Giulia.Knowledge.Store.all_dependencies(project_path)
+
+        # Get heatmap for node scores
+        {:ok, heatmap} = Giulia.Knowledge.Store.heatmap(project_path)
+        heatmap_map = Map.new(heatmap.modules, fn m -> {m.module, m} end)
+
+        # Get fan_in_out for centrality
+        {:ok, fan_data} = Giulia.Knowledge.Store.find_fan_in_out(project_path)
+        fan_map = Map.new(fan_data.modules, fn m -> {m.module, m} end)
+
+        # Build Cytoscape nodes
+        all_modules =
+          (Enum.map(heatmap.modules, & &1.module) ++
+           Enum.flat_map(edges, fn {s, t, _} -> [s, t] end))
+          |> Enum.uniq()
+
+        nodes = Enum.map(all_modules, fn mod ->
+          h = Map.get(heatmap_map, mod, %{})
+          f = Map.get(fan_map, mod, %{})
+          breakdown = Map.get(h, :breakdown, %{})
+
+          %{
+            data: %{
+              id: mod,
+              label: mod |> String.split(".") |> Enum.slice(-2..-1) |> Enum.join("."),
+              score: Map.get(h, :score, 0),
+              zone: Map.get(h, :zone, "green"),
+              fan_in: Map.get(f, :fan_in, 0),
+              fan_out: Map.get(f, :fan_out, 0),
+              complexity: Map.get(breakdown, :complexity, 0),
+              has_test: Map.get(breakdown, :has_test, false)
+            }
+          }
+        end)
+
+        # Build Cytoscape edges
+        cy_edges = Enum.map(edges, fn {source, target, label} ->
+          %{data: %{source: source, target: target, label: to_string(label)}}
+        end)
+
+        send_json(conn, 200, %{
+          nodes: nodes,
+          edges: cy_edges,
+          node_count: length(nodes),
+          edge_count: length(cy_edges)
+        })
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end
