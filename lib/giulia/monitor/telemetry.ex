@@ -46,10 +46,13 @@ defmodule Giulia.Monitor.Telemetry do
 
   @doc false
   def handle_inference_event(event_name, measurements, metadata, _config) do
+    # Promote project_path to top-level `project` for dashboard filtering
+    project = Map.get(metadata, :project_path) || Map.get(metadata, "project_path")
+
     Giulia.Monitor.Store.push(%{
       event: Enum.join(event_name, "."),
       measurements: measurements,
-      metadata: metadata,
+      metadata: Map.put(metadata, :project, project),
       timestamp: DateTime.utc_now()
     })
   end
@@ -68,6 +71,9 @@ defmodule Giulia.Monitor.Telemetry do
     # Extract response body, safely truncate
     resp_body = extract_response_body(conn)
 
+    # Extract project path from query params for scoping
+    project = extract_project_param(conn)
+
     Giulia.Monitor.Store.push(%{
       event: "giulia.http.stop",
       measurements: %{duration_ms: duration_ms},
@@ -76,7 +82,8 @@ defmodule Giulia.Monitor.Telemetry do
         path: conn.request_path,
         query_string: conn.query_string,
         status: conn.status,
-        resp_body: resp_body
+        resp_body: resp_body,
+        project: project
       },
       timestamp: DateTime.utc_now()
     })
@@ -87,6 +94,18 @@ defmodule Giulia.Monitor.Telemetry do
   # ============================================================================
   # Helpers
   # ============================================================================
+
+  defp extract_project_param(conn) do
+    case conn.query_string do
+      "" -> nil
+      qs ->
+        qs
+        |> URI.decode_query()
+        |> Map.get("path")
+    end
+  rescue
+    _ -> nil
+  end
 
   defp extract_response_body(conn) do
     case conn.resp_body do
