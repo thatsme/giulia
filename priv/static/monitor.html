@@ -265,7 +265,7 @@
 <div class="header">
   <div style="display:flex;align-items:center">
     <h1>Giulia Logic Monitor</h1>
-    <span class="subtitle">Build 105</span>
+    <span class="subtitle">Build 151</span>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -280,6 +280,9 @@
   <div class="controls">
     <span class="dot wait" id="dot"></span>
     <span id="conn" style="font-size:11px;color:#666">Connecting</span>
+    <select id="project-select" style="background:#0f3460;color:#e0e0e0;border:1px solid #1a4a8a;padding:3px 8px;border-radius:3px;font-family:inherit;font-size:10px;max-width:220px;">
+      <option value="">All Projects</option>
+    </select>
     <button class="filter-btn" data-cat="api">API</button>
     <button class="filter-btn" data-cat="ooda">OODA</button>
     <button class="filter-btn" data-cat="llm">LLM</button>
@@ -382,6 +385,41 @@
   var autoScroll = true;
   var respReady = false, thinkReady = false;
 
+  // Project scoping
+  var projectSelect = document.getElementById('project-select');
+  var knownProjects = new Set();
+  var activeProject = '';  // '' = all
+
+  projectSelect.addEventListener('change', function() {
+    activeProject = this.value;
+    // Re-filter all visible event rows
+    log.querySelectorAll('.ev[data-project]').forEach(function(el) {
+      var show = (!activeProject || el.dataset.project === activeProject) && filters[el.dataset.cat];
+      el.style.display = show ? '' : 'none';
+      if (el.nextElementSibling && el.nextElementSibling.classList.contains('ev-detail')) {
+        el.nextElementSibling.style.display = show ? '' : 'none';
+      }
+    });
+    // Also hide events with no project when a project is selected
+    log.querySelectorAll('.ev:not([data-project])').forEach(function(el) {
+      el.style.display = activeProject ? 'none' : '';
+      if (el.nextElementSibling && el.nextElementSibling.classList.contains('ev-detail')) {
+        el.nextElementSibling.style.display = activeProject ? 'none' : '';
+      }
+    });
+  });
+
+  function trackProject(project) {
+    if (!project || knownProjects.has(project)) return;
+    knownProjects.add(project);
+    var opt = document.createElement('option');
+    // Show short name (last path segment)
+    var parts = project.replace(/\\/g, '/').split('/');
+    opt.textContent = parts[parts.length - 1] || project;
+    opt.value = project;
+    projectSelect.appendChild(opt);
+  }
+
   // Endpoint exclusion list (persisted in localStorage)
   var EXCL_KEY = 'giulia_monitor_excludes';
   var excludes = JSON.parse(localStorage.getItem(EXCL_KEY) || '[]');
@@ -447,12 +485,14 @@
       var c = b.dataset.cat;
       filters[c] = !filters[c];
       b.classList.toggle('off', !filters[c]);
-      // Re-apply visibility (only event rows, not the buttons themselves)
+      // Re-apply visibility (respects both category AND project filter)
       log.querySelectorAll('.ev[data-cat]').forEach(function(el) {
-        el.style.display = !filters[el.dataset.cat] ? 'none' : '';
-        // Also hide/show the detail div that follows
+        var catOk = filters[el.dataset.cat];
+        var projOk = !activeProject || el.dataset.project === activeProject || !el.dataset.project;
+        var show = catOk && projOk;
+        el.style.display = show ? '' : 'none';
         if (el.nextElementSibling && el.nextElementSibling.classList.contains('ev-detail')) {
-          el.nextElementSibling.style.display = !filters[el.dataset.cat] ? 'none' : '';
+          el.nextElementSibling.style.display = show ? '' : 'none';
         }
       });
     });
@@ -538,6 +578,10 @@
     if (qs) path += '?' + qs;
     var status = meta.status || 0;
     var dur = meas.duration_ms;
+    var project = meta.project || null;
+
+    // Track project for selector
+    if (project) trackProject(project);
 
     // Exclusion check (match against raw path without query string)
     if (isExcluded(rawPath)) return;
@@ -549,11 +593,15 @@
     if (dur > 1000) dc = 'd-slow';
     else if (dur > 100) dc = 'd-medium';
 
+    // Project filter: hide if a project is selected and this event doesn't match
+    var hidden = activeProject && project !== activeProject;
+
     // Row
     var row = document.createElement('div');
     row.className = 'ev';
     row.dataset.cat = cat;
-    if (!filters[cat]) row.style.display = 'none';
+    if (project) row.dataset.project = project;
+    if (!filters[cat] || hidden) row.style.display = 'none';
 
     row.innerHTML =
       '<span class="ev-time">' + fmtTime(ev.timestamp) + '</span>' +
@@ -599,10 +647,16 @@
   }
 
   function renderInternal(ev, cat, meta, meas) {
+    var project = meta.project || null;
+    if (project) trackProject(project);
+
+    var hidden = activeProject && project !== activeProject;
+
     var row = document.createElement('div');
     row.className = 'ev';
     row.dataset.cat = cat;
-    if (!filters[cat]) row.style.display = 'none';
+    if (project) row.dataset.project = project;
+    if (!filters[cat] || hidden) row.style.display = 'none';
 
     var badge = cat === 'ooda' ? 'b-ooda' : cat === 'llm' ? 'b-llm' : cat === 'tool' ? 'b-tool' : 'b-api';
     var label = cat.toUpperCase();
