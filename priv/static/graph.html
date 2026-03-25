@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='7' fill='%23e94560'/></svg>">
+<title>Giulia Graph Explorer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e;
+    color: #e0e0e0;
+    font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 13px;
+    overflow: hidden;
+  }
+
+  .nav {
+    background: #0d1117;
+    border-bottom: 1px solid #0f3460;
+    padding: 4px 20px;
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 11px;
+  }
+  .nav a {
+    color: #555;
+    text-decoration: none;
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .nav a:hover { color: #e0e0e0; }
+  .nav a.active { color: #e94560; background: rgba(233,69,96,0.1); }
+
+  .header {
+    background: #16213e;
+    border-bottom: 1px solid #0f3460;
+    padding: 8px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .header h1 { font-size: 15px; color: #e94560; font-weight: 600; }
+  .header .subtitle { color: #555; font-size: 11px; margin-left: 8px; }
+
+  .controls { display: flex; gap: 8px; align-items: center; }
+  .controls select, .controls button {
+    background: #0f3460;
+    color: #e0e0e0;
+    border: 1px solid #1a4a8a;
+    padding: 4px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  .controls select { max-width: 240px; }
+  .controls button:hover { background: #1a4a8a; }
+  .controls button.active { background: #e94560; border-color: #e94560; }
+
+  .view-btns { display: flex; gap: 4px; }
+  .view-btn {
+    background: #0f3460;
+    color: #888;
+    border: 1px solid #1a4a8a;
+    padding: 4px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 10px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .view-btn:hover { color: #e0e0e0; }
+  .view-btn.active { background: #e94560; border-color: #e94560; color: #fff; }
+
+  #cy {
+    width: 100%;
+    height: calc(100vh - 78px);
+    background: #1a1a2e;
+  }
+
+  .info-panel {
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(13,17,23,0.95);
+    border: 1px solid #0f3460;
+    border-radius: 6px;
+    padding: 12px 16px;
+    min-width: 260px;
+    max-width: 380px;
+    font-size: 11px;
+    color: #8b949e;
+    display: none;
+    z-index: 10;
+  }
+  .info-panel.visible { display: block; }
+  .info-title { color: #e94560; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .info-grid { display: grid; grid-template-columns: 90px 1fr; gap: 3px 10px; }
+  .info-label { color: #555; text-transform: uppercase; font-size: 10px; }
+  .info-val { color: #e0e0e0; }
+  .info-val.red { color: #e94560; }
+  .info-val.yellow { color: #ffa726; }
+  .info-val.green { color: #53d769; }
+
+  .legend {
+    position: absolute;
+    top: 90px;
+    left: 20px;
+    background: rgba(13,17,23,0.85);
+    border: 1px solid #0f3460;
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 10px;
+    z-index: 10;
+  }
+  .legend-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #555;
+    font-size: 14px;
+    z-index: 20;
+  }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="/api/monitor">Monitor</a>
+  <a href="/api/monitor/graph" class="active">Graph Explorer</a>
+</div>
+
+<div class="header">
+  <div style="display:flex;align-items:center">
+    <h1>Giulia Graph Explorer</h1>
+    <span class="subtitle">Build 152</span>
+  </div>
+  <div class="controls">
+    <select id="project-select">
+      <option value="">Select project...</option>
+    </select>
+    <div class="view-btns">
+      <button class="view-btn active" data-view="dependency">Dependency</button>
+      <button class="view-btn" data-view="heatmap">Heatmap</button>
+      <button class="view-btn" data-view="blast">Blast Radius</button>
+      <button class="view-btn" data-view="hubs">Hub Map</button>
+    </div>
+    <select id="layout-select">
+      <option value="cose">Force-Directed</option>
+      <option value="breadthfirst">Hierarchical</option>
+      <option value="circle">Circle</option>
+      <option value="concentric">Concentric</option>
+    </select>
+    <button id="btn-fit">Fit</button>
+  </div>
+</div>
+
+<div id="cy">
+  <div class="loading" id="loading">Select a project to visualize...</div>
+</div>
+
+<div class="legend" id="legend">
+  <div class="legend-row"><div class="legend-dot" style="background:#e94560"></div> Red zone (&ge;60)</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> Yellow zone (30-59)</div>
+  <div class="legend-row"><div class="legend-dot" style="background:#53d769"></div> Green zone (&lt;30)</div>
+  <div class="legend-row" style="margin-top:4px;color:#555">Node size = fan-in (centrality)</div>
+</div>
+
+<div class="info-panel" id="info-panel">
+  <div class="info-title" id="info-name">—</div>
+  <div class="info-grid">
+    <span class="info-label">Score</span><span class="info-val" id="info-score">—</span>
+    <span class="info-label">Zone</span><span class="info-val" id="info-zone">—</span>
+    <span class="info-label">Fan-in</span><span class="info-val" id="info-fanin">—</span>
+    <span class="info-label">Fan-out</span><span class="info-val" id="info-fanout">—</span>
+    <span class="info-label">Complexity</span><span class="info-val" id="info-complex">—</span>
+    <span class="info-label">Tests</span><span class="info-val" id="info-test">—</span>
+  </div>
+</div>
+
+<script>
+(function() {
+  var cy = null;
+  var graphData = null;
+  var currentView = 'dependency';
+  var projectSelect = document.getElementById('project-select');
+  var layoutSelect = document.getElementById('layout-select');
+  var loading = document.getElementById('loading');
+  var infoPanel = document.getElementById('info-panel');
+
+  // Zone colors
+  var ZONE_COLORS = { red: '#e94560', yellow: '#ffa726', green: '#53d769' };
+  var EDGE_COLOR = 'rgba(255,255,255,0.08)';
+  var EDGE_HIGHLIGHT = '#bb86fc';
+
+  // Discover projects from index status
+  function loadProjects() {
+    fetch('/api/index/status')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d.project_path) addProject(d.project_path);
+      }).catch(function() {});
+  }
+
+  function addProject(path) {
+    for (var i = 0; i < projectSelect.options.length; i++) {
+      if (projectSelect.options[i].value === path) return;
+    }
+    var opt = document.createElement('option');
+    var parts = path.replace(/\\/g, '/').split('/');
+    opt.textContent = parts[parts.length - 1] || path;
+    opt.value = path;
+    projectSelect.appendChild(opt);
+  }
+
+  projectSelect.addEventListener('change', function() {
+    if (this.value) loadTopology(this.value);
+  });
+
+  function loadTopology(projectPath) {
+    loading.textContent = 'Loading graph...';
+    loading.style.display = 'block';
+
+    fetch('/api/knowledge/topology?path=' + encodeURIComponent(projectPath))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        graphData = data;
+        loading.style.display = 'none';
+        initCytoscape(data);
+      })
+      .catch(function(err) {
+        loading.textContent = 'Error loading graph: ' + err.message;
+      });
+  }
+
+  function initCytoscape(data) {
+    if (cy) cy.destroy();
+
+    var elements = data.nodes.concat(data.edges);
+
+    cy = cytoscape({
+      container: document.getElementById('cy'),
+      elements: elements,
+      style: getStyle(),
+      layout: getLayout(),
+      minZoom: 0.1,
+      maxZoom: 5,
+      wheelSensitivity: 0.3
+    });
+
+    // Click handler for node info
+    cy.on('tap', 'node', function(evt) {
+      var d = evt.target.data();
+      showInfo(d);
+    });
+
+    cy.on('tap', function(evt) {
+      if (evt.target === cy) hideInfo();
+    });
+
+    // Hover: highlight connected edges
+    cy.on('mouseover', 'node', function(evt) {
+      var node = evt.target;
+      node.connectedEdges().addClass('highlighted');
+      node.neighborhood('node').addClass('neighbor');
+    });
+
+    cy.on('mouseout', 'node', function(evt) {
+      cy.elements().removeClass('highlighted neighbor');
+    });
+
+    applyView(currentView);
+  }
+
+  function getStyle() {
+    return [
+      {
+        selector: 'node',
+        style: {
+          'label': 'data(label)',
+          'font-size': 8,
+          'color': '#aaa',
+          'text-valign': 'bottom',
+          'text-margin-y': 4,
+          'background-color': function(ele) { return ZONE_COLORS[ele.data('zone')] || '#555'; },
+          'width': function(ele) { return Math.max(12, Math.min(60, 10 + (ele.data('fan_in') || 0) * 1.5)); },
+          'height': function(ele) { return Math.max(12, Math.min(60, 10 + (ele.data('fan_in') || 0) * 1.5)); },
+          'border-width': 1,
+          'border-color': 'rgba(255,255,255,0.1)',
+          'opacity': 0.9
+        }
+      },
+      {
+        selector: 'node.neighbor',
+        style: {
+          'border-width': 2,
+          'border-color': '#bb86fc',
+          'opacity': 1
+        }
+      },
+      {
+        selector: 'node.blast-source',
+        style: {
+          'border-width': 3,
+          'border-color': '#e94560',
+          'opacity': 1
+        }
+      },
+      {
+        selector: 'node.blast-d1',
+        style: {
+          'border-width': 2,
+          'border-color': '#ffa726',
+          'opacity': 1
+        }
+      },
+      {
+        selector: 'node.blast-d2',
+        style: {
+          'border-width': 2,
+          'border-color': '#42a5f5',
+          'opacity': 0.85
+        }
+      },
+      {
+        selector: 'node.dimmed',
+        style: { 'opacity': 0.1 }
+      },
+      {
+        selector: 'edge',
+        style: {
+          'width': 1,
+          'line-color': EDGE_COLOR,
+          'target-arrow-color': EDGE_COLOR,
+          'target-arrow-shape': 'triangle',
+          'arrow-scale': 0.6,
+          'curve-style': 'bezier',
+          'opacity': 0.6
+        }
+      },
+      {
+        selector: 'edge.highlighted',
+        style: {
+          'line-color': EDGE_HIGHLIGHT,
+          'target-arrow-color': EDGE_HIGHLIGHT,
+          'width': 2,
+          'opacity': 1
+        }
+      },
+      {
+        selector: 'edge.dimmed',
+        style: { 'opacity': 0.03 }
+      }
+    ];
+  }
+
+  function getLayout() {
+    var name = layoutSelect.value;
+
+    if (name === 'cose') {
+      return {
+        name: 'cose',
+        animate: false,
+        nodeRepulsion: function() { return 80000; },
+        idealEdgeLength: function() { return 120; },
+        gravity: 0.3,
+        numIter: 500,
+        padding: 40
+      };
+    }
+    if (name === 'breadthfirst') {
+      return { name: 'breadthfirst', directed: true, padding: 40, spacingFactor: 1.2, animate: false };
+    }
+    if (name === 'concentric') {
+      return {
+        name: 'concentric',
+        concentric: function(node) { return node.data('fan_in') || 0; },
+        levelWidth: function() { return 3; },
+        padding: 40,
+        animate: false
+      };
+    }
+    return { name: name, padding: 40, animate: false };
+  }
+
+  layoutSelect.addEventListener('change', function() {
+    if (cy) cy.layout(getLayout()).run();
+  });
+
+  document.getElementById('btn-fit').addEventListener('click', function() {
+    if (cy) cy.fit(40);
+  });
+
+  // View switching
+  document.querySelectorAll('.view-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.view-btn').forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentView = btn.dataset.view;
+      applyView(currentView);
+    });
+  });
+
+  function applyView(view) {
+    if (!cy) return;
+
+    // Reset all classes
+    cy.elements().removeClass('dimmed highlighted neighbor blast-source blast-d1 blast-d2');
+
+    var legend = document.getElementById('legend');
+
+    switch (view) {
+      case 'dependency':
+        legend.innerHTML =
+          '<div class="legend-row"><div class="legend-dot" style="background:#e94560"></div> Red zone (&ge;60)</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> Yellow zone (30-59)</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#53d769"></div> Green zone (&lt;30)</div>' +
+          '<div class="legend-row" style="margin-top:4px;color:#555">Node size = fan-in</div>';
+        break;
+
+      case 'heatmap':
+        // Emphasize red/yellow, dim green
+        cy.nodes().forEach(function(n) {
+          if (n.data('zone') === 'green' && n.data('score') < 15) n.addClass('dimmed');
+        });
+        legend.innerHTML =
+          '<div class="legend-row"><div class="legend-dot" style="background:#e94560"></div> Red: critical risk</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> Yellow: needs attention</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#53d769;opacity:0.3"></div> Green: healthy (dimmed)</div>' +
+          '<div class="legend-row" style="margin-top:4px;color:#555">Click node for details</div>';
+        break;
+
+      case 'blast':
+        // Pick highest-risk node and show blast radius
+        var topNode = cy.nodes().max(function(n) { return n.data('score') * (n.data('fan_in') + 1); }).ele;
+        if (topNode) showBlastRadius(topNode);
+        legend.innerHTML =
+          '<div class="legend-row"><div class="legend-dot" style="background:#e94560"></div> Source module</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> Depth 1 (direct)</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#42a5f5"></div> Depth 2 (transitive)</div>' +
+          '<div class="legend-row" style="margin-top:4px;color:#555">Click any node to see its blast radius</div>';
+
+        // Allow clicking any node to show its blast radius
+        cy.off('tap', 'node');
+        cy.on('tap', 'node', function(evt) {
+          cy.elements().removeClass('dimmed blast-source blast-d1 blast-d2');
+          showBlastRadius(evt.target);
+          showInfo(evt.target.data());
+        });
+        break;
+
+      case 'hubs':
+        // Size by total degree, dim low-degree nodes
+        cy.nodes().forEach(function(n) {
+          var total = (n.data('fan_in') || 0) + (n.data('fan_out') || 0);
+          if (total < 5) n.addClass('dimmed');
+        });
+        legend.innerHTML =
+          '<div class="legend-row" style="color:#bb86fc;font-weight:700">Hub Map</div>' +
+          '<div class="legend-row" style="color:#555">Large nodes = high degree</div>' +
+          '<div class="legend-row" style="color:#555">Low-degree nodes dimmed</div>';
+        break;
+    }
+
+    // Re-attach default click handler for non-blast views
+    if (view !== 'blast') {
+      cy.off('tap', 'node');
+      cy.on('tap', 'node', function(evt) { showInfo(evt.target.data()); });
+    }
+  }
+
+  function showBlastRadius(node) {
+    cy.elements().addClass('dimmed');
+    node.removeClass('dimmed').addClass('blast-source');
+
+    // Depth 1: direct neighbors
+    var d1 = node.neighborhood('node');
+    d1.removeClass('dimmed').addClass('blast-d1');
+    node.connectedEdges().removeClass('dimmed').addClass('highlighted');
+
+    // Depth 2: neighbors of neighbors
+    d1.forEach(function(n1) {
+      n1.neighborhood('node').forEach(function(n2) {
+        if (!n2.hasClass('blast-source') && !n2.hasClass('blast-d1')) {
+          n2.removeClass('dimmed').addClass('blast-d2');
+        }
+      });
+      n1.connectedEdges().removeClass('dimmed');
+    });
+  }
+
+  function showInfo(d) {
+    document.getElementById('info-name').textContent = d.id || '—';
+    var scoreEl = document.getElementById('info-score');
+    scoreEl.textContent = d.score != null ? d.score : '—';
+    scoreEl.className = 'info-val ' + (d.zone || '');
+    var zoneEl = document.getElementById('info-zone');
+    zoneEl.textContent = d.zone || '—';
+    zoneEl.className = 'info-val ' + (d.zone || '');
+    document.getElementById('info-fanin').textContent = d.fan_in != null ? d.fan_in : '—';
+    document.getElementById('info-fanout').textContent = d.fan_out != null ? d.fan_out : '—';
+    document.getElementById('info-complex').textContent = d.complexity != null ? d.complexity : '—';
+    document.getElementById('info-test').textContent = d.has_test ? 'Yes' : 'No';
+    infoPanel.classList.add('visible');
+  }
+
+  function hideInfo() {
+    infoPanel.classList.remove('visible');
+  }
+
+  // Init
+  loadProjects();
+})();
+</script>
+</body>
+</html>
