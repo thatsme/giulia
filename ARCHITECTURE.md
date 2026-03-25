@@ -23,7 +23,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   70 API endpoints          |
+ |   72 API endpoints          |
  +-----------------------------+
 ```
 
@@ -53,7 +53,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 70 API endpoints          |    | - Performance profiling   | |
+|  | - 72 API endpoints          |    | - Performance profiling   | |
 |  | - CubDB persistence         |    |                           | |
 |  | - ArcadeDB L2 snapshots     |    | Skips:                    | |
 |  |                             |    |  EmbeddingServing (~90MB) | |
@@ -76,7 +76,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
 scanning, property graph construction, semantic embeddings), the inference engine
-(OODA loop with LLM providers), and serves all 70 API endpoints. Memory limit: 4GB.
+(OODA loop with LLM providers), and serves all 72 API endpoints. Memory limit: 4GB.
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
 via distributed Erlang on startup (AutoConnect GenServer). Its job is runtime
@@ -375,14 +375,14 @@ Sub-routers and their domains:
 | Prefix              | Router                 | Routes | Domain                              |
 |---------------------|------------------------|--------|-------------------------------------|
 | /api/index          | Routers.Index          | 9      | Module/function index, scan, verify, compact, complexity |
-| /api/knowledge      | Routers.Knowledge      | 23     | Graph queries, metrics, insights    |
+| /api/knowledge      | Routers.Knowledge      | 24     | Graph queries, metrics, insights, topology |
 | /api/intelligence   | Routers.Intelligence   | 5      | Briefing, preflight, architect, validate, report_rules |
 | /api/runtime        | Routers.Runtime        | 16     | BEAM introspection, trace, connect, profiles, ingest, observations |
 | /api/search         | Routers.Search         | 3      | Text search, semantic search        |
 | /api/transaction    | Routers.Transaction    | 3      | Transactional file operations       |
 | /api/approval       | Routers.Approval       | 2      | Interactive consent gate            |
-| /api/monitor        | Routers.Monitor        | 6      | Dashboard, SSE stream, history, observe start/stop/status |
-| /api/discovery      | Routers.Discovery      | 3      | Skill introspection, search         |
+| /api/monitor        | Routers.Monitor        | 8      | Dashboard, Graph Explorer, SSE stream, history, observe start/stop/status |
+| /api/discovery      | Routers.Discovery      | 4      | Skill introspection, search, report rules |
 
 Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
 `Routers.Intelligence` as aliases.
@@ -406,7 +406,7 @@ SemanticIndex computes cosine similarity against all stored vectors using `Nx.do
 then ranks results with `Nx.top_k`.
 
 **Preflight integration**: The `/api/briefing/preflight` endpoint uses semantic
-search to match a user's prompt against the 70 skill intents declared across all
+search to match a user's prompt against the 72 skill intents declared across all
 sub-routers. The response includes a `suggested_tools` list ranked by cosine
 similarity, allowing clients to discover which API endpoints are most relevant to
 their current task. Graceful degradation: if EmbeddingServing is unavailable (model
@@ -450,3 +450,53 @@ root -- the directory containing `GIULIA.md` (the project constitution). It:
 
 This prevents the LLM from requesting reads of `/etc/passwd`, `~/.ssh/config`, or
 any file outside the project boundary, regardless of how the path is constructed.
+
+
+## 10. Visual Dashboards (Build 95, 151, 152)
+
+Giulia ships two browser-based dashboards, both served as static HTML from the
+daemon's `/api/monitor` prefix.
+
+### Logic Monitor (`/api/monitor`)
+
+Real-time telemetry dashboard. Every HTTP request, inference step, LLM call, and
+tool execution emits a `:telemetry` event, captured by `Monitor.Telemetry` handlers
+and pushed to `Monitor.Store` (a rolling 50-event buffer with SSE pub/sub).
+
+Features:
+- **SSE streaming**: live event feed via `/api/monitor/stream`
+- **Category filters**: API, OODA, LLM, TOOL — toggle visibility per event type
+- **Project scoping**: dropdown auto-populated from events, filters by project path
+- **Endpoint exclusion**: right-click to exclude noisy paths (persisted in localStorage)
+- **Response panel**: click any API event to see its JSON response body
+- **Think Stream**: real-time display of LLM `<think>` blocks during inference
+- **Cache/Graph panels**: live project health (Merkle root, graph stats, top hubs)
+- **Scans panel**: scan event history with warm/cold/incremental badges
+
+Events carry a `project` field (extracted from HTTP `?path=` params via PathMapper,
+or from inference metadata). This enables per-project filtering when multiple
+codebases are being analyzed concurrently.
+
+### Graph Explorer (`/api/monitor/graph`)
+
+Interactive dependency graph visualization powered by Cytoscape.js (loaded from CDN).
+Data source: `GET /api/knowledge/topology` returns the full module graph in
+Cytoscape-ready format (nodes with heatmap scores/centrality, edges with labels).
+
+Four view modes:
+- **Dependency**: full module topology, nodes colored by heatmap zone, sized by fan-in
+- **Heatmap**: emphasizes red/yellow modules, dims healthy green nodes
+- **Blast Radius**: click any module to highlight depth-1 (orange) and depth-2 (blue) impact
+- **Hub Map**: highlights high-degree modules, dims low-degree periphery
+
+Layout options: force-directed (cose), hierarchical (breadthfirst), circle, concentric.
+Click any node for a details panel showing score, zone, fan-in/out, complexity, and
+test status. Hover to highlight connected edges.
+
+The topology endpoint combines data from three sources in a single call:
+1. `Knowledge.Store.all_dependencies/1` — edge list with labels
+2. `Knowledge.Store.heatmap/1` — per-module scores and zones
+3. `Knowledge.Store.find_fan_in_out/1` — centrality data
+
+Both dashboards share a navigation bar for switching between Monitor and Graph
+Explorer views.
