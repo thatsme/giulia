@@ -192,6 +192,12 @@ defmodule Giulia.Knowledge.Store do
     Reader.logic_flow(project_path, from_mfa, to_mfa)
   end
 
+  @spec find_conventions(project_path()) :: {:ok, map()}
+  defdelegate find_conventions(project_path), to: Reader
+
+  @spec find_conventions(project_path(), String.t()) :: {:ok, map()}
+  defdelegate find_conventions(project_path, module_filter), to: Reader
+
   # ============================================================================
   # Server Callbacks
   # ============================================================================
