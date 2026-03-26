@@ -66,6 +66,7 @@ defmodule Giulia.Tools.RunMix do
     |> validate_inclusion(:command, Map.keys(@allowed_commands))
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

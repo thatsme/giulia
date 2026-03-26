@@ -93,13 +93,12 @@ defmodule Giulia.Persistence.Writer do
     pending = Map.delete(state.pending, project_path)
 
     # Clear CubDB
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           # Select all keys and delete them
           keys =
-            CubDB.select(db)
-            |> Enum.map(fn {key, _val} -> key end)
+            Enum.map(CubDB.select(db), fn {key, _val} -> key end)
 
           Enum.each(keys, fn key -> CubDB.delete(db, key) end)
           Logger.info("Cleared CubDB cache for #{project_path}")
@@ -114,7 +113,7 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   def handle_cast({:persist_graph, project_path, graph}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           binary = :erlang.term_to_binary(graph, [:compressed])
@@ -131,7 +130,7 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   def handle_cast({:persist_metrics, project_path, metrics}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           CubDB.put(db, {:metrics, :cached}, metrics)
@@ -147,7 +146,7 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   def handle_cast({:persist_embeddings, project_path, type, entries}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           CubDB.put(db, {:embedding, type}, entries)
@@ -163,7 +162,7 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   def handle_cast({:persist_project_files, project_path, files}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           CubDB.put(db, {:project_files}, files)
@@ -179,7 +178,7 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   def handle_cast({:persist_merkle, project_path, tree}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           CubDB.put(db, {:merkle, :tree}, tree)
@@ -263,8 +262,7 @@ defmodule Giulia.Persistence.Writer do
       else
         # Build fresh from all cached ASTs
         all_asts =
-          CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>})
-          |> Enum.map(fn {{:ast, path}, data} -> {path, data} end)
+          Enum.map(CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>}), fn {{:ast, path}, data} -> {path, data} end)
 
         Giulia.Persistence.Merkle.build(all_asts)
       end

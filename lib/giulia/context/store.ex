@@ -189,8 +189,7 @@ defmodule Giulia.Context.Store do
   @spec stats(project_path()) :: store_stats()
   def stats(project_path) do
     ast_count =
-      :ets.match_object(@table, {{:ast, project_path, :_}, :_})
-      |> length()
+      length(:ets.match_object(@table, {{:ast, project_path, :_}, :_}))
 
     %{
       ast_files: ast_count,

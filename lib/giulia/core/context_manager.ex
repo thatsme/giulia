@@ -66,7 +66,7 @@ defmodule Giulia.Core.ContextManager do
   """
   @spec initialized?(String.t()) :: boolean()
   def initialized?(path) do
-    giulia_md_path(path) |> File.exists?()
+    File.exists?(giulia_md_path(path))
   end
 
   # ============================================================================
@@ -136,8 +136,7 @@ defmodule Giulia.Core.ContextManager do
   @impl true
   def handle_call(:list_projects, _from, state) do
     projects =
-      :ets.tab2list(@table)
-      |> Enum.map(fn {path, pid, started_at} ->
+      Enum.map(:ets.tab2list(@table), fn {path, pid, started_at} ->
         %{
           path: path,
           pid: pid,
@@ -175,8 +174,7 @@ defmodule Giulia.Core.ContextManager do
     Logger.warning("ProjectContext #{inspect(pid)} died: #{inspect(reason)}")
 
     # Find and remove the dead entry
-    :ets.tab2list(@table)
-    |> Enum.each(fn {path, stored_pid, _} ->
+    Enum.each(:ets.tab2list(@table), fn {path, stored_pid, _} ->
       if stored_pid == pid do
         :ets.delete(@table, path)
         Logger.info("Cleaned up context for #{path}")

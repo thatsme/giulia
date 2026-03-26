@@ -80,8 +80,7 @@ defmodule Giulia.Tools.SearchCode do
     matcher = compile_matcher(search.pattern, search.case_sensitive)
 
     # State-first: file list comes from ETS, not disk
-    files = Giulia.Context.Store.get_project_files(sandbox.root)
-    |> filter_by_extension(search.file_pattern)
+    files = filter_by_extension(Giulia.Context.Store.get_project_files(sandbox.root), search.file_pattern)
 
     # Parallel search across all cores with early termination
     results =

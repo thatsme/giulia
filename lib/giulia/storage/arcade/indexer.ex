@@ -24,6 +24,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
   # Public API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -73,7 +74,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
   @impl true
   def handle_info({:graph_ready, project_path, build_id}, state) do
     # Run snapshot in a separate task to avoid blocking the GenServer
-    Task.start(fn -> snapshot(project_path, build_id) end)
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn -> snapshot(project_path, build_id) end)
     {:noreply, state}
   end
 

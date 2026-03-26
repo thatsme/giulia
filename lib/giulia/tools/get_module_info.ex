@@ -45,6 +45,7 @@ defmodule Giulia.Tools.GetModuleInfo do
     |> validate_required([:module_name])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, _opts \\ [])
 
@@ -85,8 +86,7 @@ defmodule Giulia.Tools.GetModuleInfo do
     |> Enum.filter(&(&1.type in [:defp, :defmacrop, :defguardp]))
     |> Enum.map_join("\n", &"  - #{&1.name}/#{&1.arity} (line #{&1.line})")
 
-    deps = imports
-    |> Enum.map_join("\n", &"  - #{&1.type} #{&1.module}")
+    deps = Enum.map_join(imports, "\n", &"  - #{&1.type} #{&1.module}")
 
     info = """
     Module: #{module_name}

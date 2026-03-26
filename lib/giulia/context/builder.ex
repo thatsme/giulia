@@ -119,8 +119,7 @@ defmodule Giulia.Context.Builder do
     tools = Registry.list_tools()
 
     tool_descriptions =
-      tools
-      |> Enum.map_join("\n", fn t ->
+      Enum.map_join(tools, "\n", fn t ->
         params = t.parameters[:properties] || %{}
         param_list = params |> Map.keys() |> Enum.join(", ")
         "- #{t.name}(#{param_list}): #{t.description}"
@@ -196,8 +195,7 @@ defmodule Giulia.Context.Builder do
   end
 
   defp format_validation_errors(errors) when is_map(errors) do
-    errors
-    |> Enum.map_join("\n", fn {field, messages} ->
+    Enum.map_join(errors, "\n", fn {field, messages} ->
       "  #{field}: #{Enum.join(List.wrap(messages), ", ")}"
     end)
   end

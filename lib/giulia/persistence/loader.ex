@@ -177,8 +177,7 @@ defmodule Giulia.Persistence.Loader do
   defp restore_from_cache(db, project_path) do
     # Collect all cached AST entries
     cached_entries =
-      CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>})
-      |> Enum.to_list()
+      Enum.to_list(CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>}))
 
     if cached_entries == [] do
       {:cold_start, :no_cache}

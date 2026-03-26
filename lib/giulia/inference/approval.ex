@@ -25,6 +25,7 @@ defmodule Giulia.Inference.Approval do
 
   @default_timeout 300_000  # 5 minutes
 
+  @enforce_keys []
   defstruct pending: %{}  # request_id => %{from: GenServer.from() | {:async, pid}, tool: string, ...}
 
   # ============================================================================
@@ -167,8 +168,7 @@ defmodule Giulia.Inference.Approval do
 
   @impl true
   def handle_call(:list_pending, _from, state) do
-    pending_list = state.pending
-    |> Enum.map(fn {id, req} ->
+    pending_list = Enum.map(state.pending, fn {id, req} ->
       %{
         request_id: id,
         tool: req.tool,
@@ -258,8 +258,7 @@ defmodule Giulia.Inference.Approval do
   def handle_info(:cleanup_expired, state) do
     now = DateTime.utc_now()
 
-    {expired, valid} = state.pending
-    |> Enum.split_with(fn {_id, req} ->
+    {expired, valid} = Enum.split_with(state.pending, fn {_id, req} ->
       DateTime.compare(req.expires_at, now) == :lt
     end)
 

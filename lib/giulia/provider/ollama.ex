@@ -7,11 +7,13 @@ defmodule Giulia.Provider.Ollama do
   @behaviour Giulia.Provider
 
   @impl true
+  @spec chat(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts \\ []) do
     chat(messages, [], opts)
   end
 
   @impl true
+  @spec chat(list(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, tools, opts) do
     base_url = opts[:base_url] || Application.get_env(:giulia, :ollama_base_url)
     model = opts[:model] || Application.get_env(:giulia, :ollama_model)
@@ -31,20 +33,19 @@ defmodule Giulia.Provider.Ollama do
   end
 
   @impl true
+  @spec stream(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def stream(messages, opts) do
     base_url = opts[:base_url] || Application.get_env(:giulia, :ollama_base_url)
     model = opts[:model] || Application.get_env(:giulia, :ollama_model)
 
     body =
-      build_request_body(messages, [], model, opts)
-      |> Map.put("stream", true)
+      Map.put(build_request_body(messages, [], model, opts), "stream", true)
 
     stream =
-      Req.post!("#{base_url}/api/chat",
+      stream_events(Req.post!("#{base_url}/api/chat",
         json: body,
         into: :self
-      )
-      |> stream_events()
+      ))
 
     {:ok, stream}
   end

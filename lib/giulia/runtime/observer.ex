@@ -35,6 +35,7 @@ defmodule Giulia.Runtime.Observer do
   # Public API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -114,8 +115,8 @@ defmodule Giulia.Runtime.Observer do
 
       case Inspector.connect(node_atom, connect_opts) do
         :ok ->
-          now = DateTime.utc_now() |> DateTime.to_iso8601()
-          session_id = "obs_" <> (now |> String.replace(~r/[^0-9]/, ""))
+          now = DateTime.to_iso8601(DateTime.utc_now())
+          session_id = "obs_" <> String.replace(now, ~r/[^0-9]/, "")
 
           trace_label =
             if trace_modules != [], do: ", tracing: #{inspect(trace_modules)}", else: ""
@@ -171,7 +172,7 @@ defmodule Giulia.Runtime.Observer do
     # Cancel the collection timer
     if state.timer_ref, do: Process.cancel_timer(state.timer_ref)
 
-    now = DateTime.utc_now() |> DateTime.to_iso8601()
+    now = DateTime.to_iso8601(DateTime.utc_now())
 
     Logger.info(
       "Observer: stopping observation of #{state.node} (#{state.snapshots_pushed} snapshots)"
@@ -297,10 +298,9 @@ defmodule Giulia.Runtime.Observer do
         end)
       end)
 
-    timeout = min(interval_ms - 500, 5_000) |> max(1_000)
+    timeout = max(min(interval_ms - 500, 5_000), 1_000)
 
-    Task.yield_many(tasks, timeout)
-    |> Enum.flat_map(fn
+    Enum.flat_map(Task.yield_many(tasks, timeout), fn
       {_task, {:ok, {:ok, _mod, result}}} ->
         Enum.map(result.calls, fn call ->
           %{
@@ -375,7 +375,7 @@ defmodule Giulia.Runtime.Observer do
 
   defp push_snapshot(worker_url, session_id, node, snapshot) do
     url = "#{worker_url}/api/runtime/ingest"
-    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    timestamp = DateTime.to_iso8601(DateTime.utc_now())
 
     body =
       Map.merge(snapshot, %{

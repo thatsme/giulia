@@ -74,6 +74,7 @@ defmodule Giulia.Inference.State do
           transaction: Transaction.t()
         }
 
+  @enforce_keys []
   defstruct task: nil,
             project_path: nil,
             project_pid: nil,

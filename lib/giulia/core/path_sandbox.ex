@@ -19,6 +19,7 @@ defmodule Giulia.Core.PathSandbox do
   we don't execute - we send it back with a firm "no."
   """
 
+  @enforce_keys [:root, :root_parts]
   defstruct [:root, :root_parts, :allowed_external]
 
   @type t :: %__MODULE__{
