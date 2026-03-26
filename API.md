@@ -1331,6 +1331,64 @@ curl "http://localhost:4000/api/knowledge/audit?path=C:/Development/GitHub/Giuli
 }
 ```
 
+### GET /api/knowledge/conventions
+
+Detect coding convention violations via AST analysis. 12 rules across 2 tiers: Tier 1 (metadata — instant, ETS-only) checks missing moduledoc, spec, and enforce_keys. Tier 2 (AST walk — Sourceror parse) detects anti-patterns: try-rescue flow control, silent rescue, runtime atom creation, process dictionary usage, unsupervised tasks, unless-else, single-value pipes, append-in-reduce, if-not.
+
+**Parameters (query string):**
+
+| Param    | Required | Description                          |
+|----------|----------|--------------------------------------|
+| `path`   | Yes      | Host project path                    |
+| `module` | No       | Filter violations to a single module |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub/Giulia"
+curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub/Giulia&module=Giulia.Daemon.Helpers"
+```
+
+**Response:**
+
+```json
+{
+  "total_violations": 3,
+  "by_severity": {"error": 1, "warning": 0, "info": 2},
+  "by_category": {
+    "atoms": [
+      {
+        "rule": "runtime_atom_creation",
+        "message": "String.to_atom/1 creates atoms from runtime strings",
+        "category": "atoms",
+        "severity": "error",
+        "file": "/projects/Giulia/lib/giulia/daemon/helpers.ex",
+        "line": 47,
+        "module": "Giulia.Daemon.Helpers",
+        "convention_ref": "Atoms > Never create atoms from runtime strings"
+      }
+    ]
+  },
+  "by_file": { ... },
+  "rules_checked": [
+    {"rule": "missing_moduledoc", "category": "documentation", "severity": "warning", "tier": 1},
+    {"rule": "missing_spec", "category": "documentation", "severity": "warning", "tier": 1},
+    {"rule": "missing_enforce_keys", "category": "structs", "severity": "info", "tier": 1},
+    {"rule": "try_rescue_flow_control", "category": "error_handling", "severity": "error", "tier": 2},
+    {"rule": "silent_rescue", "category": "error_handling", "severity": "error", "tier": 2},
+    {"rule": "runtime_atom_creation", "category": "atoms", "severity": "error", "tier": 2},
+    {"rule": "process_dictionary", "category": "otp", "severity": "warning", "tier": 2},
+    {"rule": "unsupervised_task", "category": "otp", "severity": "warning", "tier": 2},
+    {"rule": "unless_else", "category": "control_flow", "severity": "warning", "tier": 2},
+    {"rule": "single_value_pipe", "category": "pipes", "severity": "info", "tier": 2},
+    {"rule": "append_in_reduce", "category": "lists", "severity": "warning", "tier": 2},
+    {"rule": "if_not", "category": "control_flow", "severity": "info", "tier": 2}
+  ]
+}
+```
+
+When `module` filter is provided, the response also includes `"module_filter": "Module.Name"`.
+
 ---
 
 ## Intelligence
