@@ -68,6 +68,9 @@ defmodule Giulia.Application do
       # Registry for named process lookup
       {Registry, keys: :unique, name: Giulia.Registry},
 
+      # Task supervisor for supervised async tasks
+      {Task.Supervisor, name: Giulia.TaskSupervisor},
+
       # ETS-backed context store for project state
       Giulia.Context.Store,
 

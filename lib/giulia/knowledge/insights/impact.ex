@@ -81,12 +81,9 @@ defmodule Giulia.Knowledge.Insights.Impact do
       {:ok, func_name, arity} ->
         mfa = "#{module}.#{func_name}/#{arity}"
 
-        if not Graph.has_vertex?(graph, mfa) do
-          {:error, {:not_found, mfa}}
-        else
+        if Graph.has_vertex?(graph, mfa) do
           callers =
-            Graph.in_neighbors(graph, mfa)
-            |> Enum.filter(fn v -> String.contains?(v, "/") end)
+            Enum.filter(Graph.in_neighbors(graph, mfa), fn v -> String.contains?(v, "/") end)
 
           affected =
             Enum.map(callers, fn caller_mfa ->
@@ -118,6 +115,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
              phases: phases,
              warnings: warnings
            }}
+        else
+          {:error, {:not_found, mfa}}
         end
 
       :error ->
@@ -130,16 +129,12 @@ defmodule Giulia.Knowledge.Insights.Impact do
       {:ok, func_name, arity} ->
         mfa = "#{module}.#{func_name}/#{arity}"
 
-        if not Graph.has_vertex?(graph, mfa) do
-          {:error, {:not_found, mfa}}
-        else
+        if Graph.has_vertex?(graph, mfa) do
           callers =
-            Graph.in_neighbors(graph, mfa)
-            |> Enum.filter(fn v -> String.contains?(v, "/") end)
+            Enum.filter(Graph.in_neighbors(graph, mfa), fn v -> String.contains?(v, "/") end)
 
           callees =
-            Graph.out_neighbors(graph, mfa)
-            |> Enum.filter(fn v -> String.contains?(v, "/") end)
+            Enum.filter(Graph.out_neighbors(graph, mfa), fn v -> String.contains?(v, "/") end)
 
           affected =
             Enum.map(callers, fn caller_mfa ->
@@ -181,6 +176,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
              phases: phases,
              warnings: warnings
            }}
+        else
+          {:error, {:not_found, mfa}}
         end
 
       :error ->
@@ -189,9 +186,7 @@ defmodule Giulia.Knowledge.Insights.Impact do
   end
 
   defp check_rename_module(graph, project_path, module, new_name) do
-    if not Graph.has_vertex?(graph, module) do
-      {:error, {:not_found, module}}
-    else
+    if Graph.has_vertex?(graph, module) do
       case Topology.dependents(graph, module) do
         {:ok, deps} ->
           hub_penalty =
@@ -231,6 +226,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
         {:error, reason} ->
           {:error, reason}
       end
+    else
+      {:error, {:not_found, module}}
     end
   end
 

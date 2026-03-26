@@ -84,7 +84,7 @@ defmodule Giulia.AST.Analysis do
   @spec analyze_file(String.t()) :: {:ok, Giulia.AST.Processor.file_info()} | {:error, term()}
   def analyze_file(path) do
     with {:ok, ast, source} <- Giulia.AST.Parser.parse_file(path) do
-      info = analyze(ast, source) |> Map.put(:path, path)
+      info = Map.put(analyze(ast, source), :path, path)
       {:ok, info}
     end
   end
@@ -117,12 +117,10 @@ defmodule Giulia.AST.Analysis do
   @spec detailed_summary(Giulia.AST.Processor.file_info()) :: String.t()
   def detailed_summary(info) do
     module_section =
-      info.modules
-      |> Enum.map_join("\n", fn m -> "  - #{m.name} (line #{m.line})" end)
+      Enum.map_join(info.modules, "\n", fn m -> "  - #{m.name} (line #{m.line})" end)
 
     function_section =
-      info.functions
-      |> Enum.map_join("\n", fn f ->
+      Enum.map_join(info.functions, "\n", fn f ->
         visibility = if f.type in [:def, :defmacro, :defdelegate, :defguard], do: "public", else: "private"
         "  - #{f.name}/#{f.arity} [#{visibility}] (line #{f.line})"
       end)

@@ -187,6 +187,19 @@ defmodule Giulia.Knowledge.Store.Reader do
     Analyzer.struct_lifecycle(project_path, struct_module)
   end
 
+  @spec find_conventions(String.t()) :: {:ok, map()}
+  def find_conventions(project_path) do
+    # No caching — conventions depend on all_asts which changes on every scan.
+    # Stale cache caused 0-violation ghost results after re-indexing.
+    Analyzer.conventions(project_path)
+  end
+
+  @spec find_conventions(String.t(), String.t()) :: {:ok, map()}
+  def find_conventions(project_path, module_filter) do
+    # Module-filtered queries are not cached (filter varies per request)
+    Analyzer.conventions(project_path, module_filter)
+  end
+
   # ============================================================================
   # Graph-dependent analysis (6) — ETS read + Analyzer
   # ============================================================================

@@ -17,11 +17,13 @@ defmodule Giulia.Provider.Gemini do
   @base_url "https://generativelanguage.googleapis.com/v1beta/models"
 
   @impl true
+  @spec chat(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts) when is_list(opts) do
     chat(messages, [], opts)
   end
 
   @impl true
+  @spec chat(list(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, _tools, opts) do
     api_key = System.get_env("GEMINI_API_KEY")
 
@@ -77,12 +79,14 @@ defmodule Giulia.Provider.Gemini do
   end
 
   @impl true
+  @spec stream(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def stream(_messages, _opts) do
     # Gemini is only used for escalation, not streaming
     {:error, :streaming_not_supported}
   end
 
   # Not part of behaviour, but useful for checking availability
+  @spec available?() :: boolean()
   def available? do
     api_key = System.get_env("GEMINI_API_KEY")
     not is_nil(api_key) and api_key != ""
@@ -91,8 +95,7 @@ defmodule Giulia.Provider.Gemini do
   # Format Elixir messages to Gemini's nested structure
   # Gemini expects: %{contents: [%{role: "user", parts: [%{text: "..."}]}]}
   defp format_messages(messages) do
-    messages
-    |> Enum.map(fn msg ->
+    Enum.map(messages, fn msg ->
       role = normalize_role(msg[:role] || msg["role"])
       content = msg[:content] || msg["content"]
 
@@ -110,6 +113,7 @@ defmodule Giulia.Provider.Gemini do
   defp normalize_role(other), do: other
 
   @doc false
+  @spec parse_response(map()) :: {:ok, map()} | {:error, term()}
   def parse_response(%{"candidates" => [first | _]}) do
     case first do
       %{"content" => %{"parts" => parts}} when is_list(parts) ->

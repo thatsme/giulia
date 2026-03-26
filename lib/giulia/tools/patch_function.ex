@@ -261,8 +261,7 @@ defmodule Giulia.Tools.PatchFunction do
   defp search_body_for_function({:__block__, _meta, statements}, func_atom, arity) do
     # Collect ALL matching clause ranges
     ranges =
-      statements
-      |> Enum.flat_map(fn stmt ->
+      Enum.flat_map(statements, fn stmt ->
         case match_function_def(stmt, func_atom, arity) do
           {:ok, range} -> [range]
           :no_match -> []
@@ -388,8 +387,7 @@ defmodule Giulia.Tools.PatchFunction do
       end_line
     else
       # Search backward up to 5 lines for the `end` keyword
-      (end_line - 1)..max(end_line - 5, 1)//-1
-      |> Enum.find(end_line, fn idx ->
+      Enum.find((end_line - 1)..max(end_line - 5, 1)//-1, end_line, fn idx ->
         String.trim(Enum.at(lines, idx - 1, "")) =~ ~r/^end\b/
       end)
     end
@@ -455,7 +453,7 @@ defmodule Giulia.Tools.PatchFunction do
 
   defp format_source(source) do
     try do
-      formatted = Code.format_string!(source) |> IO.iodata_to_binary()
+      formatted = IO.iodata_to_binary(Code.format_string!(source))
       # Ensure trailing newline
       formatted = if String.ends_with?(formatted, "\n"), do: formatted, else: formatted <> "\n"
       {:ok, formatted}

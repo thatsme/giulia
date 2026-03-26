@@ -116,7 +116,7 @@ defmodule Giulia.Daemon.Routers.Index do
         project_path ->
           merkle_root =
             case Giulia.Persistence.Loader.cached_merkle_root(project_path) do
-              {:ok, hash} -> Base.encode16(hash, case: :lower) |> String.slice(0, 12)
+              {:ok, hash} -> String.slice(Base.encode16(hash, case: :lower), 0, 12)
               :not_cached -> nil
             end
 
@@ -173,7 +173,7 @@ defmodule Giulia.Daemon.Routers.Index do
                 send_json(conn, 200, %{
                   status: "ok",
                   verified: true,
-                  root: Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower) |> String.slice(0, 12),
+                  root: String.slice(Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower), 0, 12),
                   leaf_count: tree.leaf_count
                 })
 

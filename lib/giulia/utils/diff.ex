@@ -141,8 +141,7 @@ defmodule Giulia.Utils.Diff do
       # Expand to include context
       indices_to_show = change_indices
       |> Enum.flat_map(fn idx ->
-        Range.new(max(0, idx - context), min(length(ops) - 1, idx + context))
-        |> Enum.to_list()
+        Enum.to_list(Range.new(max(0, idx - context), min(length(ops) - 1, idx + context)))
       end)
       |> Enum.uniq()
       |> Enum.sort()
@@ -151,8 +150,7 @@ defmodule Giulia.Utils.Diff do
       hunks = group_into_hunks(indices_to_show)
 
       # Build output with hunk headers
-      hunks
-      |> Enum.flat_map(fn hunk_indices ->
+      Enum.flat_map(hunks, fn hunk_indices ->
         build_hunk(ops, hunk_indices)
       end)
     end
@@ -174,15 +172,14 @@ defmodule Giulia.Utils.Diff do
 
   # Build a single hunk with header
   defp build_hunk(ops, indices) do
-    hunk_ops = indices |> Enum.map(fn idx -> Enum.at(ops, idx) end)
+    hunk_ops = Enum.map(indices, fn idx -> Enum.at(ops, idx) end)
 
     # Calculate hunk header
     {old_start, old_count, new_start, new_count} = calculate_hunk_range(hunk_ops)
 
     header = "@@ -#{old_start},#{old_count} +#{new_start},#{new_count} @@"
 
-    lines = hunk_ops
-    |> Enum.map(fn {op, old_line, new_line, content} ->
+    lines = Enum.map(hunk_ops, fn {op, old_line, new_line, content} ->
       line_prefix = case op do
         :eq -> " "
         :del -> "-"
@@ -208,8 +205,8 @@ defmodule Giulia.Utils.Diff do
   end
 
   defp calculate_hunk_range(ops) do
-    old_lines = ops |> Enum.filter(fn {op, _, _, _} -> op in [:eq, :del] end)
-    new_lines = ops |> Enum.filter(fn {op, _, _, _} -> op in [:eq, :ins] end)
+    old_lines = Enum.filter(ops, fn {op, _, _, _} -> op in [:eq, :del] end)
+    new_lines = Enum.filter(ops, fn {op, _, _, _} -> op in [:eq, :ins] end)
 
     old_start = case old_lines do
       [{_, n, _, _} | _] when n != nil -> n

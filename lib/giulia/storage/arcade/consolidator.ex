@@ -28,16 +28,19 @@ defmodule Giulia.Storage.Arcade.Consolidator do
   # Client API
   # ---------------------------------------------------------------------------
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
   @doc "Trigger a consolidation cycle manually."
+  @spec consolidate() :: :ok
   def consolidate do
     GenServer.cast(__MODULE__, :consolidate)
   end
 
   @doc "Get the current consolidation status."
+  @spec status() :: map()
   def status do
     GenServer.call(__MODULE__, :status)
   end

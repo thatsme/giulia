@@ -90,10 +90,9 @@ defmodule Giulia.Persistence.Merkle do
       MapSet.new(Map.keys(tree_b.leaves))
     )
 
-    Enum.filter(all_paths, fn path ->
+    Enum.sort(Enum.filter(all_paths, fn path ->
       Map.get(tree_a.leaves, path) != Map.get(tree_b.leaves, path)
-    end)
-    |> Enum.sort()
+    end))
   end
 
   @doc """

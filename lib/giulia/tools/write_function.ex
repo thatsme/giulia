@@ -71,6 +71,7 @@ defmodule Giulia.Tools.WriteFunction do
     |> validate_required([:module, :function_name, :arity, :code])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

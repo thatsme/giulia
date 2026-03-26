@@ -229,14 +229,13 @@ defmodule Giulia.AST.Extraction do
     base = base_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
     line = Keyword.get(meta, :line, 0)
 
-    entries = Enum.map(children, fn
+    entries = Enum.reject(Enum.map(children, fn
       {:__aliases__, _, parts} when is_list(parts) ->
         child = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
         %{type: directive, module: "#{base}.#{child}", line: line}
       _ ->
         nil
-    end)
-    |> Enum.reject(&is_nil/1)
+    end), &is_nil/1)
 
     {:ok_multi, entries}
   end
@@ -542,7 +541,7 @@ defmodule Giulia.AST.Extraction do
   end
 
   defp extract_struct_fields(fields) when is_list(fields) do
-    Enum.map(fields, fn
+    Enum.filter(Enum.map(fields, fn
       # Standard keyword: {key, default}
       {key, _default} when is_atom(key) -> key
       # Simple atom field
@@ -552,8 +551,7 @@ defmodule Giulia.AST.Extraction do
       # Sourceror wrapped keyword: {{:__block__, _, [key]}, _default}
       {{:__block__, _, [key]}, _default} when is_atom(key) -> key
       _ -> :unknown
-    end)
-    |> Enum.filter(&(&1 != :unknown))
+    end), &(&1 != :unknown))
   end
 
   defp extract_struct_fields(_), do: []

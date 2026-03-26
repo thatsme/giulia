@@ -154,6 +154,7 @@ defmodule Giulia.AST.Processor do
   @doc "Slice source to only include lines around an error location."
   # defdelegate doesn't forward default args — handle /2 explicitly
   @spec slice_around_line(String.t(), non_neg_integer(), non_neg_integer()) :: String.t()
+  @spec slice_around_line(String.t(), non_neg_integer()) :: String.t()
   def slice_around_line(source, line), do: Giulia.AST.Slicer.slice_around_line(source, line, 10)
   defdelegate slice_around_line(source, line, context_lines), to: Giulia.AST.Slicer
 

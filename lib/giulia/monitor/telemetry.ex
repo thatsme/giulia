@@ -45,6 +45,7 @@ defmodule Giulia.Monitor.Telemetry do
   # ============================================================================
 
   @doc false
+  @spec handle_inference_event(list(), map(), map(), term()) :: :ok
   def handle_inference_event(event_name, measurements, metadata, _config) do
     # Promote project_path to top-level `project` for dashboard filtering
     project = Map.get(metadata, :project_path) || Map.get(metadata, "project_path")
@@ -62,6 +63,7 @@ defmodule Giulia.Monitor.Telemetry do
   # ============================================================================
 
   @doc false
+  @spec handle_http_event(list(), map(), map(), term()) :: :ok
   # http.start carries no useful data — only http.stop has status, duration, body.
   def handle_http_event([:giulia, :http, :start], _measurements, _meta, _config), do: :ok
 

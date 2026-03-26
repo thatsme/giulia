@@ -27,5 +27,6 @@ defmodule Giulia.Tools.GetStagedFiles do
 
   # This should never be called directly — Orchestrator intercepts it
   @impl true
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(_params, _opts), do: {:ok, "get_staged_files intercepted"}
 end

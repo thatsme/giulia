@@ -181,6 +181,8 @@ defmodule Giulia.Inference.ToolDispatch.Executor do
   # ============================================================================
 
   @doc false
+  @spec maybe_inject_readback(String.t(), map(), {:ok, term()} | {:error, term()}, keyword()) ::
+          {:ok, term()} | {:error, term()}
   def maybe_inject_readback(tool_name, params, {:error, reason} = original_error, tool_opts)
       when tool_name in ["edit_file", "write_function", "patch_function"] do
     project_path = Keyword.get(tool_opts, :project_path)

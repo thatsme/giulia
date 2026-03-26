@@ -66,6 +66,7 @@ defmodule Giulia.Tools.LookupFunction do
     |> validate_required([:function_name])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, _opts \\ [])
 

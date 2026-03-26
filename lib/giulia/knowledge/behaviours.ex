@@ -17,9 +17,7 @@ defmodule Giulia.Knowledge.Behaviours do
   @spec behaviour_integrity(Graph.t(), String.t(), String.t()) ::
           {:ok, :consistent} | {:error, :not_found} | {:error, [map()]}
   def behaviour_integrity(graph, behaviour, project_path) do
-    if not Graph.has_vertex?(graph, behaviour) do
-      {:error, :not_found}
-    else
+    if Graph.has_vertex?(graph, behaviour) do
       # Get declared callbacks from ETS
       callbacks = Giulia.Context.Store.Query.list_callbacks(project_path, behaviour)
 
@@ -28,10 +26,9 @@ defmodule Giulia.Knowledge.Behaviours do
         {:ok, :consistent}
       else
         callback_set =
-          Enum.map(callbacks, fn cb ->
+          MapSet.new(Enum.map(callbacks, fn cb ->
             {to_string(cb.function), cb.arity}
-          end)
-          |> MapSet.new()
+          end))
 
         # Split optional vs required callbacks
         optional_set =
@@ -109,6 +106,8 @@ defmodule Giulia.Knowledge.Behaviours do
           {:error, real_fractures}
         end
       end
+    else
+      {:error, :not_found}
     end
   end
 
@@ -193,7 +192,7 @@ defmodule Giulia.Knowledge.Behaviours do
       # Verify all implementers share a common `use` directive
       use_sets =
         Enum.map(implementers, fn impl ->
-          get_use_directives(project_path, impl) |> MapSet.new()
+          MapSet.new(get_use_directives(project_path, impl))
         end)
 
       common_uses =

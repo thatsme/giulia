@@ -21,6 +21,7 @@ defmodule Giulia.Inference.Pool do
   @type provider :: :local_3b | :local_32b | :cloud_sonnet
   @type request :: {pid(), reference(), String.t(), keyword()}
 
+  @enforce_keys []
   defstruct [
     provider: nil,
     busy: false,
@@ -41,6 +42,7 @@ defmodule Giulia.Inference.Pool do
   @doc """
   Child spec that uses provider as the unique ID.
   """
+  @spec child_spec(atom()) :: map()
   def child_spec(provider) do
     %{
       id: {__MODULE__, provider},
@@ -53,6 +55,7 @@ defmodule Giulia.Inference.Pool do
   @doc """
   Start a pool for a specific provider.
   """
+  @spec start_link(atom()) :: GenServer.on_start()
   def start_link(provider) when provider in [:local_3b, :local_32b, :cloud_sonnet] do
     GenServer.start_link(__MODULE__, provider, name: via(provider))
   end

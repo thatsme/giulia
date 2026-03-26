@@ -48,6 +48,7 @@ defmodule Giulia.Tools.TracePath do
     |> validate_required([:from, :to])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

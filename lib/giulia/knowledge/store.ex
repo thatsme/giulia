@@ -192,6 +192,12 @@ defmodule Giulia.Knowledge.Store do
     Reader.logic_flow(project_path, from_mfa, to_mfa)
   end
 
+  @spec find_conventions(project_path()) :: {:ok, map()}
+  defdelegate find_conventions(project_path), to: Reader
+
+  @spec find_conventions(project_path(), String.t()) :: {:ok, map()}
+  defdelegate find_conventions(project_path, module_filter), to: Reader
+
   # ============================================================================
   # Server Callbacks
   # ============================================================================
@@ -209,7 +215,7 @@ defmodule Giulia.Knowledge.Store do
     ast_data = Giulia.Context.Store.all_asts(project_path)
     store_pid = self()
 
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       try do
         graph = Builder.build_graph(ast_data)
         GenServer.cast(store_pid, {:graph_ready, project_path, graph})
@@ -248,7 +254,7 @@ defmodule Giulia.Knowledge.Store do
     # Eagerly compute heavy metrics in background
     store_pid = self()
 
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       metrics = Analyzer.compute_cached_metrics(graph, project_path)
       GenServer.cast(store_pid, {:metrics_ready, project_path, metrics})
     end)
@@ -258,7 +264,7 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_cast({:metrics_ready, project_path, metrics}, state) do
-    Logger.info("Metric cache warmed for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
+    Logger.info("Metric cache warmed for #{project_path}: #{Enum.join(Map.keys(metrics), ", ")}")
 
     # Atomic swap: replace entire cache (not merge) so stale entries can't survive
     ets_replace_metrics(project_path, metrics)
@@ -282,7 +288,7 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def handle_cast({:restore_metrics, project_path, metrics}, state) do
-    Logger.info("Metric cache restored from disk for #{project_path}: #{Map.keys(metrics) |> Enum.join(", ")}")
+    Logger.info("Metric cache restored from disk for #{project_path}: #{Enum.join(Map.keys(metrics), ", ")}")
 
     ets_put_metrics(project_path, metrics)
 

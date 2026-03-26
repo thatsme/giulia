@@ -47,6 +47,8 @@ defmodule Giulia.Inference.BulkReplace do
   end
 
   @doc false
+  @spec run(String.t(), String.t(), list(), boolean(), term(), keyword()) ::
+          {:ok, String.t(), term(), MapSet.t(), map()} | {:error, String.t()}
   def run(pattern, replacement, file_list, use_regex, tx, opts) do
     resolve_fn = Keyword.fetch!(opts, :resolve_fn)
     modified_files = Keyword.get(opts, :modified_files, MapSet.new())

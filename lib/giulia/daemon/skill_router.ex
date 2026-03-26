@@ -49,7 +49,7 @@ defmodule Giulia.Daemon.SkillRouter do
 
   @spec __before_compile__(Macro.Env.t()) :: Macro.t()
   defmacro __before_compile__(env) do
-    skills = Module.get_attribute(env.module, :skill) |> Enum.reverse()
+    skills = Enum.reverse(Module.get_attribute(env.module, :skill))
 
     quote do
       @doc "Returns all @skill annotations declared in this router."
