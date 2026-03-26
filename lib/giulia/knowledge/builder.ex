@@ -28,7 +28,7 @@ defmodule Giulia.Knowledge.Builder do
     all_modules =
       ast_data
       |> Enum.flat_map(fn {_path, data} ->
-        (data[:modules] || []) |> Enum.map(& &1.name)
+        Enum.map(data[:modules] || [], & &1.name)
       end)
       |> MapSet.new()
 
@@ -145,8 +145,7 @@ defmodule Giulia.Knowledge.Builder do
       [source_mod | _] ->
         # @behaviour / use directives indicate implementation
         behaviour_imports =
-          imports
-          |> Enum.filter(fn imp ->
+          Enum.filter(imports, fn imp ->
             imp.type in [:use, :require] and MapSet.member?(all_modules, imp.module)
           end)
 
@@ -280,8 +279,8 @@ defmodule Giulia.Knowledge.Builder do
   # xref ME query returns [{CallerMod, CalleeMod}]
   defp add_module_call_edges(graph, calls) when is_list(calls) do
     Enum.reduce(calls, graph, fn {caller_mod, callee_mod}, g ->
-      caller = Atom.to_string(caller_mod) |> String.replace_leading("Elixir.", "")
-      callee = Atom.to_string(callee_mod) |> String.replace_leading("Elixir.", "")
+      caller = String.replace_leading(Atom.to_string(caller_mod), "Elixir.", "")
+      callee = String.replace_leading(Atom.to_string(callee_mod), "Elixir.", "")
 
       if Graph.has_vertex?(g, caller) and Graph.has_vertex?(g, callee) and caller != callee do
         Graph.add_edge(g, caller, callee, label: :calls)
@@ -397,7 +396,7 @@ defmodule Giulia.Knowledge.Builder do
         # Remote call with atom module: :erlang.func(args)
         {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
         when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
-          mod = Atom.to_string(mod_atom) |> String.replace_leading("Elixir.", "")
+          mod = String.replace_leading(Atom.to_string(mod_atom), "Elixir.", "")
           if MapSet.member?(all_modules, mod) do
             target_mfa = "#{mod}.#{func_name}/#{length(args)}"
             {node, MapSet.put(set, target_mfa)}

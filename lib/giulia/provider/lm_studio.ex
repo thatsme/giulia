@@ -107,11 +107,10 @@ defmodule Giulia.Provider.LMStudio do
     api_key = opts[:api_key] || Application.get_env(:giulia, :lm_studio_api_key, "lm-studio")
 
     body =
-      build_request_body(messages, [], model, opts)
-      |> Map.put("stream", true)
+      Map.put(build_request_body(messages, [], model, opts), "stream", true)
 
     stream =
-      Req.post!(url,
+      stream_events(Req.post!(url,
         json: body,
         headers: [
           {"Authorization", "Bearer #{api_key}"},
@@ -120,8 +119,7 @@ defmodule Giulia.Provider.LMStudio do
         into: :self,
         connect_options: [timeout: 30_000],
            receive_timeout: opts[:timeout] || 90_000
-      )
-      |> stream_events()
+      ))
 
     {:ok, stream}
   end

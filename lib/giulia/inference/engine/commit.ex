@@ -200,7 +200,7 @@ defmodule Giulia.Inference.Engine.Commit do
     tool_opts = ContextBuilder.build_tool_opts(state)
 
     all_test_targets =
-      Enum.flat_map(staged_files, fn path ->
+      Enum.uniq(Enum.flat_map(staged_files, fn path ->
         case Store.Query.find_module_by_file(project_path, path) do
           {:ok, %{name: module_name}} ->
             case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
@@ -211,8 +211,7 @@ defmodule Giulia.Inference.Engine.Commit do
           _ ->
             []
         end
-      end)
-      |> Enum.uniq()
+      end))
 
     if all_test_targets != [] do
       Logger.info("COMMIT: Running #{length(all_test_targets)} regression test file(s)")

@@ -53,7 +53,7 @@ defmodule Giulia.AST.Patcher do
          {:ok, func_ast} <- Sourceror.parse_string(function_source) do
       # Module name parts must be atoms for AST pattern matching (Sourceror).
       # These are bounded by the project's compiled modules.
-      module_parts = String.split(module_name, ".") |> Enum.map(&String.to_existing_atom/1)
+      module_parts = Enum.map(String.split(module_name, "."), &String.to_existing_atom/1)
 
       {patched, _acc} =
         Macro.postwalk(ast, nil, fn
@@ -107,7 +107,7 @@ defmodule Giulia.AST.Patcher do
         when def_type in [:def, :defp] ->
           if length(args || []) == arity do
             start_line = Keyword.get(meta, :line, 0)
-            end_line = Keyword.get(meta, :end_of_expression, []) |> Keyword.get(:line, start_line)
+            end_line = Keyword.get(Keyword.get(meta, :end_of_expression, []), :line, start_line)
             {node, {start_line, end_line}}
           else
             {node, nil}
@@ -118,7 +118,7 @@ defmodule Giulia.AST.Patcher do
         when def_type in [:def, :defp] ->
           if length(args || []) == arity do
             start_line = Keyword.get(meta, :line, 0)
-            end_line = Keyword.get(meta, :end_of_expression, []) |> Keyword.get(:line, start_line)
+            end_line = Keyword.get(Keyword.get(meta, :end_of_expression, []), :line, start_line)
             {node, {start_line, end_line}}
           else
             {node, nil}

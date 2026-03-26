@@ -724,9 +724,8 @@ defmodule Giulia.Daemon.Routers.Knowledge do
 
         # Build Cytoscape nodes
         all_modules =
-          (Enum.map(heatmap.modules, & &1.module) ++
+          Enum.uniq(Enum.map(heatmap.modules, & &1.module) ++
            Enum.flat_map(edges, fn {s, t, _} -> [s, t] end))
-          |> Enum.uniq()
 
         nodes = Enum.map(all_modules, fn mod ->
           h = Map.get(heatmap_map, mod, %{})

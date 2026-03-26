@@ -82,6 +82,7 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   end
 
   @doc false
+  @spec send_bulk_error(term(), map(), map(), map()) :: {:next, :step, map()}
   def send_bulk_error(reason, params, response, state) do
     observation = "ERROR: bulk_replace failed: #{reason}"
     assistant_msg = response.content || Jason.encode!(%{tool: "bulk_replace", parameters: params})
@@ -105,7 +106,9 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   @spec execute_rename_mfa(map(), map(), map()) :: {:next, :step, map()}
   def execute_rename_mfa(params, response, state) do
     state =
-      if not state.transaction.mode do
+      if state.transaction.mode do
+        state
+      else
         module = params["module"] || params[:module]
         old_name = params["old_name"] || params[:old_name]
         arity = params["arity"] || params[:arity]
@@ -118,8 +121,6 @@ defmodule Giulia.Inference.ToolDispatch.Special do
         })
 
         State.set_transaction(state, %{state.transaction | mode: true})
-      else
-        state
       end
 
     opts = [
@@ -171,6 +172,7 @@ defmodule Giulia.Inference.ToolDispatch.Special do
   end
 
   @doc false
+  @spec send_rename_error(term(), map(), map(), map()) :: {:next, :step, map()}
   def send_rename_error(reason, params, response, state) do
     observation = "ERROR: rename_mfa failed: #{reason}"
     assistant_msg = response.content || Jason.encode!(%{tool: "rename_mfa", parameters: params})

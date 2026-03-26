@@ -92,7 +92,7 @@ defmodule Giulia.Runtime.Profiler do
   # ============================================================================
 
   defp calculate_peak_metrics(snapshots) do
-    pulses = Enum.map(snapshots, fn s -> s[:pulse] end) |> Enum.reject(&is_nil/1)
+    pulses = Enum.reject(Enum.map(snapshots, fn s -> s[:pulse] end), &is_nil/1)
 
     if Enum.empty?(pulses) do
       %{memory_mb: 0, memory_delta_mb: 0, process_count: 0, run_queue: 0}

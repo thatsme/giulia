@@ -216,7 +216,7 @@ defmodule Giulia.Runtime.Monitor do
   # ============================================================================
 
   defp save_profile(source_path, profile) do
-    timestamp = DateTime.utc_now() |> DateTime.to_iso8601()
+    timestamp = DateTime.to_iso8601(DateTime.utc_now())
 
     case PersistenceStore.get_db(source_path) do
       {:ok, db} ->
@@ -231,12 +231,11 @@ defmodule Giulia.Runtime.Monitor do
     case PersistenceStore.get_db(source_path) do
       {:ok, db} ->
         profiles =
-          CubDB.select(db,
+          Enum.to_list(CubDB.select(db,
             min_key: {:profile, source_path, ""},
             max_key: {:profile, source_path, "\xFF"},
             reverse: true
-          )
-          |> Enum.to_list()
+          ))
 
         if length(profiles) > @max_profiles do
           profiles

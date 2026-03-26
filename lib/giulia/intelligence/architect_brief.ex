@@ -27,7 +27,7 @@ defmodule Giulia.Intelligence.ArchitectBrief do
     {:ok,
      %{
        brief_version: @brief_version,
-       timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+       timestamp: DateTime.to_iso8601(DateTime.utc_now()),
        project: section_project(project_path),
        topology: section_topology(project_path),
        health: section_health(project_path),

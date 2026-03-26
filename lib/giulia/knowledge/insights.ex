@@ -21,6 +21,7 @@ defmodule Giulia.Knowledge.Insights do
   # Orphan Spec Detection
   # ============================================================================
 
+  @spec orphan_specs(String.t()) :: {:ok, list()} | {:error, term()}
   def orphan_specs(project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 
@@ -44,10 +45,9 @@ defmodule Giulia.Knowledge.Insights do
           |> MapSet.new()
 
         # Find specs that don't match any defined function
-        Enum.reject(specs, fn spec ->
+        Enum.map(Enum.reject(specs, fn spec ->
           MapSet.member?(defined_funcs, {spec.function, spec.arity})
-        end)
-        |> Enum.map(fn spec ->
+        end), fn spec ->
           %{
             module: module_name,
             spec_function: to_string(spec.function),
@@ -66,6 +66,7 @@ defmodule Giulia.Knowledge.Insights do
   # Test Targets
   # ============================================================================
 
+  @spec test_targets(term(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
   def test_targets(graph, module, project_path) do
     if Graph.has_vertex?(graph, module) do
       # Find the source file for this module
@@ -73,8 +74,7 @@ defmodule Giulia.Knowledge.Insights do
 
       # Get direct dependents (in-neighbors = modules that depend on this one)
       dependents =
-        Graph.in_neighbors(graph, module)
-        |> Enum.filter(fn v -> Graph.vertex_labels(graph, v) == [:module] end)
+        Enum.filter(Graph.in_neighbors(graph, module), fn v -> Graph.vertex_labels(graph, v) == [:module] end)
 
       # Map each dependent to its test file, keep only existing ones
       dependent_tests =
@@ -106,6 +106,7 @@ defmodule Giulia.Knowledge.Insights do
   # Logic Flow (Function-level Dijkstra path)
   # ============================================================================
 
+  @spec logic_flow(term(), String.t(), term(), term()) :: {:ok, term()} | {:error, term()}
   def logic_flow(graph, project_path, from_mfa, to_mfa) do
     cond do
       not Graph.has_vertex?(graph, from_mfa) ->
@@ -130,6 +131,7 @@ defmodule Giulia.Knowledge.Insights do
   # Style Oracle (Semantic search + quality gate)
   # ============================================================================
 
+  @spec style_oracle(String.t(), String.t(), non_neg_integer()) :: {:ok, term()} | {:error, term()}
   def style_oracle(project_path, query, top_k) do
     # Broad semantic search (3x top_k for filtering headroom)
     case Giulia.Intelligence.SemanticIndex.search(project_path, query, top_k * 3) do
@@ -222,8 +224,7 @@ defmodule Giulia.Knowledge.Insights do
 
     # Get module vertices with sufficient in-degree
     module_vertices =
-      Graph.vertices(graph)
-      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
 
     hubs =
       module_vertices
@@ -235,8 +236,7 @@ defmodule Giulia.Knowledge.Insights do
       |> Enum.map(fn {mod, in_degree} ->
         # Query ETS for spec/doc/function coverage
         public_functions =
-          Giulia.Context.Store.Query.list_functions(project_path, mod)
-          |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+          Enum.filter(Giulia.Context.Store.Query.list_functions(project_path, mod), fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
         specs = Giulia.Context.Store.Query.list_specs(project_path, mod)
         docs = Giulia.Context.Store.Query.list_docs(project_path, mod)
@@ -325,7 +325,7 @@ defmodule Giulia.Knowledge.Insights do
         all_structs
       end
 
-    struct_names = Enum.map(target_structs, & &1.module) |> MapSet.new()
+    struct_names = MapSet.new(Enum.map(target_structs, & &1.module))
 
     # Walk all source files to find struct usage
     all_asts = Giulia.Context.Store.all_asts(project_path)
@@ -395,7 +395,7 @@ defmodule Giulia.Knowledge.Insights do
       target_structs
       |> Enum.map(fn struct_info ->
         defining_mod = struct_info.module
-        users = Map.get(usage_data, defining_mod, MapSet.new()) |> MapSet.to_list()
+        users = MapSet.to_list(Map.get(usage_data, defining_mod, MapSet.new()))
 
         # Creators = modules that reference the struct (v1: can't distinguish create vs pattern match)
         # Consumers = same set (v1 limitation)
@@ -421,6 +421,7 @@ defmodule Giulia.Knowledge.Insights do
   # API Surface Analysis
   # ============================================================================
 
+  @spec api_surface(String.t()) :: {:ok, list()} | {:error, term()}
   def api_surface(project_path) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 

@@ -53,7 +53,7 @@ defmodule Giulia.Intelligence.Preflight do
     {:ok, %{
       prompt: prompt,
       project_path: project_path,
-      timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+      timestamp: DateTime.to_iso8601(DateTime.utc_now()),
       semantic_available: semantic_available,
       modules: enriched,
       summary: summary,
@@ -243,8 +243,7 @@ defmodule Giulia.Intelligence.Preflight do
     types = Store.Query.list_types(project_path, module_name)
 
     public_functions =
-      Store.Query.list_functions(project_path, module_name)
-      |> Enum.filter(fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+      Enum.filter(Store.Query.list_functions(project_path, module_name), fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
 
     public_count = length(public_functions)
     spec_count = length(specs)
@@ -418,7 +417,7 @@ defmodule Giulia.Intelligence.Preflight do
       {:ok, entries} ->
         case Enum.find(entries, fn e -> e.id == module_name end) do
           %{vector: vec_binary} ->
-            module_vec = Nx.from_binary(vec_binary, :f32) |> Nx.reshape({@embedding_dims})
+            module_vec = Nx.reshape(Nx.from_binary(vec_binary, :f32), {@embedding_dims})
             # Both L2-normalized → cosine = dot product
             similarity = Nx.dot(module_vec, query_vector) |> Nx.to_number() |> Float.round(4)
 

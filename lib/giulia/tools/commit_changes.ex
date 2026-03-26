@@ -39,6 +39,7 @@ defmodule Giulia.Tools.CommitChanges do
 
   # This should never be called directly — Orchestrator intercepts it
   @impl true
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(%{"message" => message}, _opts), do: {:ok, "commit_changes intercepted: #{message}"}
   def execute(_params, _opts), do: {:ok, "commit_changes intercepted"}
 end

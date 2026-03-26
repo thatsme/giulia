@@ -105,7 +105,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def handle_call({:execute, prompt, opts}, from, state) do
-    request_id = Keyword.get(opts, :request_id, make_ref() |> inspect())
+    request_id = Keyword.get(opts, :request_id, inspect(make_ref()))
     state = state |> State.set_task(prompt) |> State.set_reply_to(from) |> State.set_status(:starting) |> State.set_request_id(request_id)
     {:noreply, state, {:continue, {:start, prompt, opts}}}
   end
@@ -147,8 +147,7 @@ defmodule Giulia.Inference.Orchestrator do
         # Clear pending approval state
         state = state |> State.clear_pending_approval() |> State.set_status(:thinking)
 
-        ToolDispatch.handle_approval_response(result, pending, state)
-        |> apply_directive()
+        apply_directive(ToolDispatch.handle_approval_response(result, pending, state))
 
       _ ->
         # Stale or mismatched approval response, ignore
@@ -163,7 +162,7 @@ defmodule Giulia.Inference.Orchestrator do
 
   @impl true
   def handle_continue(action, state) do
-    Engine.dispatch(action, state) |> apply_directive()
+    apply_directive(Engine.dispatch(action, state))
   end
 
   # ============================================================================

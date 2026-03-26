@@ -11,11 +11,13 @@ defmodule Giulia.Provider.Anthropic do
   @max_tokens 4096
 
   @impl true
+  @spec chat(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts \\ []) do
     chat(messages, [], opts)
   end
 
   @impl true
+  @spec chat(list(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, tools, opts) do
     api_key = opts[:api_key] || Application.get_env(:giulia, :anthropic_api_key)
 
@@ -46,6 +48,7 @@ defmodule Giulia.Provider.Anthropic do
   end
 
   @impl true
+  @spec stream(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def stream(messages, opts) do
     api_key = opts[:api_key] || Application.get_env(:giulia, :anthropic_api_key)
 
@@ -53,11 +56,10 @@ defmodule Giulia.Provider.Anthropic do
       {:error, :missing_api_key}
     else
       body =
-        build_request_body(messages, [], opts)
-        |> Map.put("stream", true)
+        Map.put(build_request_body(messages, [], opts), "stream", true)
 
       stream =
-        Req.post!(@api_url,
+        stream_events(Req.post!(@api_url,
           json: body,
           headers: [
             {"x-api-key", api_key},
@@ -65,8 +67,7 @@ defmodule Giulia.Provider.Anthropic do
             {"content-type", "application/json"}
           ],
           into: :self
-        )
-        |> stream_events()
+        ))
 
       {:ok, stream}
     end
@@ -111,6 +112,7 @@ defmodule Giulia.Provider.Anthropic do
   end
 
   @doc false
+  @spec parse_response(map()) :: map()
   def parse_response(%{"content" => content, "stop_reason" => stop_reason}) do
     {text_content, tool_calls} =
       Enum.reduce(content, {nil, []}, fn

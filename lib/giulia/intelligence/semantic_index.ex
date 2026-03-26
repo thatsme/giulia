@@ -104,14 +104,14 @@ defmodule Giulia.Intelligence.SemanticIndex do
     if EmbeddingServing.available?() and not MapSet.member?(state.embedding_in_progress, project_path) do
       new_state = %{state | embedding_in_progress: MapSet.put(state.embedding_in_progress, project_path)}
 
-      Task.start(fn ->
+      Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
         do_embed_project(project_path)
         GenServer.cast(__MODULE__, {:embed_complete, project_path})
       end)
 
       {:noreply, new_state}
     else
-      if not EmbeddingServing.available?() do
+      unless EmbeddingServing.available?() do
         Logger.debug("SemanticIndex: Skipping embed — EmbeddingServing not available")
       end
 
@@ -206,8 +206,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     module_vectors = embed_batch(Enum.map(module_entries, & &1.text))
 
     module_entries =
-      Enum.zip(module_entries, module_vectors)
-      |> Enum.map(fn {entry, vector} ->
+      Enum.map(Enum.zip(module_entries, module_vectors), fn {entry, vector} ->
         %{id: entry.id, vector: vector, metadata: entry.metadata}
       end)
 
@@ -218,8 +217,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     function_vectors = embed_batch(Enum.map(function_entries, & &1.text))
 
     function_entries =
-      Enum.zip(function_entries, function_vectors)
-      |> Enum.map(fn {entry, vector} ->
+      Enum.map(Enum.zip(function_entries, function_vectors), fn {entry, vector} ->
         %{id: entry.id, vector: vector, metadata: entry.metadata}
       end)
 
@@ -232,8 +230,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   defp build_module_entries(all_asts, project_path) do
-    all_asts
-    |> Enum.flat_map(fn {path, ast_data} ->
+    Enum.flat_map(all_asts, fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       functions = ast_data[:functions] || []
 
@@ -267,8 +264,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
   end
 
   defp build_function_entries(all_asts, project_path) do
-    all_asts
-    |> Enum.flat_map(fn {path, ast_data} ->
+    Enum.flat_map(all_asts, fn {path, ast_data} ->
       modules = ast_data[:modules] || []
       functions = ast_data[:functions] || []
 
@@ -335,7 +331,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
       results = Nx.Serving.batched_run(Giulia.EmbeddingServing, batch)
 
       Enum.map(results, fn result ->
-        result.embedding |> Nx.to_binary()
+        Nx.to_binary(result.embedding)
       end)
     end)
   end
@@ -361,7 +357,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
           top_modules = rank_entries(module_entries, query_vec, 3)
 
           # Stage 2: Deep Scan — find functions in those top modules
-          top_module_ids = Enum.map(top_modules, & &1.id) |> MapSet.new()
+          top_module_ids = MapSet.new(Enum.map(top_modules, & &1.id))
 
           function_results =
             case Store.get_embeddings(project_path, :function) do
@@ -388,7 +384,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     vectors =
       entries
       |> Enum.map(fn entry ->
-        Nx.from_binary(entry.vector, :f32) |> Nx.reshape({@embedding_dims})
+        Nx.reshape(Nx.from_binary(entry.vector, :f32), {@embedding_dims})
       end)
       |> Nx.stack()
 
@@ -401,8 +397,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     top_values_list = Nx.to_flat_list(top_values)
     top_indices_list = Nx.to_flat_list(top_indices)
 
-    Enum.zip(top_indices_list, top_values_list)
-    |> Enum.map(fn {idx, score} ->
+    Enum.map(Enum.zip(top_indices_list, top_values_list), fn {idx, score} ->
       entry = Enum.at(entries, trunc(idx))
       %{
         id: entry.id,
@@ -451,7 +446,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
           vectors =
             entries
             |> Enum.map(fn entry ->
-              Nx.from_binary(entry.vector, :f32) |> Nx.reshape({@embedding_dims})
+              Nx.reshape(Nx.from_binary(entry.vector, :f32), {@embedding_dims})
             end)
             |> Nx.stack()
 
@@ -483,7 +478,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
         j <- (i + 1)..(n - 1),
         reduce: [] do
       acc ->
-        score = similarity_matrix[i][j] |> Nx.to_number()
+        score = Nx.to_number(similarity_matrix[i][j])
 
         if score >= threshold do
           [{i, j, Float.round(score, 4)} | acc]
@@ -503,13 +498,13 @@ defmodule Giulia.Intelligence.SemanticIndex do
       end)
 
     # BFS to find connected components
-    all_nodes = Map.keys(adjacency) |> MapSet.new()
+    all_nodes = MapSet.new(Map.keys(adjacency))
     {components, _visited} = bfs_components(adjacency, all_nodes)
 
     # Build cluster info
     pair_scores = Map.new(pairs, fn {i, j, score} -> {{i, j}, score} end)
 
-    Enum.map(components, fn component ->
+    Enum.filter(Enum.map(components, fn component ->
       members =
         component
         |> Enum.sort()
@@ -540,8 +535,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
         size: length(members),
         avg_similarity: avg_sim
       }
-    end)
-    |> Enum.filter(fn c -> c.size >= 2 end)
+    end), fn c -> c.size >= 2 end)
   end
 
   defp bfs_components(adjacency, all_nodes) do
@@ -602,8 +596,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
         vectors = embed_batch(texts)
 
         skill_data =
-          Enum.zip(skills, vectors)
-          |> Enum.map(fn {skill, vector} ->
+          Enum.map(Enum.zip(skills, vectors), fn {skill, vector} ->
             %{skill: skill, vector: vector}
           end)
 
@@ -617,7 +610,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
     vectors =
       skill_data
       |> Enum.map(fn %{vector: vec} ->
-        Nx.from_binary(vec, :f32) |> Nx.reshape({@embedding_dims})
+        Nx.reshape(Nx.from_binary(vec, :f32), {@embedding_dims})
       end)
       |> Nx.stack()
 
@@ -630,12 +623,10 @@ defmodule Giulia.Intelligence.SemanticIndex do
     top_values_list = Nx.to_flat_list(top_values)
     top_indices_list = Nx.to_flat_list(top_indices)
 
-    Enum.zip(top_indices_list, top_values_list)
-    |> Enum.map(fn {idx, score} ->
+    Enum.map(Enum.zip(top_indices_list, top_values_list), fn {idx, score} ->
       %{skill: skill} = Enum.at(skill_data, trunc(idx))
 
-      skill
-      |> Map.put(:relevance, Float.round(score, 4))
+      Map.put(skill, :relevance, Float.round(score, 4))
     end)
   end
 end

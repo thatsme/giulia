@@ -14,11 +14,13 @@ defmodule Giulia.Provider.Groq do
   @base_url "https://api.groq.com/openai/v1/chat/completions"
 
   @impl true
+  @spec chat(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, opts) when is_list(opts) do
     chat(messages, [], opts)
   end
 
   @impl true
+  @spec chat(list(), list(), keyword()) :: {:ok, map()} | {:error, term()}
   def chat(messages, _tools, opts) do
     api_key = System.get_env("GROQ_API_KEY")
 
@@ -63,10 +65,12 @@ defmodule Giulia.Provider.Groq do
   end
 
   @impl true
+  @spec stream(list(), keyword()) :: {:ok, map()} | {:error, term()}
   def stream(_messages, _opts) do
     {:error, :streaming_not_supported}
   end
 
+  @spec available?() :: boolean()
   def available? do
     api_key = System.get_env("GROQ_API_KEY")
     not is_nil(api_key) and api_key != ""
@@ -83,6 +87,7 @@ defmodule Giulia.Provider.Groq do
   end
 
   @doc false
+  @spec parse_response(map()) :: {:ok, map()} | {:error, term()}
   def parse_response(%{"choices" => [%{"message" => %{"content" => content}} | _]}) do
     {:ok, %{content: content, tool_calls: nil}}
   end

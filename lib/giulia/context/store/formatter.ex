@@ -123,8 +123,7 @@ defmodule Giulia.Context.Store.Formatter do
   # Direct ETS read — avoids routing through Store (cycle breaker)
   defp stats(project_path) do
     ast_count =
-      :ets.match_object(@table, {{:ast, project_path, :_}, :_})
-      |> length()
+      length(:ets.match_object(@table, {{:ast, project_path, :_}, :_}))
 
     %{ast_files: ast_count, total_entries: :ets.info(@table, :size)}
   end

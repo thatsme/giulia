@@ -64,7 +64,7 @@ defmodule Giulia.Daemon.Endpoint do
         case Giulia.Core.ContextManager.get_context(resolved_path) do
           {:ok, context_pid} ->
             # Generate request ID and subscribe
-            request_id = make_ref() |> inspect()
+            request_id = inspect(make_ref())
             Giulia.Inference.Events.subscribe(request_id)
 
             # Start SSE response
@@ -149,8 +149,7 @@ defmodule Giulia.Daemon.Endpoint do
   # List projects
   get "/api/projects" do
     projects =
-      Giulia.Core.ContextManager.list_projects()
-      |> Enum.map(fn project ->
+      Enum.map(Giulia.Core.ContextManager.list_projects(), fn project ->
         Map.update(project, :pid, nil, &inspect/1)
       end)
 

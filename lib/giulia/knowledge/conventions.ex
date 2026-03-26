@@ -32,7 +32,7 @@ defmodule Giulia.Knowledge.Conventions do
     all_asts = Giulia.Context.Store.all_asts(project_path)
 
     violations =
-      tier1_checks(all_asts) ++ tier2_checks(all_asts, project_path)
+      tier1_checks(all_asts, project_path) ++ tier2_checks(all_asts, project_path)
 
     by_severity = Enum.frequencies_by(violations, & &1.severity)
     by_category = violations |> Enum.group_by(& &1.category) |> sort_groups()
@@ -94,7 +94,7 @@ defmodule Giulia.Knowledge.Conventions do
   # Tier 1 — Metadata Checks (ETS data only, no file I/O)
   # ============================================================================
 
-  defp tier1_checks(all_asts) do
+  defp tier1_checks(all_asts, project_path) do
     Enum.flat_map(all_asts, fn {file, data} ->
       modules = data[:modules] || []
       functions = data[:functions] || []
@@ -105,7 +105,7 @@ defmodule Giulia.Knowledge.Conventions do
 
       check_missing_moduledoc(modules, file) ++
         check_missing_specs(functions, specs, modules, file) ++
-        check_missing_enforce_keys(structs, modules, file, module_name)
+        check_missing_enforce_keys(structs, file, module_name, project_path)
     end)
   end
 
@@ -159,14 +159,19 @@ defmodule Giulia.Knowledge.Conventions do
   end
 
   # Rule: Use @enforce_keys for required struct fields
-  defp check_missing_enforce_keys(structs, modules, file, module_name) do
+  # NOTE: The ETS module_info type does not store module attributes, so we cannot
+  # rely on m[:attributes] here. Instead we read the source file directly to check
+  # for the presence of `@enforce_keys` — this is a single File.read per file and
+  # only fires when the indexed data reports at least one defstruct in the file.
+  defp check_missing_enforce_keys(structs, file, module_name, project_path) do
     if structs != [] do
-      # Check if any module in this file has @enforce_keys
+      resolved = resolve_file_path(file, project_path)
+
       has_enforce =
-        Enum.any?(modules, fn m ->
-          attrs = m[:attributes] || []
-          Enum.any?(attrs, fn a -> a[:name] == :enforce_keys end)
-        end)
+        case File.read(resolved) do
+          {:ok, source} -> String.contains?(source, "@enforce_keys")
+          _ -> false
+        end
 
       if has_enforce do
         []
@@ -196,8 +201,7 @@ defmodule Giulia.Knowledge.Conventions do
   # ============================================================================
 
   defp tier2_checks(all_asts, project_path) do
-    all_asts
-    |> Enum.flat_map(fn {file, data} ->
+    Enum.flat_map(all_asts, fn {file, data} ->
       # Resolve the actual file path for reading
       resolved = resolve_file_path(file, project_path)
       module_name = first_module_name(data[:modules] || [])
@@ -400,7 +404,7 @@ defmodule Giulia.Knowledge.Conventions do
     # Phase 2: flag standalone single pipes (non-pipe left, not a chain member)
     {_ast, violations} =
       Macro.prewalk(ast, [], fn
-        {:|>, meta, [{:|>, _, _}, _right]} = node, acc ->
+        {:|>, _meta, [{:|>, _, _}, _right]} = node, acc ->
           # Left is a pipe — this is a chain continuation, never flag
           {node, acc}
 

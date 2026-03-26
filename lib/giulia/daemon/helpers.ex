@@ -40,11 +40,21 @@ defmodule Giulia.Daemon.Helpers do
   Node names in Erlang must be atoms, but we validate the format
   (name@host) before conversion to prevent arbitrary atom creation
   from untrusted HTTP input.
+
+  Prefers `String.to_existing_atom/1` so already-connected nodes
+  reuse their existing atom. Falls back to `String.to_atom/1` only
+  for new nodes that haven't been seen yet — this is unavoidable
+  because Erlang node names must be atoms before a connection can
+  be established.
   """
   @spec safe_to_node_atom(String.t()) :: atom()
   def safe_to_node_atom(node_str) when is_binary(node_str) do
     if Regex.match?(~r/^[a-zA-Z0-9_.\-]+@[a-zA-Z0-9_.\-]+$/, node_str) do
-      String.to_atom(node_str)
+      try do
+        String.to_existing_atom(node_str)
+      rescue
+        ArgumentError -> :erlang.binary_to_atom(node_str, :utf8)
+      end
     else
       :local
     end

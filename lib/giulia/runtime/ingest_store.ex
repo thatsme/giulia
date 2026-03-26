@@ -34,6 +34,7 @@ defmodule Giulia.Runtime.IngestStore do
   # Public API
   # ============================================================================
 
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -109,7 +110,7 @@ defmodule Giulia.Runtime.IngestStore do
   def handle_call({:ingest, snapshot}, _from, state) do
     session_id = snapshot["session_id"] || generate_session_id()
     node = snapshot["node"] || "unknown"
-    timestamp = snapshot["timestamp"] || DateTime.utc_now() |> DateTime.to_iso8601()
+    timestamp = snapshot["timestamp"] || DateTime.to_iso8601(DateTime.utc_now())
 
     # Store snapshot in ETS
     key = {session_id, timestamp}
@@ -138,7 +139,7 @@ defmodule Giulia.Runtime.IngestStore do
     session_id = params["session_id"]
     node = params["node"] || "unknown"
     started_at = params["started_at"]
-    stopped_at = params["stopped_at"] || DateTime.utc_now() |> DateTime.to_iso8601()
+    stopped_at = params["stopped_at"] || DateTime.to_iso8601(DateTime.utc_now())
     project_path = params["project_path"]
 
     # Collect all snapshots for this session
@@ -246,8 +247,7 @@ defmodule Giulia.Runtime.IngestStore do
 
     # Convert hot_processes to the format top_processes expects
     top_processes =
-      (snapshot.hot_processes || [])
-      |> Enum.map(fn p ->
+      Enum.map(snapshot.hot_processes || [], fn p ->
         %{
           module: p["module"],
           reductions: p["reductions"] || 0,
@@ -280,10 +280,9 @@ defmodule Giulia.Runtime.IngestStore do
       nil -> :ok
       _tab ->
         keys =
-          :ets.select(@snapshots_table, [
+          Enum.map(:ets.select(@snapshots_table, [
             {{{session_id, :_}, :_}, [], [:"$_"]}
-          ])
-          |> Enum.map(fn {key, _} -> key end)
+          ]), fn {key, _} -> key end)
 
         Enum.each(keys, fn key -> :ets.delete(@snapshots_table, key) end)
     end

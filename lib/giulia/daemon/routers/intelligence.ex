@@ -139,7 +139,7 @@ defmodule Giulia.Daemon.Routers.Intelligence do
 
       {:error, _} ->
         # Fallback: try project root
-        fallback = Path.join(Application.app_dir(:giulia), "../../REPORT_RULES.md") |> Path.expand()
+        fallback = Path.expand(Path.join(Application.app_dir(:giulia), "../../REPORT_RULES.md"))
 
         case File.read(fallback) do
           {:ok, content} -> send_json(conn, 200, %{rules: content, format: "markdown"})

@@ -107,8 +107,7 @@ defmodule Giulia.Tools.Registry do
   @impl true
   def handle_call(:list_tools, _from, state) do
     tools =
-      :ets.tab2list(@table)
-      |> Enum.map(fn {_name, tool_spec} -> tool_spec end)
+      Enum.map(:ets.tab2list(@table), fn {_name, tool_spec} -> tool_spec end)
 
     {:reply, tools, state}
   end
@@ -127,8 +126,7 @@ defmodule Giulia.Tools.Registry do
   @impl true
   def handle_call(:list_tool_names, _from, state) do
     names =
-      :ets.tab2list(@table)
-      |> Enum.map(fn {name, _} -> name end)
+      Enum.map(:ets.tab2list(@table), fn {name, _} -> name end)
 
     {:reply, names, state}
   end

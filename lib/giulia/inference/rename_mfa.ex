@@ -64,6 +64,8 @@ defmodule Giulia.Inference.RenameMFA do
   end
 
   @doc false
+  @spec run(String.t(), String.t(), String.t(), non_neg_integer(), term(), keyword()) ::
+          {:ok, String.t(), term(), MapSet.t()} | {:error, String.t()}
   def run(module, old_name, new_name, arity, tx, opts) do
     project_path = Keyword.fetch!(opts, :project_path)
     resolve_fn = Keyword.fetch!(opts, :resolve_fn)
@@ -143,8 +145,7 @@ defmodule Giulia.Inference.RenameMFA do
         end
 
       affected_modules =
-        ([module] ++ callers ++ implementers ++ implementer_callers)
-        |> Enum.uniq()
+        Enum.uniq([module] ++ callers ++ implementers ++ implementer_callers)
 
       affected_files =
         all_modules
@@ -210,15 +211,14 @@ defmodule Giulia.Inference.RenameMFA do
         end)
 
       # === PHASE 3: Build report ===
-      staged = Enum.filter(results, fn {_, r} -> match?({:ok, _}, r) end) |> Enum.reverse()
-      skipped = Enum.filter(results, fn {_, r} -> r == :no_match end) |> Enum.reverse()
-      errors = Enum.filter(results, fn {_, r} -> match?({:error, _}, r) end) |> Enum.reverse()
+      staged = Enum.reverse(Enum.filter(results, fn {_, r} -> match?({:ok, _}, r) end))
+      skipped = Enum.reverse(Enum.filter(results, fn {_, r} -> r == :no_match end))
+      errors = Enum.reverse(Enum.filter(results, fn {_, r} -> match?({:error, _}, r) end))
 
       total_changes = Enum.reduce(staged, 0, fn {_, {:ok, c}}, acc -> acc + c end)
 
       staged_summary =
-        staged
-        |> Enum.map_join("\n", fn {file, {:ok, count}} ->
+        Enum.map_join(staged, "\n", fn {file, {:ok, count}} ->
           "  [STAGED] #{Path.basename(file)} (#{count} rename#{if count > 1, do: "s", else: ""})"
         end)
 
@@ -437,6 +437,7 @@ defmodule Giulia.Inference.RenameMFA do
   end
 
   @doc false
+  @spec ast_matches_module?(term(), String.t()) :: boolean()
   def ast_matches_module?({:__aliases__, _meta, parts}, target_module) when is_list(parts) do
     alias_str = Enum.map_join(parts, ".", &Atom.to_string/1)
 
@@ -452,6 +453,7 @@ defmodule Giulia.Inference.RenameMFA do
   def ast_matches_module?(_, _), do: false
 
   @doc false
+  @spec ast_matches_any_module?(term(), list()) :: boolean()
   def ast_matches_any_module?(_alias_node, []), do: false
 
   def ast_matches_any_module?(alias_node, modules) do
@@ -459,11 +461,13 @@ defmodule Giulia.Inference.RenameMFA do
   end
 
   @doc false
+  @spec last_segment(String.t()) :: String.t()
   def last_segment(module_name) do
-    module_name |> String.split(".") |> List.last()
+    List.last(String.split(module_name, "."))
   end
 
   @doc false
+  @spec get_implementers_from_graph(String.t(), String.t()) :: {:ok, list()} | {:error, term()}
   def get_implementers_from_graph(project_path, behaviour_module) do
     try do
       GenServer.call(Giulia.Knowledge.Store, {:get_implementers, project_path, behaviour_module})

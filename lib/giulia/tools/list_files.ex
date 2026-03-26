@@ -48,10 +48,10 @@ defmodule Giulia.Tools.ListFiles do
   end
 
   def changeset(params) do
-    %__MODULE__{}
-    |> cast(params, [:path, :pattern, :recursive])
+    cast(%__MODULE__{}, params, [:path, :pattern, :recursive])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

@@ -59,7 +59,7 @@ defmodule Giulia.Client.REPL do
 
               cmd ->
                 Output.info("Replaying: #{cmd}")
-                history = [cmd | history] |> Enum.take(100)
+                history = Enum.take([cmd | history], 100)
                 execute_or_command(cmd, host_path)
                 repl_loop(host_path, history)
             end
@@ -77,13 +77,13 @@ defmodule Giulia.Client.REPL do
             end
 
           String.starts_with?(line, "/") ->
-            history = [line | history] |> Enum.take(100)
+            history = Enum.take([line | history], 100)
             args = String.split(line)
             Commands.process(args)
             repl_loop(host_path, history)
 
           true ->
-            history = [line | history] |> Enum.take(100)
+            history = Enum.take([line | history], 100)
             Renderer.execute_input(line, host_path)
             repl_loop(host_path, history)
         end
@@ -115,7 +115,7 @@ defmodule Giulia.Client.REPL do
             end
 
           String.ends_with?(trimmed, "\\") ->
-            first = String.slice(trimmed, 0, String.length(trimmed) - 1) |> String.trim_trailing()
+            first = String.trim_trailing(String.slice(trimmed, 0, String.length(trimmed) - 1))
             read_continuation([first])
 
           true ->
@@ -158,7 +158,7 @@ defmodule Giulia.Client.REPL do
         line = raw |> to_string() |> strip_newline() |> String.trim()
 
         if String.ends_with?(line, "\\") do
-          part = String.slice(line, 0, String.length(line) - 1) |> String.trim_trailing()
+          part = String.trim_trailing(String.slice(line, 0, String.length(line) - 1))
           read_continuation([part | acc])
         else
           [line | acc] |> Enum.reverse() |> Enum.join("\n") |> String.trim()

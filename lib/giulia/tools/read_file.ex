@@ -53,6 +53,7 @@ defmodule Giulia.Tools.ReadFile do
   If a sandbox is provided (from ProjectContext), validates path security.
   Otherwise, uses a default sandbox from the current working directory.
   """
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(input, opts \\ [])
 

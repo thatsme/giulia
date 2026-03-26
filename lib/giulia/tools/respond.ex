@@ -32,6 +32,7 @@ defmodule Giulia.Tools.Respond do
 
   # This should never be called - Orchestrator intercepts
   @impl true
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def execute(%{"message" => message}, _opts), do: {:ok, message}
   def execute(_, _opts), do: {:error, :invalid_parameters}
 end

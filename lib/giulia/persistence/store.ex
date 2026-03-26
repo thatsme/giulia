@@ -152,7 +152,7 @@ defmodule Giulia.Persistence.Store do
     if Mix.env() == :test do
       # In test mode, use a temp directory to avoid corrupting the dev daemon's CubDB.
       # Two CubDB instances opening the same directory = guaranteed corruption.
-      hash = :erlang.phash2(project_path) |> Integer.to_string()
+      hash = Integer.to_string(:erlang.phash2(project_path))
       Path.join([System.tmp_dir!(), "giulia_test_cubdb", hash])
     else
       role = Giulia.Role.role()

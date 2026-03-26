@@ -69,6 +69,7 @@ defmodule Giulia.Tools.GetFunction do
     |> validate_required([:file, :function_name])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 
@@ -105,7 +106,7 @@ defmodule Giulia.Tools.GetFunction do
 
     case Giulia.Context.Store.Query.find_module(project_path, module) do
       {:ok, %{file: file_path}} ->
-        new_params = Map.put(params, "file", file_path) |> Map.delete("module")
+        new_params = Map.delete(Map.put(params, "file", file_path), "module")
         execute(new_params, opts)
 
       :not_found ->

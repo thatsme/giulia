@@ -220,10 +220,10 @@ defmodule Giulia.AST.Slicer do
     {_, result} =
       Macro.prewalk(func_ast, [], fn
         {name, _, args} = node, acc when is_atom(name) and is_list(args) ->
-          if name not in [:def, :defp, :do, :end, :if, :case, :cond, :fn, :&, :|>] do
-            {node, [{name, length(args)} | acc]}
-          else
+          if name in [:def, :defp, :do, :end, :if, :case, :cond, :fn, :&, :|>] do
             {node, acc}
+          else
+            {node, [{name, length(args)} | acc]}
           end
 
         node, acc ->

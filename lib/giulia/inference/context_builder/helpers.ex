@@ -20,8 +20,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
   def build_tool_opts(%{project_path: path, project_pid: pid}) do
     sandbox = PathSandbox.new(path)
 
-    [project_path: path, sandbox: sandbox]
-    |> maybe_put(:project_pid, pid)
+    maybe_put([project_path: path, sandbox: sandbox], :project_pid, pid)
   end
 
   def build_tool_opts(%{project_path: _path} = state) do
@@ -104,8 +103,7 @@ defmodule Giulia.Inference.ContextBuilder.Helpers do
     task_file = extract_file_from_text(state.task)
 
     action_file =
-      state.action_history
-      |> Enum.find_value(fn
+      Enum.find_value(state.action_history, fn
         {tool, params, _}
         when tool in ["read_file", "edit_file", "write_file", "write_function", "patch_function"] ->
           params["file"] || params["path"] || params[:file] || params[:path] ||
