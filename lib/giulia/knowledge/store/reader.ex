@@ -194,10 +194,10 @@ defmodule Giulia.Knowledge.Store.Reader do
     Analyzer.conventions(project_path)
   end
 
-  @spec find_conventions(String.t(), String.t()) :: {:ok, map()}
-  def find_conventions(project_path, module_filter) do
-    # Module-filtered queries are not cached (filter varies per request)
-    Analyzer.conventions(project_path, module_filter)
+  @spec find_conventions(String.t(), String.t() | keyword()) :: {:ok, map()}
+  def find_conventions(project_path, module_filter_or_opts) do
+    # Module-filtered and suppressed queries are not cached (params vary per request)
+    Analyzer.conventions(project_path, module_filter_or_opts)
   end
 
   # ============================================================================

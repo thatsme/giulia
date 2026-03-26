@@ -98,7 +98,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Struct lifecycle | `GET /api/knowledge/struct_lifecycle?path=P&struct=Module.Name` | Data flow tracing per struct: which modules create/consume it, logic leaks (non-defining modules that use the struct). Optional `struct` filter |
 | Semantic duplicates | `GET /api/knowledge/duplicates?path=P&threshold=0.85&max=20` | Clusters of semantically similar functions (cosine similarity >= threshold on Bumblebee embeddings). Returns connected components with avg similarity. Requires EmbeddingServing |
 | Unified audit | `GET /api/knowledge/audit?path=P` | Combines all 4 Principal Consultant features: unprotected hubs + struct lifecycle + semantic duplicates + behaviour integrity (enriched with optional/heuristic fields). Single call for comprehensive project health report |
-| **Convention violations** | `GET /api/knowledge/conventions?path=P&module=M` | 12 AST-based convention checks (Tier 1: missing moduledoc/spec/enforce_keys; Tier 2: try-rescue flow control, silent rescue, runtime atom creation, process dictionary, unsupervised task, unless-else, single-value pipe, append-in-reduce, if-not). Optional `module` filter. Returns violations grouped by severity, category, and file |
+| **Convention violations** | `GET /api/knowledge/conventions?path=P&module=M&suppress=rule:Mod1,Mod2;rule2:Mod3` | 12 AST-based convention checks (Tier 1: missing moduledoc/spec/enforce_keys; Tier 2: try-rescue flow control, silent rescue, runtime atom creation, process dictionary, unsupervised task, unless-else, single-value pipe, append-in-reduce, if-not). Optional `module` filter. Optional `suppress` to skip specific rules for specific modules (e.g. `suppress=process_dictionary:Auth.Context,Auth.Token` suppresses process_dictionary violations for those modules). Returns violations grouped by severity, category, and file |
 
 ### 3. Intelligence (Pre-Processing Layers)
 
@@ -391,7 +391,7 @@ If you edit Elixir files directly (using file write/edit tools instead of Giulia
 | Code search | Giulia `/api/search` — project-scoped, sandboxed |
 | Concept search | Giulia `/api/search/semantic` — embedding-based, finds related code by meaning |
 | Exemplar functions for style | Giulia `/api/knowledge/style_oracle` — quality-gated by @spec + @doc |
-| Convention violations | Giulia `/api/knowledge/conventions` — 12 AST rules, grouped by severity/category/file |
+| Convention violations | Giulia `/api/knowledge/conventions` — 12 AST rules, grouped by severity/category/file. Supports `suppress` param for intentional violations |
 | Runtime performance analysis | Giulia `/api/runtime/profile/latest` — burst analysis with hot modules |
 | File contents | Standard file read tools — Giulia doesn't serve raw file content |
 | Compile/test | Shell — `mix compile`, `mix test` |

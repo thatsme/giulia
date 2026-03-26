@@ -1337,16 +1337,23 @@ Detect coding convention violations via AST analysis. 12 rules across 2 tiers: T
 
 **Parameters (query string):**
 
-| Param    | Required | Description                          |
-|----------|----------|--------------------------------------|
-| `path`   | Yes      | Host project path                    |
-| `module` | No       | Filter violations to a single module |
+| Param      | Required | Description                          |
+|------------|----------|--------------------------------------|
+| `path`     | Yes      | Host project path                    |
+| `module`   | No       | Filter violations to a single module |
+| `suppress` | No       | Suppress specific rules for specific modules. Format: `rule:Mod1,Mod2;rule2:Mod3,Mod4`. Semicolons separate rules, colons separate rule from modules, commas separate modules. Example: `suppress=process_dictionary:MyApp.Auth.Context,MyApp.Auth.Token` |
 
 **Example:**
 
 ```bash
+# All violations
 curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub/Giulia"
+
+# Filter to one module
 curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub/Giulia&module=Giulia.Daemon.Helpers"
+
+# Suppress process_dictionary for auth modules (intentional usage)
+curl "http://localhost:4000/api/knowledge/conventions?path=D:/Development/GitHub/AlexClaw&suppress=process_dictionary:AlexClaw.Executor,AlexClaw.SafeExecutor,AlexClaw.SkillAPI,AlexClaw.AuthContext,AlexClaw.CapabilityToken"
 ```
 
 **Response:**
@@ -1370,6 +1377,7 @@ curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub
     ]
   },
   "by_file": { ... },
+  "suppressions_applied": {"process_dictionary": ["AlexClaw.AuthContext", "AlexClaw.CapabilityToken"]},
   "rules_checked": [
     {"rule": "missing_moduledoc", "category": "documentation", "severity": "warning", "tier": 1},
     {"rule": "missing_spec", "category": "documentation", "severity": "warning", "tier": 1},
@@ -1388,6 +1396,7 @@ curl "http://localhost:4000/api/knowledge/conventions?path=C:/Development/GitHub
 ```
 
 When `module` filter is provided, the response also includes `"module_filter": "Module.Name"`.
+When `suppress` is provided, the response includes `"suppressions_applied"` showing which rules/modules were suppressed.
 
 ---
 

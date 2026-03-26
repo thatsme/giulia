@@ -195,8 +195,8 @@ defmodule Giulia.Knowledge.Store do
   @spec find_conventions(project_path()) :: {:ok, map()}
   defdelegate find_conventions(project_path), to: Reader
 
-  @spec find_conventions(project_path(), String.t()) :: {:ok, map()}
-  defdelegate find_conventions(project_path, module_filter), to: Reader
+  @spec find_conventions(project_path(), String.t() | keyword()) :: {:ok, map()}
+  defdelegate find_conventions(project_path, module_filter_or_opts), to: Reader
 
   # ============================================================================
   # Server Callbacks

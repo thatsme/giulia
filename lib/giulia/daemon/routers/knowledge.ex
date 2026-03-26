@@ -764,9 +764,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   # GET /api/knowledge/conventions — Coding convention violations
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Detect coding convention violations (error handling, OTP, atoms, pipes, docs)",
+    intent: "Detect coding convention violations (error handling, OTP, atoms, pipes, docs) with optional per-rule per-module suppression",
     endpoint: "GET /api/knowledge/conventions",
-    params: %{path: :required, module: :optional},
+    params: %{path: :required, module: :optional, suppress: :optional},
     returns: "JSON violations grouped by severity, category, and file with convention references",
     category: "knowledge"
   }
@@ -776,15 +776,12 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
         project_path ->
           module_filter = conn.query_params["module"]
+          suppress = parse_suppress(conn.query_params["suppress"])
 
-          result =
-            if module_filter do
-              Giulia.Knowledge.Store.find_conventions(project_path, module_filter)
-            else
-              Giulia.Knowledge.Store.find_conventions(project_path)
-            end
+          opts = [suppress: suppress]
+          opts = if module_filter, do: Keyword.put(opts, :module, module_filter), else: opts
 
-          case result do
+          case Giulia.Knowledge.Store.find_conventions(project_path, opts) do
             {:ok, data} -> send_json(conn, 200, data)
             {:error, reason} -> send_json(conn, 500, %{error: "conventions failed", detail: inspect(reason)})
           end
@@ -792,6 +789,26 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     rescue
       e -> send_json(conn, 500, %{error: "conventions crashed", detail: Exception.message(e)})
     end
+  end
+
+  # Parse suppress param: "rule:Mod1,Mod2;rule2:Mod3,Mod4" -> %{"rule" => ["Mod1","Mod2"], ...}
+  @spec parse_suppress(String.t() | nil) :: map()
+  defp parse_suppress(nil), do: %{}
+  defp parse_suppress(""), do: %{}
+
+  defp parse_suppress(raw) do
+    raw
+    |> String.split(";")
+    |> Enum.reduce(%{}, fn entry, acc ->
+      case String.split(entry, ":", parts: 2) do
+        [rule, modules] ->
+          module_list = modules |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+          if module_list != [], do: Map.put(acc, rule, module_list), else: acc
+
+        _ ->
+          acc
+      end
+    end)
   end
 
   match _ do

@@ -27,12 +27,25 @@ defmodule Giulia.Knowledge.Conventions do
   # Public API
   # ============================================================================
 
-  @spec conventions(String.t()) :: {:ok, map()}
-  def conventions(project_path) do
+  @spec conventions(String.t(), keyword()) :: {:ok, map()}
+  def conventions(project_path, opts \\ [])
+
+  def conventions(project_path, opts) when is_list(opts) do
     all_asts = Giulia.Context.Store.all_asts(project_path)
+    suppress = Keyword.get(opts, :suppress, %{})
+    module_filter = Keyword.get(opts, :module)
 
     violations =
       tier1_checks(all_asts, project_path) ++ tier2_checks(all_asts, project_path)
+
+    violations = apply_suppressions(violations, suppress)
+
+    violations =
+      if module_filter do
+        Enum.filter(violations, fn v -> v.module == module_filter end)
+      else
+        violations
+      end
 
     by_severity = Enum.frequencies_by(violations, & &1.severity)
     by_category = violations |> Enum.group_by(& &1.category) |> sort_groups()
@@ -44,7 +57,7 @@ defmodule Giulia.Knowledge.Conventions do
       |> Enum.map(fn {file, vs} -> {file, Enum.sort_by(vs, & &1.line)} end)
       |> Map.new()
 
-    {:ok, %{
+    result = %{
       total_violations: length(violations),
       by_severity: %{
         error: Map.get(by_severity, "error", 0),
@@ -54,40 +67,17 @@ defmodule Giulia.Knowledge.Conventions do
       by_category: by_category,
       by_file: by_file,
       rules_checked: rules_checked()
-    }}
+    }
+
+    result = if module_filter, do: Map.put(result, :module_filter, module_filter), else: result
+    result = if suppress != %{}, do: Map.put(result, :suppressions_applied, suppress), else: result
+
+    {:ok, result}
   end
 
-  @spec conventions(String.t(), String.t()) :: {:ok, map()}
-  def conventions(project_path, module_filter) do
-    {:ok, result} = conventions(project_path)
-
-    filtered_by_file =
-      result.by_file
-      |> Enum.filter(fn {_file, vs} ->
-        Enum.any?(vs, fn v -> v.module == module_filter end)
-      end)
-      |> Map.new()
-
-    filtered_violations =
-      Enum.flat_map(filtered_by_file, fn {_file, vs} ->
-        Enum.filter(vs, fn v -> v.module == module_filter end)
-      end)
-
-    by_severity = Enum.frequencies_by(filtered_violations, & &1.severity)
-    by_category = filtered_violations |> Enum.group_by(& &1.category) |> sort_groups()
-
-    {:ok, %{
-      total_violations: length(filtered_violations),
-      by_severity: %{
-        error: Map.get(by_severity, "error", 0),
-        warning: Map.get(by_severity, "warning", 0),
-        info: Map.get(by_severity, "info", 0)
-      },
-      by_category: by_category,
-      by_file: filtered_by_file,
-      module_filter: module_filter,
-      rules_checked: rules_checked()
-    }}
+  # Backwards-compatible 2-arity: conventions(path, module_filter_string)
+  def conventions(project_path, module_filter) when is_binary(module_filter) do
+    conventions(project_path, module: module_filter)
   end
 
   # ============================================================================
@@ -476,6 +466,20 @@ defmodule Giulia.Knowledge.Conventions do
   # ============================================================================
   # Helpers
   # ============================================================================
+
+  # Suppress violations matching {rule => [module_list]} entries.
+  # A violation is suppressed if its rule matches a key AND its module matches any value in that key's list.
+  defp apply_suppressions(violations, suppress) when suppress == %{}, do: violations
+
+  defp apply_suppressions(violations, suppress) do
+    Enum.reject(violations, fn v ->
+      case Map.get(suppress, v.rule) do
+        nil -> false
+        modules when is_list(modules) -> v.module in modules
+        _other -> false
+      end
+    end)
+  end
 
   defp violation(fields) do
     %{
