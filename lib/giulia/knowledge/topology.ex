@@ -18,12 +18,11 @@ defmodule Giulia.Knowledge.Topology do
     vertices = Graph.vertices(graph)
     vertex_count = length(vertices)
     edge_count = Graph.num_edges(graph)
-    components = Graph.components(graph) |> length()
+    components = length(Graph.components(graph))
 
     # Count by type
     type_counts =
-      vertices
-      |> Enum.reduce(%{modules: 0, functions: 0, structs: 0, behaviours: 0}, fn v, acc ->
+      Enum.reduce(vertices, %{modules: 0, functions: 0, structs: 0, behaviours: 0}, fn v, acc ->
         labels = Graph.vertex_labels(graph, v)
         cond do
           :module in labels -> %{acc | modules: acc.modules + 1}
@@ -147,17 +146,17 @@ defmodule Giulia.Knowledge.Topology do
 
   @spec trace_path(Graph.t(), String.t(), String.t()) :: {:ok, :no_path | [String.t()]} | {:error, {:not_found, String.t()}}
   def trace_path(graph, from, to) do
-    if not Graph.has_vertex?(graph, from) do
-      {:error, {:not_found, from}}
-    else
-      if not Graph.has_vertex?(graph, to) do
-        {:error, {:not_found, to}}
-      else
+    if Graph.has_vertex?(graph, from) do
+      if Graph.has_vertex?(graph, to) do
         case Graph.dijkstra(graph, from, to) do
           nil -> {:ok, :no_path}
           path -> {:ok, path}
         end
+      else
+        {:error, {:not_found, to}}
       end
+    else
+      {:error, {:not_found, from}}
     end
   end
 
@@ -169,8 +168,7 @@ defmodule Giulia.Knowledge.Topology do
   def cycles(graph) do
     # Filter to module-only subgraph (exclude function/struct vertices)
     module_vertices =
-      Graph.vertices(graph)
-      |> Enum.filter(fn v ->
+      Enum.filter(Graph.vertices(graph), fn v ->
         labels = Graph.vertex_labels(graph, v)
         :module in labels
       end)
@@ -210,14 +208,13 @@ defmodule Giulia.Knowledge.Topology do
     module_files =
       all_asts
       |> Enum.flat_map(fn {path, data} ->
-        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+        Enum.map(data[:modules] || [], fn m -> {m.name, path} end)
       end)
       |> Map.new()
 
     # Get all module vertices
     module_vertices =
-      Graph.vertices(graph)
-      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
 
     modules =
       module_vertices
@@ -241,8 +238,7 @@ defmodule Giulia.Knowledge.Topology do
   # --- Private helpers ---
 
   defp collect_reachable(graph, vertex_id, direction, max_depth) do
-    do_collect(graph, [vertex_id], direction, 0, max_depth, %{}, MapSet.new([vertex_id]))
-    |> Enum.sort_by(fn {_v, depth} -> depth end)
+    Enum.sort_by(do_collect(graph, [vertex_id], direction, 0, max_depth, %{}, MapSet.new([vertex_id])), fn {_v, depth} -> depth end)
   end
 
   defp do_collect(_graph, [], _direction, _current_depth, _max_depth, acc, _visited), do: Map.to_list(acc)
@@ -304,7 +300,7 @@ defmodule Giulia.Knowledge.Topology do
   end
 
   defp segments_overlap?(haystack, needle) do
-    h_parts = String.split(haystack, ".") |> MapSet.new()
+    h_parts = MapSet.new(String.split(haystack, "."))
     n_parts = String.split(needle, ".")
     Enum.any?(n_parts, fn part ->
       Enum.any?(h_parts, fn hp -> String.contains?(hp, part) or String.contains?(part, hp) end)

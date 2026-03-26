@@ -67,6 +67,7 @@ defmodule Giulia.Tools.CycleCheck do
     |> validate_inclusion(:label, ["compile-connected", "compile", "all"])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 
@@ -212,7 +213,7 @@ defmodule Giulia.Tools.CycleCheck do
                 cycles
                 |> Enum.with_index(1)
                 |> Enum.map(fn {%{header: header, modules: modules}, idx} ->
-                  mods = Enum.map(modules, &"      #{&1}") |> Enum.join("\n")
+                  mods = Enum.join(Enum.map(modules, &"      #{&1}"), "\n")
                   "  #{idx}. #{header}\n#{mods}"
                 end)
                 |> Enum.join("\n\n")

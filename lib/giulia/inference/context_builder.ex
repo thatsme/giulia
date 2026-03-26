@@ -159,7 +159,7 @@ defmodule Giulia.Inference.ContextBuilder do
     if module_name do
       case Giulia.Knowledge.Store.centrality(project_path, module_name) do
         {:ok, %{in_degree: in_degree, dependents: dependents}} when in_degree > 3 ->
-          top_dependents = Enum.take(dependents, 3) |> Enum.join(", ")
+          top_dependents = Enum.join(Enum.take(dependents, 3), ", ")
 
           """
           ⚠️  CRITICAL HUB WARNING ⚠️

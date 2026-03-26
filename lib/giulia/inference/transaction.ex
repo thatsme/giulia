@@ -24,6 +24,7 @@ defmodule Giulia.Inference.Transaction do
   # Sub-struct: Transaction State
   # ============================================================================
 
+  @enforce_keys []
   defstruct mode: false,
             staging_buffer: %{},
             staging_backups: %{},
@@ -242,7 +243,7 @@ defmodule Giulia.Inference.Transaction do
   def auto_regress(staged_files, project_path, tool_opts) do
     # Collect test targets for all modified modules
     all_test_targets =
-      Enum.flat_map(staged_files, fn path ->
+      Enum.uniq(Enum.flat_map(staged_files, fn path ->
         case Store.Query.find_module_by_file(project_path, path) do
           {:ok, %{name: module_name}} ->
             case Giulia.Knowledge.Store.get_test_targets(project_path, module_name) do
@@ -253,8 +254,7 @@ defmodule Giulia.Inference.Transaction do
           _ ->
             []
         end
-      end)
-      |> Enum.uniq()
+      end))
 
     if all_test_targets == [] do
       {:ok, :no_tests}
@@ -418,6 +418,7 @@ defmodule Giulia.Inference.Transaction do
   end
 
   @doc false
+  @spec restore_disk_content(String.t(), nil | {:ok, binary()} | {:error, term()}) :: :ok | {:error, term()}
   def restore_disk_content(_path, nil), do: :ok
   def restore_disk_content(path, {:ok, original}), do: File.write(path, original)
   def restore_disk_content(_path, {:error, _}), do: :ok

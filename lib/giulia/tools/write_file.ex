@@ -68,6 +68,7 @@ defmodule Giulia.Tools.WriteFile do
   Normally intercepted by the Orchestrator's staging buffer.
   This implementation handles direct calls (e.g., from tests or iex).
   """
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

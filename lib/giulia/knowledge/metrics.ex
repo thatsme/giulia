@@ -41,19 +41,19 @@ defmodule Giulia.Knowledge.Metrics do
   end
 
   @doc false
+  @spec heatmap_with_coupling(term(), String.t(), map(), map()) :: list()
   def heatmap_with_coupling(graph, project_path, all_asts, coupling_map) do
     # Module -> file lookup
     module_files =
       all_asts
       |> Enum.flat_map(fn {path, data} ->
-        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+        Enum.map(data[:modules] || [], fn m -> {m.name, path} end)
       end)
       |> Map.new()
 
     # Get all module vertices
     module_vertices =
-      Graph.vertices(graph)
-      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
 
     # Compute per-module scores
     modules =
@@ -91,10 +91,10 @@ defmodule Giulia.Knowledge.Metrics do
         max_coupling = Map.get(coupling_map, mod, 0)
 
         # Normalize each factor to 0-100
-        norm_centrality = min(centrality_val / 15 * 100, 100) |> trunc()
-        norm_complexity = min(complexity / 200 * 100, 100) |> trunc()
+        norm_centrality = trunc(min(centrality_val / 15 * 100, 100))
+        norm_complexity = trunc(min(complexity / 200 * 100, 100))
         norm_test = if has_test, do: 0, else: 100
-        norm_coupling = min(max_coupling / 50 * 100, 100) |> trunc()
+        norm_coupling = trunc(min(max_coupling / 50 * 100, 100))
 
         # Weighted composite
         score =
@@ -151,19 +151,19 @@ defmodule Giulia.Knowledge.Metrics do
   end
 
   @doc false
+  @spec change_risk_with_coupling(term(), String.t(), map(), map()) :: list()
   def change_risk_with_coupling(graph, _project_path, all_asts, coupling_map) do
     # Build module -> file lookup
     module_files =
       all_asts
       |> Enum.flat_map(fn {path, data} ->
-        (data[:modules] || []) |> Enum.map(fn m -> {m.name, path} end)
+        Enum.map(data[:modules] || [], fn m -> {m.name, path} end)
       end)
       |> Map.new()
 
     # Get module vertices
     module_vertices =
-      Graph.vertices(graph)
-      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
 
     modules =
       module_vertices
@@ -196,7 +196,7 @@ defmodule Giulia.Knowledge.Metrics do
           case path do
             nil -> {0, 0}
             _ ->
-              all_asts_data = Map.get(all_asts |> Map.new(), path, %{})
+              all_asts_data = Map.get(Map.new(all_asts), path, %{})
               functions = all_asts_data[:functions] || []
               pub = Enum.count(functions, fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
               priv = Enum.count(functions, fn f -> f.type in [:defp, :defmacrop, :defguardp] end)
@@ -256,6 +256,7 @@ defmodule Giulia.Knowledge.Metrics do
   end
 
   @doc false
+  @spec god_modules_impl(term(), String.t(), map()) :: list()
   def god_modules_impl(graph, _project_path, all_asts) do
     modules =
       all_asts
@@ -344,7 +345,7 @@ defmodule Giulia.Knowledge.Metrics do
         end
 
         if String.contains?(source, "@dead_code_ignore") do
-          (data[:modules] || []) |> Enum.map(fn mod -> mod.name end)
+          Enum.map(data[:modules] || [], fn mod -> mod.name end)
         else
           []
         end
@@ -678,7 +679,7 @@ defmodule Giulia.Knowledge.Metrics do
               # Remote call with full Elixir module: Elixir.Module.func(args)
               {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
               when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
-                mod = Atom.to_string(mod_atom) |> String.replace_leading("Elixir.", "")
+                mod = String.replace_leading(Atom.to_string(mod_atom), "Elixir.", "")
                 {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
 
               # Local call: func(args) — track with module context

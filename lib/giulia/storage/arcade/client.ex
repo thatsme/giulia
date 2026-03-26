@@ -39,6 +39,7 @@ defmodule Giulia.Storage.Arcade.Client do
   # ---------------------------------------------------------------------------
 
   @doc "Create the database if it doesn't exist."
+  @spec create_db() :: :ok | {:error, term()}
   def create_db do
     url = "#{base_url()}/api/v1/server"
     body = %{command: "create database #{db()}"}
@@ -54,6 +55,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Ensure all vertex/edge types, properties, and indexes exist. Idempotent."
+  @spec ensure_schema() :: :ok | {:error, term()}
   def ensure_schema do
     types = [
       "CREATE VERTEX TYPE Module IF NOT EXISTS",
@@ -99,6 +101,7 @@ defmodule Giulia.Storage.Arcade.Client do
   # ---------------------------------------------------------------------------
 
   @doc "Execute a SQL command (INSERT, CREATE, UPDATE, DELETE)."
+  @spec command(String.t(), map()) :: {:ok, term()} | {:error, term()}
   def command(statement, params \\ %{}) do
     url = "#{base_url()}/api/v1/command/#{db()}"
     body = %{language: "sql", command: statement, params: params}
@@ -106,6 +109,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Execute a read query (SQL or Cypher). Returns `{:ok, results_list}`."
+  @spec query(String.t(), String.t(), map()) :: {:ok, list()} | {:error, term()}
   def query(statement, language \\ "sql", params \\ %{}) do
     url = "#{base_url()}/api/v1/command/#{db()}"
     body = %{language: language, command: statement, params: params}
@@ -118,11 +122,13 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Execute a Cypher query. Returns `{:ok, results_list}`."
+  @spec cypher(String.t(), map()) :: {:ok, list()} | {:error, term()}
   def cypher(statement, params \\ %{}) do
     query(statement, "cypher", params)
   end
 
   @doc "Execute a SQL script (multiple statements with LET bindings)."
+  @spec script(String.t()) :: {:ok, term()} | {:error, term()}
   def script(statement) do
     url = "#{base_url()}/api/v1/command/#{db()}"
     body = %{language: "sqlscript", command: statement}
@@ -134,6 +140,7 @@ defmodule Giulia.Storage.Arcade.Client do
   # ---------------------------------------------------------------------------
 
   @doc "Upsert a Module vertex. Idempotent per (project, name)."
+  @spec upsert_module(String.t(), String.t(), integer(), map()) :: {:ok, term()} | {:error, term()}
   def upsert_module(project, name, build_id, metrics \\ %{}) do
     fc = Map.get(metrics, :function_count, 0)
     cs = Map.get(metrics, :complexity_score, 0)
@@ -151,6 +158,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Upsert a Function vertex. Idempotent per (project, name)."
+  @spec upsert_function(String.t(), String.t(), integer(), non_neg_integer()) :: {:ok, term()} | {:error, term()}
   def upsert_function(project, name, build_id, complexity \\ 0) do
     command(
       """
@@ -162,6 +170,8 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Upsert an Insight vertex. Idempotent per (project, type, module)."
+  @spec upsert_insight(String.t(), String.t(), String.t(), String.t(), integer(), String.t(), integer(), integer()) ::
+          {:ok, term()} | {:error, term()}
   def upsert_insight(project, type, module, severity, build_id, trend, build_range_start, build_range_end) do
     command(
       """
@@ -175,6 +185,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "List insights for a project, optionally filtered by build_id."
+  @spec list_insights(String.t(), integer() | nil) :: {:ok, list()} | {:error, term()}
   def list_insights(project, build_id \\ nil) do
     if build_id do
       query("SELECT FROM Insight WHERE project = :p AND build_id = :b",
@@ -185,6 +196,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Return modules ranked by hotspot score for a given build."
+  @spec hotspots(String.t(), integer(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def hotspots(project, build_id, limit \\ 10) do
     query("""
       SELECT name, complexity_score, dep_in, dep_out, function_count,
@@ -198,6 +210,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Return complexity history across builds for a project."
+  @spec complexity_history(String.t(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def complexity_history(project, limit \\ 10) do
     query("""
       SELECT name, build_id, complexity_score
@@ -209,6 +222,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Return coupling history across builds for a project."
+  @spec coupling_history(String.t(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def coupling_history(project, limit \\ 10) do
     query("""
       SELECT name, build_id, dep_in, dep_out
@@ -220,6 +234,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Create a DEPENDS_ON edge between two modules for a given build."
+  @spec insert_dependency(String.t(), String.t(), String.t(), integer()) :: {:ok, term()} | {:error, term()}
   def insert_dependency(project, from_module, to_module, build_id) do
     script("""
     LET $a = SELECT FROM Module WHERE project = "#{escape(project)}" AND name = "#{escape(from_module)}";
@@ -229,6 +244,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Create a CALLS edge between two functions for a given build."
+  @spec insert_call(String.t(), String.t(), String.t(), integer()) :: {:ok, term()} | {:error, term()}
   def insert_call(project, from_function, to_function, build_id) do
     script("""
     LET $a = SELECT FROM Function WHERE project = "#{escape(project)}" AND name = "#{escape(from_function)}";
@@ -248,6 +264,7 @@ defmodule Giulia.Storage.Arcade.Client do
   edges in either direction. One Cypher query does what requires two recursive
   functions in libgraph (upstream + downstream).
   """
+  @spec impact_map(String.t(), String.t(), integer(), pos_integer()) :: {:ok, list()} | {:error, term()}
   def impact_map(project, module_name, build_id, depth \\ 3) when is_integer(depth) and depth > 0 do
     cypher("""
     MATCH path = (start:Module {project: $project, name: $name, build_id: $build_id})
@@ -258,6 +275,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "All builds stored in history for a project, most recent first."
+  @spec list_builds(String.t()) :: {:ok, list()} | {:error, term()}
   def list_builds(project) do
     query("""
     SELECT build_id, min(indexed_at) AS first_seen, max(indexed_at) AS last_seen,
@@ -270,6 +288,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "All projects that have been indexed."
+  @spec list_projects() :: {:ok, list()} | {:error, term()}
   def list_projects do
     query("SELECT DISTINCT(project) AS project FROM Module ORDER BY project")
   end
@@ -279,6 +298,7 @@ defmodule Giulia.Storage.Arcade.Client do
 
   Returns a list of `%{from, to, change}` where change is "added" or "removed".
   """
+  @spec dependency_diff(String.t(), integer(), integer()) :: {:ok, list()} | {:error, term()}
   def dependency_diff(project, build_a, build_b) do
     {:ok, removed} = query("""
     SELECT out.name AS `from`, in.name AS `to`, 'removed' AS change
@@ -308,6 +328,7 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Health check — can we reach ArcadeDB?"
+  @spec health() :: {:ok, map()} | {:error, term()}
   def health do
     url = "#{base_url()}/api/v1/server"
 
@@ -338,6 +359,7 @@ defmodule Giulia.Storage.Arcade.Client do
 
   Returns `{:ok, %{modules: n, edges: n}}`.
   """
+  @spec snapshot_graph(String.t(), list(), list(), integer()) :: {:ok, map()} | {:error, term()}
   def snapshot_graph(project, modules, dependencies, build_id) when is_integer(build_id) do
     module_count =
       Enum.count(modules, fn name ->

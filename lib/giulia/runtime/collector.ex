@@ -446,8 +446,7 @@ defmodule Giulia.Runtime.Collector do
       |> Enum.find_value([], fn s -> if s[:top_processes] != [], do: s[:top_processes] end)
 
     queue_offenders =
-      top_procs
-      |> Enum.filter(fn p ->
+      Enum.filter(top_procs, fn p ->
         (p[:message_queue] || p.message_queue || 0) > @high_message_queue
       end)
 

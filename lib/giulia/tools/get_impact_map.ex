@@ -48,6 +48,7 @@ defmodule Giulia.Tools.GetImpactMap do
     |> validate_required([:module])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

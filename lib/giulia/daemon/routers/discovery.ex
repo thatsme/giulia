@@ -83,8 +83,7 @@ defmodule Giulia.Daemon.Routers.Discovery do
         q_lower = String.downcase(q)
 
         matches =
-          all_skills()
-          |> Enum.filter(fn skill ->
+          Enum.filter(all_skills(), fn skill ->
             String.contains?(String.downcase(skill.intent), q_lower)
           end)
 

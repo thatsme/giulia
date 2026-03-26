@@ -54,6 +54,7 @@ defmodule Giulia.Tools.RenameMFA do
 
   # This should never be called directly — Orchestrator intercepts it
   @impl true
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   def execute(%{"module" => mod, "old_name" => old, "new_name" => new, "arity" => a}, _opts) do
     {:ok, "rename_mfa intercepted: #{mod}.#{old}/#{a} → #{new}"}
   end

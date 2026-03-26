@@ -51,6 +51,7 @@ defmodule Giulia.Tools.SearchMeaning do
     |> validate_required([:concept])
   end
 
+  @spec execute(map(), keyword()) :: {:ok, String.t()} | {:error, String.t()}
   @impl true
   def execute(params, opts \\ [])
 

@@ -216,7 +216,7 @@ defmodule Giulia.StructuredOutput.Parser do
         nil
 
       _ ->
-        code = Enum.join(code_lines, "\n") |> String.trim()
+        code = String.trim(Enum.join(code_lines, "\n"))
         if String.length(code) > 10, do: code, else: nil
     end
   end
@@ -361,8 +361,7 @@ defmodule Giulia.StructuredOutput.Parser do
       |> Map.new(fn [_, key, value] -> {key, value} end)
 
     int_params =
-      Regex.scan(~r/"(\w+)"\s*:\s*(\d+)/, json_str)
-      |> Map.new(fn [_, key, value] -> {key, elem(Integer.parse(value), 0)} end)
+      Map.new(Regex.scan(~r/"(\w+)"\s*:\s*(\d+)/, json_str), fn [_, key, value] -> {key, elem(Integer.parse(value), 0)} end)
 
     Map.merge(params, int_params)
   end

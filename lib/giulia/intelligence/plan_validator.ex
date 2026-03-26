@@ -140,8 +140,7 @@ defmodule Giulia.Intelligence.PlanValidator do
       |> MapSet.new()
 
     collisions =
-      modules_touched
-      |> Enum.filter(&MapSet.member?(red_modules, &1))
+      Enum.filter(modules_touched, &MapSet.member?(red_modules, &1))
 
     red_details =
       Enum.map(collisions, fn mod ->
@@ -176,8 +175,7 @@ defmodule Giulia.Intelligence.PlanValidator do
 
   defp check_hub_risk(project_path, modules_touched) do
     degrees =
-      modules_touched
-      |> Enum.map(fn mod ->
+      Enum.map(modules_touched, fn mod ->
         case KnowledgeStore.centrality(project_path, mod) do
           {:ok, %{in_degree: ind, out_degree: outd}} -> %{module: mod, in_degree: ind, out_degree: outd, total: (ind || 0) + (outd || 0)}
           _ -> %{module: mod, in_degree: 0, out_degree: 0, total: 0}
@@ -249,8 +247,7 @@ defmodule Giulia.Intelligence.PlanValidator do
       |> MapSet.new()
 
     collisions =
-      modules_touched
-      |> Enum.filter(&MapSet.member?(unprotected_names, &1))
+      Enum.filter(modules_touched, &MapSet.member?(unprotected_names, &1))
 
     collision_details =
       Enum.map(collisions, fn mod ->

@@ -151,7 +151,7 @@ defmodule Giulia.Context.Indexer do
           # Incremental scan of stale files only
           Logger.info("Warm start: #{length(stale_files)} stale files to re-scan for #{project_path}")
 
-          Task.start(fn ->
+          Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
             do_incremental_scan(project_path, stale_files)
             GenServer.cast(__MODULE__, {:scan_complete, project_path})
           end)
@@ -160,7 +160,7 @@ defmodule Giulia.Context.Indexer do
 
         {:cold_start, :no_cache} ->
           # Full scan (original behavior)
-          Task.start(fn ->
+          Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
             do_scan(project_path)
             GenServer.cast(__MODULE__, {:scan_complete, project_path})
           end)
@@ -176,7 +176,7 @@ defmodule Giulia.Context.Indexer do
 
   @impl true
   def handle_cast({:scan_file, file_path, project_path}, state) do
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case process_file(file_path) do
         {:ok, ast_data} ->
           Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
@@ -194,7 +194,7 @@ defmodule Giulia.Context.Indexer do
   @impl true
   def handle_cast({:scan_file, file_path}, state) do
     project_path = state.last_project || File.cwd!()
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case process_file(file_path) do
         {:ok, ast_data} ->
           Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
@@ -464,7 +464,7 @@ defmodule Giulia.Context.Indexer do
 
   defp valid_project_root?(path) do
     Enum.any?(@project_markers, fn marker ->
-      Path.join(path, marker) |> File.exists?()
+      File.exists?(Path.join(path, marker))
     end)
   end
 end

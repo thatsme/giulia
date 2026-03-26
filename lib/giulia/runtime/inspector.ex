@@ -74,7 +74,7 @@ defmodule Giulia.Runtime.Inspector do
       {:ok,
        %{
          node: node,
-         timestamp: DateTime.utc_now() |> DateTime.to_iso8601(),
+         timestamp: DateTime.to_iso8601(DateTime.utc_now()),
          beam: %{
            processes: process_count,
            memory_mb: memory_mb,
@@ -322,7 +322,7 @@ defmodule Giulia.Runtime.Inspector do
       end)
       |> Enum.sort_by(& &1.memory_mb, :desc)
 
-    total_mb = Enum.sum(Enum.map(table_info, & &1.memory_mb)) |> Float.round(2)
+    total_mb = Float.round(Enum.sum(Enum.map(table_info, & &1.memory_mb)), 2)
     god_tables = Enum.take(table_info, 5)
 
     %{total_memory_mb: total_mb, god_tables: god_tables}

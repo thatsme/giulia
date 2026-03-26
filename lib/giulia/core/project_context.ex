@@ -19,6 +19,7 @@ defmodule Giulia.Core.ProjectContext do
   alias Giulia.Core.PathSandbox
   alias Giulia.Core.ProjectContext.{Constitution, History}
 
+  @enforce_keys [:path]
   defstruct [
     :path,
     :constitution,
@@ -216,7 +217,7 @@ defmodule Giulia.Core.ProjectContext do
 
   @impl true
   def init(opts) do
-    path = Keyword.fetch!(opts, :path) |> normalize_path()
+    path = normalize_path(Keyword.fetch!(opts, :path))
 
     Logger.info("Initializing ProjectContext for #{path}")
 
@@ -305,7 +306,7 @@ defmodule Giulia.Core.ProjectContext do
       case PathSandbox.validate(state.sandbox, path) do
         {:ok, safe_path} ->
           # Ensure parent directory exists
-          safe_path |> Path.dirname() |> File.mkdir_p()
+          File.mkdir_p(Path.dirname(safe_path))
           File.write(safe_path, content)
 
         {:error, _} = error ->
@@ -431,7 +432,7 @@ defmodule Giulia.Core.ProjectContext do
     Logger.info("Starting AST indexing for #{state.path}")
 
     # Index the project using the global indexer but scoped to our path
-    Task.start(fn ->
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       Indexer.index_path(state.path)
     end)
 
@@ -451,7 +452,7 @@ defmodule Giulia.Core.ProjectContext do
 
     # Re-index the changed file if it's an Elixir file
     if Path.extname(path) in [".ex", ".exs"] do
-      Task.start(fn ->
+      Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
         Indexer.index_file(path)
       end)
     end

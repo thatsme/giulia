@@ -16,7 +16,7 @@ defmodule Giulia.Core.ProjectContext.History do
   def init(project_path) do
     db_path = Path.join([project_path, ".giulia", "history", "chat.db"])
 
-    db_path |> Path.dirname() |> File.mkdir_p()
+    File.mkdir_p(Path.dirname(db_path))
 
     case Exqlite.Sqlite3.open(db_path) do
       {:ok, conn} ->

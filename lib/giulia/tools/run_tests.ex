@@ -69,8 +69,7 @@ defmodule Giulia.Tools.RunTests do
 
   @spec changeset(map()) :: Ecto.Changeset.t()
   def changeset(params) do
-    %__MODULE__{}
-    |> cast(params, [:file, :test_name])
+    cast(%__MODULE__{}, params, [:file, :test_name])
   end
 
   @impl true
