@@ -761,6 +761,40 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/knowledge/conventions — Coding convention violations
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Detect coding convention violations (error handling, OTP, atoms, pipes, docs)",
+    endpoint: "GET /api/knowledge/conventions",
+    params: %{path: :required, module: :optional},
+    returns: "JSON violations grouped by severity, category, and file with convention references",
+    category: "knowledge"
+  }
+  get "/conventions" do
+    try do
+      case resolve_project_path(conn) do
+        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
+        project_path ->
+          module_filter = conn.query_params["module"]
+
+          result =
+            if module_filter do
+              Giulia.Knowledge.Store.find_conventions(project_path, module_filter)
+            else
+              Giulia.Knowledge.Store.find_conventions(project_path)
+            end
+
+          case result do
+            {:ok, data} -> send_json(conn, 200, data)
+            {:error, reason} -> send_json(conn, 500, %{error: "conventions failed", detail: inspect(reason)})
+          end
+      end
+    rescue
+      e -> send_json(conn, 500, %{error: "conventions crashed", detail: Exception.message(e)})
+    end
+  end
+
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end

@@ -130,4 +130,14 @@ defmodule Giulia.Knowledge.Analyzer do
 
   @spec struct_lifecycle(String.t()) :: {:ok, map()}
   def struct_lifecycle(project_path), do: Giulia.Knowledge.Insights.struct_lifecycle(project_path, nil)
+
+  # ============================================================================
+  # Conventions (1 function)
+  # ============================================================================
+
+  @spec conventions(String.t()) :: {:ok, map()}
+  defdelegate conventions(project_path), to: Giulia.Knowledge.Conventions
+
+  @spec conventions(String.t(), String.t()) :: {:ok, map()}
+  defdelegate conventions(project_path, module_filter), to: Giulia.Knowledge.Conventions
 end
