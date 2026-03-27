@@ -412,38 +412,51 @@ defmodule Giulia.Context.Indexer do
     mix_file = Path.join(project_path, "mix.exs")
 
     if File.exists?(mix_file) do
-      app_name = infer_app_name(project_path)
-      ebin = Path.join([project_path, "_build", "dev", "lib", app_name, "ebin"])
+      build_path = giulia_build_path(project_path)
 
-      unless File.dir?(ebin) do
-        Logger.info("Compiling #{project_path} for xref analysis...")
+      Logger.info("Compiling #{project_path} for xref analysis (build: #{build_path})")
 
-        try do
-          # Fetch deps first if needed, then compile
-          deps_dir = Path.join(project_path, "deps")
+      try do
+        # Fetch deps first if needed, then compile
+        deps_dir = Path.join(project_path, "deps")
 
-          unless File.dir?(deps_dir) do
-            Logger.info("Fetching deps for #{project_path}...")
-            System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
-          end
-
-          {output, exit_code} =
-            System.cmd("mix", ["compile"],
-              cd: project_path,
-              stderr_to_stdout: true,
-              env: [{"MIX_ENV", "dev"}]
-            )
-
-          if exit_code == 0 do
-            Logger.info("Compiled #{project_path} successfully")
-          else
-            Logger.warning("Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}")
-          end
-        rescue
-          e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
+        unless File.dir?(deps_dir) do
+          Logger.info("Fetching deps for #{project_path}...")
+          System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
         end
+
+        # Compile with project-specific build path to isolate multi-project builds.
+        # MIX_BUILD_PATH overrides _build/{env} so each project gets its own BEAM output.
+        {output, exit_code} =
+          System.cmd("mix", ["compile"],
+            cd: project_path,
+            stderr_to_stdout: true,
+            env: [{"MIX_BUILD_PATH", build_path}, {"MIX_ENV", "dev"}]
+          )
+
+        if exit_code == 0 do
+          app_name = infer_app_name(project_path)
+          ebin = Path.join([build_path, "lib", app_name, "ebin"])
+          beam_count = if File.dir?(ebin), do: ebin |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".beam")), else: 0
+          Logger.info("Compiled #{project_path} successfully (#{beam_count} BEAM files in #{ebin})")
+        else
+          Logger.warning("Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}")
+        end
+      rescue
+        e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
       end
     end
+  end
+
+  @doc false
+  @spec giulia_build_path(String.t()) :: String.t()
+  def giulia_build_path(project_path) do
+    hash =
+      :crypto.hash(:md5, project_path)
+      |> Base.encode16(case: :lower)
+      |> String.slice(0, 12)
+
+    Path.join(["/tmp/giulia_build", "targets", hash])
   end
 
   defp infer_app_name(project_path) do
