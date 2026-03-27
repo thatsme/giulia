@@ -3,8 +3,8 @@ defmodule Giulia.Knowledge.Builder do
   Knowledge Graph Construction — Pure Functions.
 
   Builds a directed graph from AST data (modules, functions, imports, structs,
-  callbacks). Runs 4 passes: vertices, dependency edges, xref call edges, and
-  AST-based function-call edges.
+  callbacks). Runs 5 passes: vertices, dependency edges, xref call edges,
+  AST-based function-call edges, and edge promotion (MFA→module + defdelegate).
 
   This module is intentionally stateless — it takes AST data and returns a
   `Graph.t()`. The Store GenServer spawns graph construction in a Task so the
@@ -55,7 +55,15 @@ defmodule Giulia.Knowledge.Builder do
     # Pass 4: Function-level call edges (AST-based)
     # Walks each function body to find calls to other project functions,
     # creating MFA→MFA edges like "Mod.foo/2" → "Other.bar/1"
-    add_function_call_edges(graph, ast_data, all_modules)
+    graph = add_function_call_edges(graph, ast_data, all_modules)
+
+    # Pass 5: Promote function-level edges to module-level edges
+    # Collapses MFA→MFA :calls edges into Module→Module :calls edges,
+    # catching fully-qualified calls that bypass alias/import.
+    # Also detects defdelegate targets as module dependencies.
+    graph
+    |> promote_function_edges_to_module(all_modules)
+    |> add_defdelegate_edges(ast_data, all_modules)
   end
 
   # ============================================================================
@@ -187,8 +195,13 @@ defmodule Giulia.Knowledge.Builder do
     # Derive the app name from mix.exs or fall back to directory name
     app_name = infer_app_name(project_root)
 
+    # Giulia-managed per-project build path (set by ensure_compiled in Indexer)
+    giulia_build = giulia_build_path(project_root)
+
     candidates =
       [
+        # Giulia-managed compilation output (per-project, isolated)
+        Path.join([giulia_build, "lib", app_name, "ebin"]),
         # Standard mix build (dev)
         Path.join([project_root, "_build", "dev", "lib", app_name, "ebin"]),
         # Standard mix build (prod)
@@ -198,6 +211,17 @@ defmodule Giulia.Knowledge.Builder do
       ]
 
     Enum.find(candidates, &File.dir?/1)
+  end
+
+  # Per-project build path for xref BEAM files.
+  # Must match the path used by Giulia.Context.Indexer.ensure_compiled/1.
+  defp giulia_build_path(project_path) do
+    hash =
+      :crypto.hash(:md5, project_path)
+      |> Base.encode16(case: :lower)
+      |> String.slice(0, 12)
+
+    Path.join(["/tmp/giulia_build", "targets", hash])
   end
 
   # Infer the project root from AST file paths (common prefix of all source files)
@@ -423,6 +447,105 @@ defmodule Giulia.Knowledge.Builder do
       end)
 
     calls
+  end
+
+  # ============================================================================
+  # Pass 5: Promote Function Edges + Defdelegate Detection
+  # ============================================================================
+
+  # Collapse MFA→MFA :calls edges into Module→Module :calls edges.
+  # If "A.foo/1" → "B.bar/2" exists, ensure A → B exists at module level.
+  defp promote_function_edges_to_module(graph, all_modules) do
+    module_set = all_modules
+
+    graph
+    |> Graph.edges()
+    |> Enum.filter(fn edge -> edge.label == :calls end)
+    |> Enum.reduce(graph, fn edge, g ->
+      caller_mod = extract_module_from_mfa(edge.v1)
+      callee_mod = extract_module_from_mfa(edge.v2)
+
+      if caller_mod && callee_mod &&
+         caller_mod != callee_mod &&
+         MapSet.member?(module_set, caller_mod) &&
+         MapSet.member?(module_set, callee_mod) &&
+         Graph.has_vertex?(g, caller_mod) &&
+         Graph.has_vertex?(g, callee_mod) &&
+         not has_module_edge?(g, caller_mod, callee_mod) do
+        Graph.add_edge(g, caller_mod, callee_mod, label: :calls)
+      else
+        g
+      end
+    end)
+  end
+
+  # Extract module name from MFA string like "Giulia.Role.role/0" → "Giulia.Role"
+  defp extract_module_from_mfa(mfa) when is_binary(mfa) do
+    case Regex.run(~r/^(.+)\.\w+\/\d+$/, mfa) do
+      [_, mod] -> mod
+      _ -> nil
+    end
+  end
+
+  defp extract_module_from_mfa(_), do: nil
+
+  # Check if a module-level edge already exists (any label)
+  defp has_module_edge?(graph, source, target) do
+    graph
+    |> Graph.edges(source, target)
+    |> Enum.any?()
+  end
+
+  # Detect defdelegate targets and add module-level :depends_on edges.
+  # defdelegate dispatches to a target module — this is a hard dependency.
+  defp add_defdelegate_edges(graph, ast_data, all_modules) do
+    Enum.reduce(ast_data, graph, fn {path, data}, g ->
+      modules = data[:modules] || []
+
+      case modules do
+        [source_mod | _] ->
+          source = case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              targets = extract_defdelegate_targets(ast, all_modules)
+
+              Enum.reduce(targets, g, fn target_mod, g2 ->
+                if target_mod != source_mod.name and not has_module_edge?(g2, source_mod.name, target_mod) do
+                  Graph.add_edge(g2, source_mod.name, target_mod, label: :depends_on)
+                else
+                  g2
+                end
+              end)
+
+            _ -> g
+          end
+
+        _ -> g
+      end
+    end)
+  end
+
+  # Walk AST to find defdelegate ... to: Module targets
+  defp extract_defdelegate_targets(ast, all_modules) do
+    {_ast, targets} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {:defdelegate, _meta, [_call, [to: {:__aliases__, _, parts}]]} = node, set ->
+          mod = Enum.map_join(parts, ".", &Atom.to_string/1)
+          if MapSet.member?(all_modules, mod) do
+            {node, MapSet.put(set, mod)}
+          else
+            {node, set}
+          end
+
+        node, set ->
+          {node, set}
+      end)
+
+    targets
   end
 
   # Resolve __MODULE__ AST tuples in alias parts to the enclosing module name.

@@ -141,7 +141,7 @@
 <div class="header">
   <div style="display:flex;align-items:center">
     <h1>Giulia Graph Explorer</h1>
-    <span class="subtitle">Build 152</span>
+    <span class="subtitle" id="build-label">Build …</span>
   </div>
   <div class="controls">
     <select id="project-select">
@@ -201,6 +201,13 @@
   var EDGE_COLOR = 'rgba(255,255,255,0.08)';
   var EDGE_HIGHLIGHT = '#bb86fc';
 
+  // Fetch build number from health endpoint
+  fetch('/health').then(function(r){return r.json()}).then(function(d){
+    var v = d.version || '';
+    var m = v.match(/\.(\d+)$/);
+    document.getElementById('build-label').textContent = 'Build ' + (m ? m[1] : v);
+  }).catch(function(){});
+
   // Discover projects from index status
   function loadProjects() {
     fetch('/api/index/status')
@@ -251,19 +258,45 @@
       elements: elements,
       style: getStyle(),
       layout: getLayout(),
-      minZoom: 0.1,
-      maxZoom: 5,
+      minZoom: 0.05,
+      maxZoom: 10,
       wheelSensitivity: 0.3
     });
 
-    // Click handler for node info
+    // Click handler: toggle focus on node
+    var selectedNode = null;
     cy.on('tap', 'node', function(evt) {
-      var d = evt.target.data();
-      showInfo(d);
+      var node = evt.target;
+
+      if (selectedNode && selectedNode.id() === node.id()) {
+        // Second click on same node — deselect and collapse back
+        selectedNode = null;
+        closeCluster();
+        cy.elements().removeClass('dimmed selected-node highlighted');
+        hideInfo();
+        return;
+      }
+
+      // If switching from another node, collapse previous first
+      if (selectedNode) closeCluster();
+
+      selectedNode = node;
+      showInfo(node.data());
+      openCluster(node);
+
+      cy.elements().addClass('dimmed');
+      node.removeClass('dimmed').addClass('selected-node');
+      node.neighborhood().removeClass('dimmed');
+      node.connectedEdges().addClass('highlighted');
     });
 
     cy.on('tap', function(evt) {
-      if (evt.target === cy) hideInfo();
+      if (evt.target === cy) {
+        selectedNode = null;
+        closeCluster();
+        hideInfo();
+        cy.elements().removeClass('dimmed selected-node highlighted');
+      }
     });
 
     // Hover: highlight connected edges
@@ -331,6 +364,14 @@
         }
       },
       {
+        selector: 'node.selected-node',
+        style: {
+          'border-width': 3,
+          'border-color': '#bb86fc',
+          'opacity': 1
+        }
+      },
+      {
         selector: 'node.dimmed',
         style: { 'opacity': 0.1 }
       },
@@ -369,11 +410,16 @@
       return {
         name: 'cose',
         animate: false,
-        nodeRepulsion: function() { return 80000; },
-        idealEdgeLength: function() { return 120; },
-        gravity: 0.3,
-        numIter: 500,
-        padding: 40
+        nodeRepulsion: function() { return 100000; },
+        idealEdgeLength: function() { return 100; },
+        nodeOverlap: 30,
+        nestingFactor: 1.2,
+        gravity: 0.25,
+        numIter: 1000,
+        padding: 50,
+        tile: true,
+        tilingPaddingVertical: 20,
+        tilingPaddingHorizontal: 20
       };
     }
     if (name === 'breadthfirst') {
@@ -473,7 +519,29 @@
     // Re-attach default click handler for non-blast views
     if (view !== 'blast') {
       cy.off('tap', 'node');
-      cy.on('tap', 'node', function(evt) { showInfo(evt.target.data()); });
+      var selectedNode = null;
+      cy.on('tap', 'node', function(evt) {
+        var node = evt.target;
+
+        if (selectedNode && selectedNode.id() === node.id()) {
+          selectedNode = null;
+          closeCluster();
+          cy.elements().removeClass('dimmed selected-node highlighted');
+          hideInfo();
+          return;
+        }
+
+        if (selectedNode) closeCluster();
+
+        selectedNode = node;
+        showInfo(node.data());
+        openCluster(node);
+
+        cy.elements().addClass('dimmed');
+        node.removeClass('dimmed').addClass('selected-node');
+        node.neighborhood().removeClass('dimmed');
+        node.connectedEdges().addClass('highlighted');
+      });
     }
   }
 
@@ -495,6 +563,67 @@
       });
       n1.connectedEdges().removeClass('dimmed');
     });
+  }
+
+  // Saved positions for collapse-back
+  var savedPositions = {};
+
+  // Open cluster: push neighbors outward from clicked node
+  function openCluster(node) {
+    var center = node.position();
+    var neighbors = node.neighborhood('node');
+    if (neighbors.length < 1) return;
+
+    // Save original positions
+    savedPositions = {};
+    neighbors.forEach(function(n) {
+      var p = n.position();
+      savedPositions[n.id()] = { x: p.x, y: p.y };
+    });
+
+    var radius = 125;
+    var angleStep = (2 * Math.PI) / neighbors.length;
+
+    neighbors.forEach(function(n, i) {
+      var npos = n.position();
+      var dx = npos.x - center.x;
+      var dy = npos.y - center.y;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+
+      var targetX, targetY;
+      if (dist < 10) {
+        targetX = center.x + radius * Math.cos(i * angleStep);
+        targetY = center.y + radius * Math.sin(i * angleStep);
+      } else {
+        var scale = Math.max(radius / dist, 1.25);
+        targetX = center.x + dx * scale;
+        targetY = center.y + dy * scale;
+      }
+
+      n.animate({
+        position: { x: targetX, y: targetY },
+        duration: 400,
+        easing: 'ease-out'
+      });
+    });
+  }
+
+  // Collapse cluster: animate neighbors back to saved positions
+  function closeCluster() {
+    var ids = Object.keys(savedPositions);
+    if (ids.length === 0) return;
+
+    ids.forEach(function(id) {
+      var node = cy.getElementById(id);
+      if (node.length) {
+        node.animate({
+          position: savedPositions[id],
+          duration: 400,
+          easing: 'ease-out'
+        });
+      }
+    });
+    savedPositions = {};
   }
 
   function showInfo(d) {

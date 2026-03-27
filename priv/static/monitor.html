@@ -270,7 +270,7 @@
 <div class="header">
   <div style="display:flex;align-items:center">
     <h1>Giulia Logic Monitor</h1>
-    <span class="subtitle">Build 151</span>
+    <span class="subtitle" id="build-label">Build …</span>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -512,6 +512,13 @@
       document.getElementById('p-' + t.dataset.panel).classList.add('active');
     });
   });
+
+  // Fetch build number from health endpoint
+  fetch('/health').then(function(r){return r.json()}).then(function(d){
+    var v = d.version || '';
+    var m = v.match(/\.(\d+)$/);
+    document.getElementById('build-label').textContent = 'Build ' + (m ? m[1] : v);
+  }).catch(function(){});
 
   // SSE
   function connect() {
