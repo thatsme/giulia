@@ -1,5 +1,7 @@
 # Giulia
 
+> **Build 154** · v0.2.1 · 2026-03-27
+
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
 ![Giulia Blast Radius](docs/screenshot/blast_radius.jpg)
@@ -105,7 +107,7 @@ Claude Code / CLI Client
 |---|---|
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow |
-| [API.md](API.md) | REST API reference (72 endpoints across 9 categories) |
+| [API.md](API.md) | REST API reference (83 endpoints across 10 categories) |
 | [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
 | [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
@@ -143,9 +145,9 @@ Highlights from the self-analysis:
 
 ## Project Status
 
-- **Build**: 152
+- **Build**: 154
 - **Tests**: 1,732 tests
-- **API**: 72 self-describing endpoints across 9 categories (discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
+- **API**: 83 self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
 - **Storage**: Three-tier (ETS L1 + CubDB warm start + ArcadeDB L2)
 - **Containers**: Dual-container architecture (worker + monitor)
 - **Visualization**: Logic Monitor (SSE) + Graph Explorer (Cytoscape.js)

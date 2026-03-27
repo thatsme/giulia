@@ -1,5 +1,7 @@
 # Giulia REST API Reference
 
+> **Document version**: Build 154 · v0.2.1 · 2026-03-27
+
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
 **Base URL:** `http://localhost:4000`
@@ -16,14 +18,14 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 
 1. [Core](#core) (10 endpoints)
 2. [Index](#index) (9 endpoints)
-3. [Knowledge](#knowledge) (23 endpoints)
+3. [Knowledge](#knowledge) (24 endpoints)
 4. [Intelligence](#intelligence) (5 endpoints)
 5. [Runtime](#runtime) (16 endpoints)
 6. [Search](#search) (3 endpoints)
 7. [Transaction](#transaction) (3 endpoints)
 8. [Approval](#approval) (2 endpoints)
-9. [Monitor](#monitor) (6 endpoints)
-10. [Discovery](#discovery) (3 endpoints)
+9. [Monitor](#monitor) (7 endpoints)
+10. [Discovery](#discovery) (4 endpoints)
 
 ---
 
@@ -1398,6 +1400,44 @@ curl "http://localhost:4000/api/knowledge/conventions?path=D:/Development/GitHub
 When `module` filter is provided, the response also includes `"module_filter": "Module.Name"`.
 When `suppress` is provided, the response includes `"suppressions_applied"` showing which rules/modules were suppressed.
 
+### GET /api/knowledge/topology
+
+Full module dependency graph in Cytoscape.js-ready format. Returns nodes with heatmap scores, centrality (fan-in/fan-out), complexity breakdown, and edges with dependency labels. Designed for direct consumption by the Graph Explorer visualization.
+
+**Parameters (query string):**
+
+| Param  | Required | Description       |
+|--------|----------|-------------------|
+| `path` | Yes      | Host project path |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/topology?path=D:/Development/GitHub/Giulia"
+```
+
+**Response:**
+
+```json
+{
+  "nodes": [
+    {
+      "id": "Giulia.Knowledge.Store",
+      "fan_in": 12,
+      "fan_out": 5,
+      "score": 85,
+      "zone": "red",
+      "complexity": 42,
+      "breakdown": {"specs": 15, "functions": 20, "dependencies": 5, "complexity": 10, "test_status": 5}
+    }
+  ],
+  "edges": [
+    {"source": "Giulia.Daemon.Routers.Knowledge", "target": "Giulia.Knowledge.Store", "label": "alias"}
+  ],
+  "meta": {"node_count": 143, "edge_count": 617}
+}
+```
+
 ---
 
 ## Intelligence
@@ -2375,6 +2415,23 @@ curl http://localhost:4000/api/monitor
 
 ---
 
+### GET /api/monitor/graph
+
+Serve the Graph Explorer HTML page. Interactive dependency graph visualization powered by Cytoscape.js. Fetches data from `/api/knowledge/topology` and provides four view modes: Dependency, Heatmap, Blast Radius, and Hub Map.
+
+**Parameters:** None.
+
+**Example:**
+
+```bash
+# Open in browser
+http://localhost:4000/api/monitor/graph
+```
+
+**Response:** HTML page (not JSON).
+
+---
+
 ### GET /api/monitor/stream
 
 SSE endpoint for real-time telemetry events. Subscribe to receive OODA loop events, LLM calls, tool executions, and API requests as they happen.
@@ -2629,6 +2686,33 @@ curl "http://localhost:4000/api/discovery/search?q=dead%20code"
   ],
   "count": 1,
   "query": "dead code"
+}
+```
+
+### GET /api/discovery/report_rules
+
+Get the REPORT_RULES.md location and content. Used by clients (e.g., Claude Code) to retrieve the canonical report generation rules without hardcoding paths.
+
+**Parameters (query string):**
+
+| Param  | Required | Description                              |
+|--------|----------|------------------------------------------|
+| `path` | No       | Host project path (checks for local copy)|
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/discovery/report_rules"
+```
+
+**Response:**
+
+```json
+{
+  "host_path": "~/.claude/REPORT_RULES.md",
+  "local_path": null,
+  "content": "# Report Generation Rules\n...",
+  "hint": "host_path uses ~ (client resolves). Content included as fallback."
 }
 ```
 

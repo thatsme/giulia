@@ -1,5 +1,11 @@
 # Giulia Architecture
 
+> **Document version**: Build 154 · v0.2.1 · 2026-03-27
+>
+> This document describes the architecture as of the build above. If the build
+> counter in `mix.exs` is higher, sections may be out of date — re-audit against
+> the codebase.
+
 ## 1. Overview
 
 Giulia is a high-performance, local-first AI development agent built in Elixir/OTP.
@@ -23,7 +29,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   72 API endpoints          |
+ |   88 API endpoints          |
  +-----------------------------+
 ```
 
@@ -53,7 +59,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 72 API endpoints          |    | - Performance profiling   | |
+|  | - 88 API endpoints          |    | - Performance profiling   | |
 |  | - CubDB persistence         |    |                           | |
 |  | - ArcadeDB L2 snapshots     |    | Skips:                    | |
 |  |                             |    |  EmbeddingServing (~90MB) | |
@@ -76,7 +82,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
 scanning, property graph construction, semantic embeddings), the inference engine
-(OODA loop with LLM providers), and serves all 72 API endpoints. Memory limit: 4GB.
+(OODA loop with LLM providers), and serves all 88 API endpoints. Memory limit: 4GB.
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
 via distributed Erlang on startup (AutoConnect GenServer). Its job is runtime
@@ -102,6 +108,7 @@ Giulia.Supervisor (:one_for_one)
 |
 |-- TIER 1: Base (always started)
 |   |-- Registry (Elixir.Registry, :unique, name: Giulia.Registry)
+|   |-- Task.Supervisor (name: Giulia.TaskSupervisor)
 |   |-- Context.Store (ETS tables for AST data)
 |   |-- Persistence.Store (CubDB lifecycle, one instance per project)
 |   |-- Persistence.Writer (async write-behind, 100ms debounce)
@@ -272,6 +279,57 @@ The `/api/runtime/hot_spots` endpoint is the fusion point. It:
 The Observer (running on the monitor node) pushes snapshots to the worker via HTTP.
 The worker finalizes each snapshot with static+runtime correlation.
 
+### Knowledge Graph Internals
+
+The Knowledge layer is not a single module. `Knowledge.Store` is the GenServer
+coordinator, but the actual logic is split across purpose-built modules:
+
+| Module | Responsibility |
+|--------|---------------|
+| `Knowledge.Builder` | Graph construction from AST data (4-pass pure functions) |
+| `Knowledge.Topology` | Pure graph traversal: stats, centrality, reachability, cycles, paths |
+| `Knowledge.Metrics` | Quantitative metrics: heatmap, change_risk, god_modules, dead_code, coupling |
+| `Knowledge.Behaviours` | Behaviour integrity checking (callback validation, macro-aware) |
+| `Knowledge.Conventions` | Convention violation detection via AST (Tier 1 metadata + Tier 2 patterns) |
+| `Knowledge.Insights` | High-level code insights: orphan specs, logic flow, style oracle |
+| `Knowledge.Insights.Impact` | Pre-impact risk analysis for rename/remove/refactor operations |
+| `Knowledge.Analyzer` | Facade delegating to Topology, Metrics, Behaviours, Insights |
+| `Knowledge.MacroMap` | Static mapping of `use Module` to injected function signatures |
+| `Knowledge.Store.Reader` | Direct ETS reads bypassing GenServer (concurrent bulk reads) |
+
+`Knowledge.Store` orchestrates: it owns the `Graph` struct in its state, delegates
+computation to the pure modules above, and caches results in its state map. The
+`Store.Reader` module provides a fast path for bulk extraction (all_modules,
+all_functions, all_dependencies) that reads directly from ETS without going through
+the GenServer mailbox.
+
+### Intelligence Layer
+
+Beyond embedding and search, the Intelligence layer provides four briefing and
+validation modules used by the API:
+
+| Module | Responsibility |
+|--------|---------------|
+| `Intelligence.ArchitectBrief` | Single-call project briefing with topology and health metrics |
+| `Intelligence.Preflight` | Contract checklist pipeline (6 sections) with semantic tool ranking |
+| `Intelligence.SurgicalBriefing` | Layer 1+2 preprocessing: semantic search + knowledge graph enrichment |
+| `Intelligence.PlanValidator` | Graph-aware validation for code change plans (cycles, hub risk, blast radius) |
+
+### Runtime Layer
+
+The Runtime subsystem has grown beyond the core Inspector + Collector pair:
+
+| Module | Responsibility |
+|--------|---------------|
+| `Runtime.Inspector` | BEAM introspection via :erlang APIs (memory, stats, processes) |
+| `Runtime.Inspector.Trace` | Short-lived per-module call tracing with 5-second kill switch |
+| `Runtime.Collector` | Periodic snapshot collector with burst detection (IDLE/CAPTURING FSM) |
+| `Runtime.Profiler` | Performance profile generator (template-based, offline, pure functions) |
+| `Runtime.IngestStore` | Buffers runtime snapshots from Monitor, fuses with static knowledge data |
+| `Runtime.Observer` | Observation controller for async collection sessions and HTTP push |
+| `Runtime.AutoConnect` | Auto-connect to target BEAM node on startup with exponential backoff |
+| `Runtime.Monitor` | Monitor lifecycle orchestrator (BOOT -> CONNECT -> WATCH -> PROFILING) |
+
 
 ## 6. Request Flow
 
@@ -298,6 +356,9 @@ Endpoint.ex                     core routes + forward declarations
     +-- forward "/api/index"        --> Routers.Index
     +-- forward "/api/knowledge"    --> Routers.Knowledge
     +-- forward "/api/intelligence" --> Routers.Intelligence
+    +-- forward "/api/briefing"     --> Routers.Intelligence  (alias)
+    +-- forward "/api/brief"        --> Routers.Intelligence  (alias)
+    +-- forward "/api/plan"         --> Routers.Intelligence  (alias)
     +-- forward "/api/runtime"      --> Routers.Runtime
     +-- forward "/api/search"       --> Routers.Search
     +-- forward "/api/transaction"  --> Routers.Transaction
@@ -375,14 +436,15 @@ Sub-routers and their domains:
 | Prefix              | Router                 | Routes | Domain                              |
 |---------------------|------------------------|--------|-------------------------------------|
 | /api/index          | Routers.Index          | 9      | Module/function index, scan, verify, compact, complexity |
-| /api/knowledge      | Routers.Knowledge      | 24     | Graph queries, metrics, insights, topology |
+| /api/knowledge      | Routers.Knowledge      | 26     | Graph queries, metrics, insights, topology, conventions |
 | /api/intelligence   | Routers.Intelligence   | 5      | Briefing, preflight, architect, validate, report_rules |
 | /api/runtime        | Routers.Runtime        | 16     | BEAM introspection, trace, connect, profiles, ingest, observations |
-| /api/search         | Routers.Search         | 3      | Text search, semantic search        |
+| /api/search         | Routers.Search         | 3      | Text search, semantic search, semantic status |
 | /api/transaction    | Routers.Transaction    | 3      | Transactional file operations       |
 | /api/approval       | Routers.Approval       | 2      | Interactive consent gate            |
-| /api/monitor        | Routers.Monitor        | 8      | Dashboard, Graph Explorer, SSE stream, history, observe start/stop/status |
+| /api/monitor        | Routers.Monitor        | 7      | Dashboard, Graph Explorer, SSE stream, history, observe start/stop/status |
 | /api/discovery      | Routers.Discovery      | 4      | Skill introspection, search, report rules |
+| *(core endpoint)*   | Endpoint               | 11     | health, command, ping, status, projects, init, debug, trace, approvals |
 
 Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
 `Routers.Intelligence` as aliases.
@@ -406,7 +468,7 @@ SemanticIndex computes cosine similarity against all stored vectors using `Nx.do
 then ranks results with `Nx.top_k`.
 
 **Preflight integration**: The `/api/briefing/preflight` endpoint uses semantic
-search to match a user's prompt against the 72 skill intents declared across all
+search to match a user's prompt against the skill intents declared across all
 sub-routers. The response includes a `suggested_tools` list ranked by cosine
 similarity, allowing clients to discover which API endpoints are most relevant to
 their current task. Graceful degradation: if EmbeddingServing is unavailable (model
