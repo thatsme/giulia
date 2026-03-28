@@ -15,13 +15,28 @@ curl -s http://localhost:4000/health
 Expected: `{"status":"ok","node":"...","version":"..."}`.
 If this fails, fall back to standard file tools. Do not retry.
 
+## Access Methods
+
+Giulia supports two access methods:
+
+| Method | Endpoint | Auth | Best For |
+|--------|----------|------|----------|
+| **REST API** | `http://localhost:4000/api/*` | None | curl, scripts, direct HTTP clients |
+| **MCP** | `http://localhost:4000/mcp` | Bearer token (`GIULIA_MCP_KEY`) | Claude Code, AI assistants with MCP support |
+
+**MCP setup:** Place a `.mcp.json` in your project root pointing to `http://localhost:4000/mcp` with the Bearer token. In Claude Code, run `/mcp` to connect. All 74 skill endpoints become available as native tool calls (e.g., `knowledge_stats`, `index_modules`, `brief_architect`).
+
+**MCP tool naming:** `GET /api/knowledge/stats` → tool name `knowledge_stats`. Strip method, strip `/api/`, replace `/` with `_`.
+
+When MCP is connected, prefer MCP tool calls over curl — they return structured JSON directly without HTTP boilerplate.
+
 ## Discovery (Build 98)
 
 Every endpoint carries a `@skill` annotation. Instead of memorizing routes, discover them at runtime:
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| List all skills | `GET /api/discovery/skills` | All 70 skills with intent, endpoint, params, returns, category |
+| List all skills | `GET /api/discovery/skills` | All 74 skills with intent, endpoint, params, returns, category |
 | Filter by category | `GET /api/discovery/skills?category=knowledge` | Skills in one category |
 | List categories | `GET /api/discovery/categories` | All 9 categories with endpoint counts |
 | Search by keyword | `GET /api/discovery/search?q=blast+radius` | Skills matching keyword in intent |
@@ -46,7 +61,7 @@ Lifecycle, status, and project management endpoints. These are core daemon route
 
 | Intent | Endpoint | Returns |
 |--------|----------|---------|
-| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.1.0.140"}` — confirms daemon is running |
+| Health check | `GET /health` | `{"status":"ok","node":"...","version":"v0.2.0.153"}` — confirms daemon is running |
 | Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
 | Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
 | List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
@@ -98,6 +113,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Struct lifecycle | `GET /api/knowledge/struct_lifecycle?path=P&struct=Module.Name` | Data flow tracing per struct: which modules create/consume it, logic leaks (non-defining modules that use the struct). Optional `struct` filter |
 | Semantic duplicates | `GET /api/knowledge/duplicates?path=P&threshold=0.85&max=20` | Clusters of semantically similar functions (cosine similarity >= threshold on Bumblebee embeddings). Returns connected components with avg similarity. Requires EmbeddingServing |
 | Unified audit | `GET /api/knowledge/audit?path=P` | Combines all 4 Principal Consultant features: unprotected hubs + struct lifecycle + semantic duplicates + behaviour integrity (enriched with optional/heuristic fields). Single call for comprehensive project health report |
+| **Convention violations** | `GET /api/knowledge/conventions?path=P&module=M&suppress=rule:Mod1,Mod2;rule2:Mod3` | 12 AST-based convention checks (Tier 1: missing moduledoc/spec/enforce_keys; Tier 2: try-rescue flow control, silent rescue, runtime atom creation, process dictionary, unsupervised task, unless-else, single-value pipe, append-in-reduce, if-not). Optional `module` filter. Optional `suppress` to skip specific rules for specific modules (e.g. `suppress=process_dictionary:Auth.Context,Auth.Token` suppresses process_dictionary violations for those modules). Returns violations grouped by severity, category, and file |
 
 ### 3. Intelligence (Pre-Processing Layers)
 
@@ -390,6 +406,7 @@ If you edit Elixir files directly (using file write/edit tools instead of Giulia
 | Code search | Giulia `/api/search` — project-scoped, sandboxed |
 | Concept search | Giulia `/api/search/semantic` — embedding-based, finds related code by meaning |
 | Exemplar functions for style | Giulia `/api/knowledge/style_oracle` — quality-gated by @spec + @doc |
+| Convention violations | Giulia `/api/knowledge/conventions` — 12 AST rules, grouped by severity/category/file. Supports `suppress` param for intentional violations |
 | Runtime performance analysis | Giulia `/api/runtime/profile/latest` — burst analysis with hot modules |
 | File contents | Standard file read tools — Giulia doesn't serve raw file content |
 | Compile/test | Shell — `mix compile`, `mix test` |

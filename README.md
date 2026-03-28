@@ -1,12 +1,12 @@
 # Giulia
 
-> **Build 154** · v0.2.1 · 2026-03-27
+> **Build 155** · v0.2.1 · 2026-03-28
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
 ![Giulia Blast Radius](docs/screenshot/blast_radius.jpg)
 
-Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- all via a REST API.
+Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration.
 
 ## Why Giulia Exists
 
@@ -72,7 +72,7 @@ curl "http://localhost:4000/api/brief/architect?path=/path/to/your/project"
 ```
 Claude Code / CLI Client
          |
-         | HTTP
+         | HTTP (REST) or MCP
          v
 +------------------+     +-------------------+
 | giulia-worker    |     | giulia-monitor    |
@@ -80,6 +80,7 @@ Claude Code / CLI Client
 | Static analysis  |  ^  | Runtime profiling |
 | Scans, graphs,   |  |  | Burst detection   |
 | embeddings       |  |  | Performance data  |
+| MCP server       |  |  |                   |
 +------------------+  |  +-------------------+
   |          |        |
   v          v        | Distributed Erlang
@@ -107,7 +108,7 @@ Claude Code / CLI Client
 |---|---|
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow |
-| [API.md](API.md) | REST API reference (83 endpoints across 10 categories) |
+| [API.md](API.md) | REST API and MCP reference (83+ endpoints across 10 categories) |
 | [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
 | [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
@@ -145,9 +146,10 @@ Highlights from the self-analysis:
 
 ## Project Status
 
-- **Build**: 154
+- **Build**: 155
 - **Tests**: 1,732 tests
 - **API**: 83 self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
+- **MCP**: Native Model Context Protocol server — 74 tools + 5 resource templates, bearer token auth
 - **Storage**: Three-tier (ETS L1 + CubDB warm start + ArcadeDB L2)
 - **Containers**: Dual-container architecture (worker + monitor)
 - **Visualization**: Logic Monitor (SSE) + Graph Explorer (Cytoscape.js)

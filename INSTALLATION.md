@@ -90,6 +90,7 @@ The following environment variables are defined in the `x-common-env` anchor in 
 | `GROQ_API_KEY` | (empty) | Groq API key |
 | `GEMINI_API_KEY` | (empty) | Gemini API key |
 | `LM_STUDIO_URL` | `http://host.docker.internal:1234/v1/chat/completions` | LM Studio chat completions endpoint. Use `host.docker.internal` (Docker Desktop) or your machine's LAN IP. |
+| `GIULIA_MCP_KEY` | (empty) | Bearer token for MCP authentication. If set, the MCP server starts at `/mcp`. If empty, MCP is disabled. Generate with any random string (e.g., `openssl rand -hex 24`). |
 | `XLA_TARGET` | `cpu` | EXLA compilation target |
 | `MIX_ENV` | `dev` | Elixir environment |
 
@@ -160,6 +161,50 @@ MIX_ENV=prod mix release giulia_client
 #         burrito_out/giulia_macos
 #         burrito_out/giulia_macos_arm
 ```
+
+## MCP Setup (Claude Code / AI Assistants)
+
+Giulia exposes a native MCP (Model Context Protocol) server that allows AI assistants to call analysis tools directly.
+
+### 1. Enable MCP
+
+Set `GIULIA_MCP_KEY` in your environment or `docker-compose.yml`:
+
+```yaml
+GIULIA_MCP_KEY: "glx-your-secret-key-here"
+```
+
+Restart the worker after setting the key. The MCP server starts automatically when the key is present.
+
+### 2. Configure the Client
+
+Create `.mcp.json` in your project root (or in the Giulia project root for self-analysis):
+
+```json
+{
+  "mcpServers": {
+    "giulia": {
+      "type": "http",
+      "url": "http://localhost:4000/mcp",
+      "headers": {
+        "Authorization": "Bearer glx-your-secret-key-here"
+      }
+    }
+  }
+}
+```
+
+### 3. Connect
+
+In Claude Code, run `/mcp` to connect. Once connected, 74 analysis tools and 5 resource templates are available as native tool calls.
+
+### 4. Verify
+
+After connecting, the AI assistant can call `discovery_categories` (no parameters) to verify the connection is working. It should return 9 categories with tool counts.
+
+See [API.md](API.md#mcp) for the full MCP reference, including tool naming conventions and parameter mapping.
+
+---
 
 ## Running Without Docker (Development Only)
 

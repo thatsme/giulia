@@ -15,6 +15,21 @@ curl -s http://localhost:4000/health
 Expected: `{"status":"ok","node":"...","version":"..."}`.
 If this fails, fall back to standard file tools. Do not retry.
 
+## Access Methods
+
+Giulia supports two access methods:
+
+| Method | Endpoint | Auth | Best For |
+|--------|----------|------|----------|
+| **REST API** | `http://localhost:4000/api/*` | None | curl, scripts, direct HTTP clients |
+| **MCP** | `http://localhost:4000/mcp` | Bearer token (`GIULIA_MCP_KEY`) | Claude Code, AI assistants with MCP support |
+
+**MCP setup:** Place a `.mcp.json` in your project root pointing to `http://localhost:4000/mcp` with the Bearer token. In Claude Code, run `/mcp` to connect. All 74 skill endpoints become available as native tool calls (e.g., `knowledge_stats`, `index_modules`, `brief_architect`).
+
+**MCP tool naming:** `GET /api/knowledge/stats` → tool name `knowledge_stats`. Strip method, strip `/api/`, replace `/` with `_`.
+
+When MCP is connected, prefer MCP tool calls over curl — they return structured JSON directly without HTTP boilerplate.
+
 ## Discovery (Build 98)
 
 Every endpoint carries a `@skill` annotation. Instead of memorizing routes, discover them at runtime:

@@ -1,9 +1,9 @@
 defmodule Giulia.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.2.2"
   # Build number - increment on each release
-  @build 154
+  @build 155
 
   def project do
     [
@@ -99,7 +99,10 @@ defmodule Giulia.MixProject do
       {:cubdb, "~> 2.0"},
 
       # Binary compilation (client only)
-      {:burrito, "~> 1.0", runtime: false}
+      {:burrito, "~> 1.0", runtime: false},
+
+      # MCP (Model Context Protocol) server
+      {:anubis_mcp, "~> 1.0"}
     ]
   end
 end

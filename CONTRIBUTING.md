@@ -15,6 +15,7 @@ are welcome, but please understand the project's philosophy before proposing cha
 - **Native AST** — Sourceror (pure Elixir) for code analysis, not tree-sitter NIFs
 - **Provider agnostic** — supports Anthropic, Ollama, LM Studio, Gemini, Groq
 - **Observable** — telemetry events across the OODA pipeline, SSE dashboard
+- **MCP native** — Model Context Protocol server alongside REST, auto-generated from skill annotations
 - **Sandboxed** — Giulia can only access files under the project root
 
 If your contribution aligns with these principles, it's likely a good fit.
@@ -124,7 +125,7 @@ get "/my_endpoint" do
 end
 ```
 
-This makes the endpoint self-describing via the discovery API.
+This makes the endpoint self-describing via the Discovery API. It also automatically exposes the endpoint as an MCP tool — `Giulia.MCP.ToolSchema` reads all `@skill` annotations at boot and generates MCP tool definitions from them. No separate MCP registration is needed.
 
 ---
 

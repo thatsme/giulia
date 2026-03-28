@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 154 · v0.2.1 · 2026-03-27
+> **Document version**: Build 155 · v0.2.1 · 2026-03-28
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -10,7 +10,9 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 
 **Path Convention:** Most GET endpoints under `/api/index` and `/api/knowledge` require `?path=P` where `P` is the host-side project path (e.g., `C:/Development/GitHub/MyApp`). POST endpoints take `path` in the JSON body. The `PathMapper` translates host paths to container paths automatically.
 
-**Authentication:** None. Giulia is a local development tool designed for localhost access only. It is not designed for network exposure -- do not bind to 0.0.0.0 or expose port 4000 to untrusted networks. See [SECURITY.md](SECURITY.md) for the full threat model.
+**Authentication:** REST endpoints have no authentication. The MCP endpoint (`/mcp`) requires a Bearer token via the `GIULIA_MCP_KEY` environment variable. Giulia is a local development tool designed for localhost access only. It is not designed for network exposure -- do not bind to 0.0.0.0 or expose port 4000 to untrusted networks. See [SECURITY.md](SECURITY.md) for the full threat model.
+
+**MCP Access:** All tool endpoints are also available via the Model Context Protocol at `/mcp`. See the [MCP](#mcp) section for setup and usage.
 
 ---
 
@@ -26,6 +28,7 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 8. [Approval](#approval) (2 endpoints)
 9. [Monitor](#monitor) (7 endpoints)
 10. [Discovery](#discovery) (4 endpoints)
+11. [MCP](#mcp) (Model Context Protocol)
 
 ---
 
@@ -2741,6 +2744,96 @@ Common HTTP status codes:
 
 ---
 
+## MCP
+
+Giulia exposes a native Model Context Protocol (MCP) server at `/mcp`. MCP allows AI assistants (Claude Code, Cursor, etc.) to discover and invoke Giulia's analysis tools as structured tool calls, without constructing HTTP requests manually.
+
+### Setup
+
+**1. Set the MCP key** in `docker-compose.yml` (or your environment):
+
+```yaml
+GIULIA_MCP_KEY: "your-secret-key-here"
+```
+
+The MCP server only starts if `GIULIA_MCP_KEY` is set. Without it, `/mcp` returns 401.
+
+**2. Configure the client** by creating `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "giulia": {
+      "type": "http",
+      "url": "http://localhost:4000/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-key-here"
+      }
+    }
+  }
+}
+```
+
+### How It Works
+
+All 74 `@skill`-annotated REST endpoints are automatically exposed as MCP tools. The mapping is generated at boot by `Giulia.MCP.ToolSchema` from the same `@skill` annotations that power the Discovery API.
+
+**Tool naming convention** — endpoint path maps to tool name:
+
+| REST Endpoint | MCP Tool Name |
+|---|---|
+| `GET /api/knowledge/stats` | `knowledge_stats` |
+| `GET /api/index/modules` | `index_modules` |
+| `POST /api/runtime/connect` | `runtime_connect` |
+| `GET /api/brief/architect` | `brief_architect` |
+| `POST /api/knowledge/pre_impact_check` | `knowledge_pre_impact_check` |
+
+Rule: strip `METHOD /api/`, replace `/` with `_`. Path params like `:id` become `by_id`.
+
+**Parameter mapping** — REST query params and body fields become flat tool arguments:
+
+| REST | MCP Tool Call |
+|---|---|
+| `GET /api/knowledge/impact?path=P&module=M&depth=2` | `knowledge_impact(path="P", module="M", depth="2")` |
+| `POST /api/index/scan` with body `{"path":"P"}` | `index_scan(path="P")` |
+
+All arguments are strings. The server parses integers and floats internally.
+
+### Calling MCP Tools from LLMs
+
+When an LLM (Claude Code, etc.) connects via MCP, it sees each tool with its description and parameter schema. The LLM calls tools by name with a flat argument map:
+
+```json
+{
+  "name": "knowledge_stats",
+  "arguments": {
+    "path": "D:/Development/GitHub/MyProject"
+  }
+}
+```
+
+**Required vs optional parameters:** The tool schema declares which parameters are required. The `path` parameter is required for most tools (exceptions: `discovery_categories`, `runtime_pulse`, `runtime_monitor_status`). Optional parameters can be omitted.
+
+**The `path` parameter** must be the **host-side project path** (e.g., `D:/Development/GitHub/MyProject`), not the container path. The MCP server uses `PathMapper` for translation, just like the REST API.
+
+### MCP Resources
+
+Five resource templates are available via the `giulia://` URI scheme:
+
+| URI Pattern | Description |
+|---|---|
+| `giulia://projects/{path}` | Project summary and index stats (use `list` for all projects) |
+| `giulia://modules/{path}` | List indexed modules for a project |
+| `giulia://graph/{path}` | Knowledge Graph statistics |
+| `giulia://skills/{category}` | Available API skills (use `list` for all) |
+| `giulia://status` | Daemon status (node, version, role, active projects) |
+
+### Excluded Endpoints
+
+HTML pages (`/api/monitor`, `/api/monitor/graph`) and SSE streams (`/api/monitor/stream`) are excluded from MCP — they are not compatible with the tool call/response model.
+
+---
+
 ## Quick Reference
 
 | Category     | Count | Prefix               |
@@ -2755,6 +2848,7 @@ Common HTTP status codes:
 | Approval     | 2     | `/api/approval/*`     |
 | Monitor      | 6     | `/api/monitor/*`      |
 | Discovery    | 3     | `/api/discovery/*`    |
-| **Total**    | **80**|                       |
+| MCP          | 74    | `/mcp` (tools) + `giulia://` (resources) |
+| **Total**    | **80 REST + 74 MCP tools** |                |
 
-Note: The 80 total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 70 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API.
+Note: The 80 REST total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 70 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API. The 74 MCP tools are auto-generated from these same skills (minus HTML/SSE endpoints).
