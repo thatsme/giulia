@@ -17,6 +17,7 @@ for historical context. Active items are ordered by priority.
 | ArcadeDB L2 | 137 | DONE — graph snapshots, consolidation queries |
 | Dual-container architecture | 131 | DONE — worker + monitor via distributed Erlang |
 | Discovery engine | 98 | DONE — 70 self-describing endpoints |
+| MCP server | 155 | DONE — 74 tools + 5 resources, bearer auth, auto-generated from @skill annotations |
 
 ---
 

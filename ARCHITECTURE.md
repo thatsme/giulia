@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 154 · v0.2.1 · 2026-03-27
+> **Document version**: Build 155 · v0.2.1 · 2026-03-28
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -23,13 +23,14 @@ memory across invocations.
        |               |                 |
        +-------+-------+-----------------+
                |
-          HTTP / JSON
+          HTTP / JSON  or  MCP
                |
                v
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
  |   88 API endpoints          |
+ |   MCP server (/mcp)         |
  +-----------------------------+
 ```
 
@@ -60,9 +61,9 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
 |  | - 88 API endpoints          |    | - Performance profiling   | |
-|  | - CubDB persistence         |    |                           | |
-|  | - ArcadeDB L2 snapshots     |    | Skips:                    | |
-|  |                             |    |  EmbeddingServing (~90MB) | |
+|  | - MCP server (74 tools)     |    |                           | |
+|  | - CubDB persistence         |    | Skips:                    | |
+|  | - ArcadeDB L2 snapshots     |    |  EmbeddingServing (~90MB) | |
 |  |                             |    |  Inference pools           | |
 |  |                             |    |  SemanticIndex             | |
 |  +-------------+---------------+    +-------------+-------------+ |
@@ -138,6 +139,9 @@ Giulia.Supervisor (:one_for_one)
 |   |-- Runtime.Observer (async observation controller)
 |   |-- Runtime.AutoConnect (returns :ignore if GIULIA_CONNECT_NODE unset)
 |   +-- Runtime.Monitor (returns :ignore unless GIULIA_ROLE=monitor)
+|
+|-- TIER 5: MCP (only started if GIULIA_MCP_KEY is set)
+|   +-- Giulia.MCP.Server (Anubis StreamableHTTP transport)
 |
 +-- Bandit (HTTP endpoint, skipped in MIX_ENV=test)
     plug: Giulia.Daemon.Endpoint
@@ -315,6 +319,39 @@ validation modules used by the API:
 | `Intelligence.SurgicalBriefing` | Layer 1+2 preprocessing: semantic search + knowledge graph enrichment |
 | `Intelligence.PlanValidator` | Graph-aware validation for code change plans (cycles, hub risk, blast radius) |
 
+### MCP Layer (Build 155)
+
+Giulia exposes a native Model Context Protocol (MCP) server alongside the REST API.
+MCP enables AI assistants like Claude Code to discover and call Giulia's tools
+directly as structured tool calls, without constructing HTTP requests.
+
+| Module | Responsibility |
+|--------|---------------|
+| `MCP.Server` | Anubis MCP server — handles `tools/call`, `tools/list`, `resources/read` |
+| `MCP.ToolSchema` | Auto-generates 74 MCP tool definitions from `@skill` annotations on sub-routers |
+| `MCP.ResourceProvider` | 5 resource templates (`giulia://projects/`, `giulia://modules/`, `giulia://graph/`, `giulia://skills/`, `giulia://status`) |
+| `Daemon.Plugs.McpAuth` | Bearer token authentication via `GIULIA_MCP_KEY` env var (constant-time comparison) |
+| `Daemon.Plugs.McpForward` | Runtime forwarder to Anubis StreamableHTTP transport (defers init to avoid persistent_term race) |
+
+The MCP server is conditional — it only starts if `GIULIA_MCP_KEY` is set.
+Tool schemas are generated at boot from the same `@skill` annotations that power
+the Discovery API, ensuring REST and MCP always expose identical capabilities.
+
+Client configuration (`.mcp.json`):
+```json
+{
+  "mcpServers": {
+    "giulia": {
+      "type": "http",
+      "url": "http://localhost:4000/mcp",
+      "headers": {
+        "Authorization": "Bearer <GIULIA_MCP_KEY value>"
+      }
+    }
+  }
+}
+```
+
 ### Runtime Layer
 
 The Runtime subsystem has grown beyond the core Inspector + Collector pair:
@@ -365,6 +402,7 @@ Endpoint.ex                     core routes + forward declarations
     +-- forward "/api/approval"     --> Routers.Approval
     +-- forward "/api/monitor"      --> Routers.Monitor
     +-- forward "/api/discovery"    --> Routers.Discovery
+    +-- forward "/mcp"             --> Plugs.McpForward (MCP protocol)
     |
     v
 Sub-router (e.g., Routers.Knowledge)

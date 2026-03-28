@@ -71,6 +71,7 @@ All external credentials are resolved through environment variables:
 | Gemini API key | `GEMINI_API_KEY` | For Gemini provider |
 | Erlang cookie | `GIULIA_COOKIE` | For distributed Erlang auth |
 | ArcadeDB password | `ARCADEDB_PASSWORD` | Giulia's HTTP auth to ArcadeDB. Must match `rootPassword` in ArcadeDB's `JAVA_OPTS`. |
+| MCP key | `GIULIA_MCP_KEY` | For MCP bearer token auth. If unset, MCP is disabled. |
 
 The Erlang distribution cookie authenticates inter-node communication.
 Both worker and monitor must share the same cookie. Default is `giulia_dev` —
@@ -96,7 +97,7 @@ the inference engine. There is no background telemetry or analytics.
 
 ## HTTP API Security
 
-The HTTP API (Bandit on port 4000) has no authentication. It is designed for
+The REST API (Bandit on port 4000) has no authentication. It is designed for
 localhost access only.
 
 Defenses against malicious input:
@@ -106,6 +107,26 @@ Defenses against malicious input:
 - **SQL injection (ArcadeDB)**: parameterized queries via Req, never string interpolation
   of user input into SQL (except `escape/1` for graph write helpers)
 - **Path traversal**: all `?path=` parameters go through PathMapper and PathSandbox
+
+---
+
+## MCP Authentication
+
+The MCP endpoint (`/mcp`) is the only authenticated endpoint. It requires a
+Bearer token matching the `GIULIA_MCP_KEY` environment variable.
+
+- **Token comparison**: uses `Plug.Crypto.secure_compare/2` (constant-time) to
+  prevent timing attacks
+- **Missing key**: if `GIULIA_MCP_KEY` is not set, the MCP server does not start
+  and `/mcp` returns 401 with "MCP not configured"
+- **Missing header**: requests without `Authorization: Bearer <token>` are rejected
+  with 401 before reaching the MCP transport layer
+- **Implementation**: `Giulia.Daemon.Plugs.McpAuth` — authentication runs before
+  the Anubis StreamableHTTP transport processes any MCP frames
+
+The MCP key is a shared secret between the Giulia daemon and the AI assistant
+client. It is not designed for multi-tenant access control — it prevents
+accidental exposure when the port is reachable beyond localhost.
 
 ---
 
@@ -132,6 +153,7 @@ use a VPN or SSH tunnel. Never expose EPMD (4369) or distribution ports
 - Bind to localhost only — do not expose port 4000 to untrusted networks
 - Change `GIULIA_COOKIE` from the default `giulia_dev`
 - Change the ArcadeDB root password from the default `playwithdata` — set it in both places: ArcadeDB's `JAVA_OPTS` (`-Darcadedb.server.rootPassword=...`) and Giulia's `ARCADEDB_PASSWORD` env var
+- Set `GIULIA_MCP_KEY` to a strong random value (e.g., `openssl rand -hex 24`) — do not use the default from docker-compose.yml in shared environments
 - Do not expose EPMD (4369) or distribution ports (9100-9115) publicly
 - Review which LLM providers are enabled before processing sensitive code
 - ArcadeDB REST API (port 2480) has its own auth — do not expose without password

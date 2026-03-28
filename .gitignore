@@ -27,6 +27,9 @@ giulia-*.tar
 .env.local
 .env.*.local
 
+# MCP config (contains bearer token)
+.mcp.json
+
 # Built escripts
 /giulia
 /giulia.escript

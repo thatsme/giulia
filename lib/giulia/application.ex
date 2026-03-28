@@ -159,7 +159,15 @@ defmodule Giulia.Application do
       {Giulia.Runtime.Monitor, []}
     ]
 
-    all_children = base_children ++ heavy_children ++ inference_children ++ tail_children
+    # MCP Server (Model Context Protocol) — only starts if GIULIA_MCP_KEY is set
+    mcp_children =
+      if System.get_env("GIULIA_MCP_KEY") do
+        [{Giulia.MCP.Server, transport: {:streamable_http, start: true}}]
+      else
+        []
+      end
+
+    all_children = base_children ++ heavy_children ++ inference_children ++ tail_children ++ mcp_children
 
     # Skip HTTP endpoint in test env (port already in use by the running daemon)
     children =

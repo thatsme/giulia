@@ -19,11 +19,26 @@ defmodule Giulia.Daemon.Endpoint do
   plug Plug.Logger
   plug :match
   plug :fetch_query_params
-  plug Plug.Parsers,
-    parsers: [:json],
-    pass: ["application/json", "text/*", "multipart/*"],
-    json_decoder: Jason
+  plug :maybe_parse_body
   plug :dispatch
+
+  # Skip Plug.Parsers for /mcp — Anubis StreamableHTTP reads the raw body itself.
+  # Plug.Parsers consumes the body stream, leaving nothing for Anubis to read.
+  defp maybe_parse_body(%{path_info: ["mcp" | _]} = conn, _opts), do: conn
+
+  defp maybe_parse_body(conn, _opts) do
+    Plug.Parsers.call(conn, Plug.Parsers.init(
+      parsers: [:json],
+      pass: ["application/json", "text/*", "multipart/*"],
+      json_decoder: Jason
+    ))
+  end
+
+  # ============================================================================
+  # MCP Endpoint (Model Context Protocol — Streamable HTTP transport)
+  # ============================================================================
+
+  forward "/mcp", to: Giulia.Daemon.Plugs.McpForward
 
   # ============================================================================
   # Sub-Router Forwards
