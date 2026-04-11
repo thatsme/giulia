@@ -22,9 +22,9 @@ defmodule Giulia.Persistence.Store do
   require Logger
 
   # v2: added {:mtime, file_path} keys, fixed hash/AST desync from write storm.
-  # v3: AST data shape change — moduledoc now preserves `false` instead of
-  #     converting to nil, so @moduledoc false is distinguishable from missing.
-  @schema_version 3
+  # v3: AST data shape change — moduledoc preserves `false` (not nil).
+  # v4: fix Enum.find_value silently dropping false (falsy) — use reduce_while.
+  @schema_version 4
 
   # Client API
 

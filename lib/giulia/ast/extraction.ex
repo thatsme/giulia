@@ -98,18 +98,24 @@ defmodule Giulia.AST.Extraction do
   defp extract_moduledoc_from_body(_), do: nil
 
   defp extract_moduledoc_from_ast({:__block__, _, statements}) when is_list(statements) do
-    Enum.find_value(statements, fn
-      # Standard string
-      {:@, _, [{:moduledoc, _, [doc]}]} when is_binary(doc) -> doc
-      # Sourceror wraps strings in __block__
-      {:@, _, [{:moduledoc, _, [{:__block__, _, [doc]}]}]} when is_binary(doc) -> doc
-      # Sigil S
-      {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc]}, []]}]}]} when is_binary(doc) -> doc
-      # @moduledoc false — intentionally undocumented (preserve as false, not nil)
-      {:@, _, [{:moduledoc, _, [false]}]} -> false
-      {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} -> false
-      _ -> nil
-    end)
+    # Can't use Enum.find_value here because false is falsy and would be skipped.
+    # Use Enum.reduce_while with {:found, value} tuples instead.
+    result =
+      Enum.reduce_while(statements, nil, fn stmt, _acc ->
+        case stmt do
+          {:@, _, [{:moduledoc, _, [doc]}]} when is_binary(doc) -> {:halt, {:found, doc}}
+          {:@, _, [{:moduledoc, _, [{:__block__, _, [doc]}]}]} when is_binary(doc) -> {:halt, {:found, doc}}
+          {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc]}, []]}]}]} when is_binary(doc) -> {:halt, {:found, doc}}
+          {:@, _, [{:moduledoc, _, [false]}]} -> {:halt, {:found, false}}
+          {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} -> {:halt, {:found, false}}
+          _ -> {:cont, nil}
+        end
+      end)
+
+    case result do
+      {:found, value} -> value
+      nil -> nil
+    end
   end
 
   defp extract_moduledoc_from_ast({:@, _, [{:moduledoc, _, [doc]}]}) when is_binary(doc), do: doc
