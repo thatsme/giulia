@@ -100,11 +100,12 @@ defmodule Giulia.Knowledge.Conventions do
   end
 
   # Rule: Every module gets @moduledoc
+  # Note: @moduledoc false is a valid declaration ("intentionally undocumented")
   defp check_missing_moduledoc(modules, file) do
     modules
     |> Enum.filter(fn m ->
       doc = m[:moduledoc] || m.moduledoc
-      is_nil(doc) or doc == "" or doc == false
+      is_nil(doc) or doc == ""
     end)
     |> Enum.map(fn m ->
       violation(
