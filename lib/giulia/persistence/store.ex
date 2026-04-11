@@ -21,7 +21,10 @@ defmodule Giulia.Persistence.Store do
 
   require Logger
 
-  @schema_version 1
+  # Bumped v1→v2: added {:mtime, file_path} keys, invalidates caches with
+  # hash/AST desync from the pre-fix write storm (restore_from_cache was
+  # re-persisting current-disk hashes alongside stale cached ASTs).
+  @schema_version 2
 
   # Client API
 

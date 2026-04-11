@@ -24,8 +24,8 @@ defmodule Giulia.Persistence.Writer do
   @doc "Queue an AST entry for batched write-behind."
   @spec persist_ast(String.t(), String.t(), map()) :: :ok
   def persist_ast(project_path, file_path, ast_data) do
-    content_hash = file_content_hash(file_path)
-    GenServer.cast(__MODULE__, {:persist_ast, project_path, file_path, ast_data, content_hash})
+    {content_hash, mtime} = file_content_hash_and_mtime(file_path)
+    GenServer.cast(__MODULE__, {:persist_ast, project_path, file_path, ast_data, content_hash, mtime})
   end
 
   @doc "Delete all cached data for a project."
@@ -74,10 +74,10 @@ defmodule Giulia.Persistence.Writer do
 
   @impl true
   @spec handle_cast(term(), map()) :: {:noreply, map()}
-  def handle_cast({:persist_ast, project_path, file_path, ast_data, content_hash}, state) do
+  def handle_cast({:persist_ast, project_path, file_path, ast_data, content_hash, mtime}, state) do
     # Accumulate in pending map
     project_pending = Map.get(state.pending, project_path, %{})
-    project_pending = Map.put(project_pending, file_path, {ast_data, content_hash})
+    project_pending = Map.put(project_pending, file_path, {ast_data, content_hash, mtime})
     pending = Map.put(state.pending, project_path, project_pending)
 
     # Reset debounce timer
@@ -216,10 +216,11 @@ defmodule Giulia.Persistence.Writer do
         {:ok, db} ->
           # Build batch: AST entries + content hashes
           entries =
-            Enum.flat_map(file_map, fn {file_path, {ast_data, content_hash}} ->
+            Enum.flat_map(file_map, fn {file_path, {ast_data, content_hash, mtime}} ->
               [
                 {{:ast, file_path}, ast_data},
-                {{:content_hash, file_path}, content_hash}
+                {{:content_hash, file_path}, content_hash},
+                {{:mtime, file_path}, mtime}
               ]
             end)
 
@@ -256,7 +257,7 @@ defmodule Giulia.Persistence.Writer do
     tree =
       if existing_tree do
         # Update each changed leaf
-        Enum.reduce(file_map, existing_tree, fn {file_path, {ast_data, _hash}}, tree ->
+        Enum.reduce(file_map, existing_tree, fn {file_path, {ast_data, _hash, _mtime}}, tree ->
           Giulia.Persistence.Merkle.update_leaf(tree, file_path, ast_data)
         end)
       else
@@ -274,10 +275,19 @@ defmodule Giulia.Persistence.Writer do
       Logger.warning("Merkle tree update failed: #{Exception.message(e)}")
   end
 
-  defp file_content_hash(file_path) do
-    case File.read(file_path) do
-      {:ok, content} -> :crypto.hash(:sha256, content)
-      {:error, _} -> nil
-    end
+  defp file_content_hash_and_mtime(file_path) do
+    hash =
+      case File.read(file_path) do
+        {:ok, content} -> :crypto.hash(:sha256, content)
+        {:error, _} -> nil
+      end
+
+    mtime =
+      case File.stat(file_path) do
+        {:ok, %{mtime: m}} -> m
+        _ -> nil
+      end
+
+    {hash, mtime}
   end
 end

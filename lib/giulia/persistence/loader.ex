@@ -249,11 +249,27 @@ defmodule Giulia.Persistence.Loader do
 
   defp file_changed?(db, file_path) do
     stored_hash = CubDB.get(db, {:content_hash, file_path})
+    stored_mtime = CubDB.get(db, {:mtime, file_path})
 
-    case File.read(file_path) do
-      {:ok, content} ->
-        current_hash = :crypto.hash(:sha256, content)
-        stored_hash != current_hash
+    case File.stat(file_path) do
+      {:ok, %{mtime: current_mtime}} ->
+        # Primary check: mtime (fast, no file read, immune to hash/AST desync)
+        mtime_changed = stored_mtime != nil and stored_mtime != current_mtime
+
+        if mtime_changed do
+          # mtime differs → file definitely changed, skip expensive hash check
+          true
+        else
+          # mtime matches or not tracked (legacy data) → verify via content hash
+          case File.read(file_path) do
+            {:ok, content} ->
+              current_hash = :crypto.hash(:sha256, content)
+              stored_hash != current_hash
+
+            {:error, _} ->
+              true
+          end
+        end
 
       {:error, _} ->
         true
