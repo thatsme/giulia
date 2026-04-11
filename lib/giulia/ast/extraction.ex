@@ -105,9 +105,9 @@ defmodule Giulia.AST.Extraction do
       {:@, _, [{:moduledoc, _, [{:__block__, _, [doc]}]}]} when is_binary(doc) -> doc
       # Sigil S
       {:@, _, [{:moduledoc, _, [{:sigil_S, _, [{:<<>>, _, [doc]}, []]}]}]} when is_binary(doc) -> doc
-      # false (no doc)
-      {:@, _, [{:moduledoc, _, [false]}]} -> nil
-      {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} -> nil
+      # @moduledoc false — intentionally undocumented (preserve as false, not nil)
+      {:@, _, [{:moduledoc, _, [false]}]} -> false
+      {:@, _, [{:moduledoc, _, [{:__block__, _, [false]}]}]} -> false
       _ -> nil
     end)
   end
@@ -621,7 +621,7 @@ defmodule Giulia.AST.Extraction do
   @doc """
   Extract @moduledoc from a module.
   """
-  @spec extract_moduledoc(Macro.t()) :: String.t() | nil
+  @spec extract_moduledoc(Macro.t()) :: String.t() | false | nil
   def extract_moduledoc(ast) do
     try do
       {_ast, moduledoc} = Macro.prewalk(ast, nil, fn node, acc ->
@@ -648,10 +648,7 @@ defmodule Giulia.AST.Extraction do
         end
       end)
 
-      case moduledoc do
-        false -> nil
-        doc -> doc
-      end
+      moduledoc
     rescue
       _ -> nil
     catch
