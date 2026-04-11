@@ -14,12 +14,24 @@ defmodule Giulia.Knowledge.Conventions do
   All functions are stateless — they take a `project_path` and return computed results.
   """
 
-  # OTP/framework callbacks that should be excluded from certain checks
+  # OTP/framework callbacks that should be excluded from missing @spec checks.
+  # These have their specs defined by the behaviour — flagging them is a false positive.
   @implicit_callbacks MapSet.new([
+    # GenServer / Supervisor / Application
     {:init, 1}, {:handle_call, 3}, {:handle_cast, 2}, {:handle_info, 2},
     {:handle_continue, 2}, {:terminate, 2}, {:code_change, 3},
-    {:start, 2}, {:stop, 1}, {:child_spec, 1}, {:call, 2}, {:main, 1},
+    {:config_change, 3}, {:start, 2}, {:stop, 1}, {:child_spec, 1},
+    {:start_link, 0}, {:start_link, 1},
+    # Plug / Phoenix
+    {:call, 2}, {:mount, 3}, {:render, 1},
+    {:handle_event, 3}, {:handle_params, 3}, {:handle_async, 3},
+    {:handle_in, 3}, {:handle_out, 3},
+    {:join, 3}, {:connect, 2}, {:id, 1},
+    # Ecto
     {:changeset, 1}, {:changeset, 2},
+    # Escript / Mix tasks
+    {:main, 1}, {:run, 1},
+    # Tool/framework conventions
     {:name, 0}, {:description, 0}, {:parameters, 0}
   ])
 
