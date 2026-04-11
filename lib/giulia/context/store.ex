@@ -76,7 +76,20 @@ defmodule Giulia.Context.Store do
   # ============================================================================
 
   @doc """
-  Store a file's AST metadata, scoped to a project.
+  Restore a file's AST metadata into ETS from cache (read path).
+  Does NOT trigger CubDB persistence — the data is already on disk.
+  Used by Loader.restore_from_cache for unchanged files.
+  """
+  @spec restore_ast(project_path(), file_path(), ast_data()) :: :ok
+  def restore_ast(project_path, path, ast_data) do
+    :ets.insert(@table, {{:ast, project_path, path}, ast_data})
+    :ok
+  end
+
+  @doc """
+  Store a file's AST metadata, scoped to a project (write path).
+  Writes to ETS and persists to CubDB with content hash update.
+  Used for new or changed files after scanning.
   """
   @spec put_ast(project_path(), file_path(), ast_data()) :: :ok
   def put_ast(project_path, path, ast_data) do

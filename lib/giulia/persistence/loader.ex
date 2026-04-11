@@ -191,9 +191,10 @@ defmodule Giulia.Persistence.Loader do
         Logger.info("Cache restore: #{length(new_files)} new files detected on disk")
       end
 
-      # Restore valid entries to ETS
+      # Restore valid (unchanged) entries to ETS only — no CubDB write-back.
+      # These are already persisted on disk with correct hashes.
       Enum.each(restored, fn {file_path, ast_data} ->
-        Giulia.Context.Store.put_ast(project_path, file_path, ast_data)
+        Giulia.Context.Store.restore_ast(project_path, file_path, ast_data)
       end)
 
       # Restore project files list
