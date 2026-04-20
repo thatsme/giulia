@@ -7,7 +7,7 @@ how to contribute and what to expect from the process.
 
 ## Before You Start
 
-Giulia is a local-first AI development agent built on Elixir/OTP. Contributions
+Giulia is a local-first code intelligence daemon built on Elixir/OTP. Contributions
 are welcome, but please understand the project's philosophy before proposing changes:
 
 - **OTP first** — state lives in GenServers and ETS, not in chat history
@@ -174,5 +174,5 @@ reviews contributions personally.
 
 ---
 
-*Giulia — The BEAM-native AI development agent.*
+*Giulia — The BEAM-native code intelligence daemon.*
 *Copyright 2026 Alessio Battistutta — Apache License 2.0*

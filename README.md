@@ -6,7 +6,7 @@
 
 ![Giulia Blast Radius](docs/screenshot/blast_radius.jpg)
 
-Giulia is a high-performance, local-first AI development agent built in Elixir/OTP. It runs as a persistent background daemon with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration.
+Giulia is a persistent, local-first code intelligence daemon built in Elixir/OTP. It runs as a long-lived background process with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration. No LLM inside -- pure deterministic analysis that AI assistants query for structured data.
 
 ## Why Giulia Exists
 

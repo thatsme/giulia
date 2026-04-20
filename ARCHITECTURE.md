@@ -8,7 +8,7 @@
 
 ## 1. Overview
 
-Giulia is a high-performance, local-first AI development agent built in Elixir/OTP.
+Giulia is a persistent, local-first code intelligence daemon built in Elixir/OTP.
 It runs as a persistent background daemon inside Docker, exposing an HTTP REST API
 on port 4000. Any client -- Claude Code, a CLI escript, an editor plugin -- talks
 to the daemon over plain HTTP/JSON. The daemon never restarts between terminal
