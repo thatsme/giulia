@@ -6,7 +6,9 @@
 
 ![Giulia Blast Radius](docs/screenshot/blast_radius.jpg)
 
-Giulia is a persistent, local-first code intelligence daemon built in Elixir/OTP. It runs as a long-lived background process with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration. No LLM inside -- pure deterministic analysis that AI assistants query for structured data.
+> **Giulia is read-only.** It scans and analyzes your codebase but **never modifies your files**. No LLM inside, no autonomous actions, no code generation. It reads source files, builds data structures in memory, and serves structured data over HTTP. The only thing it writes to disk is its own cache (`.giulia/cache/`).
+
+Giulia is a persistent, local-first code intelligence daemon built in Elixir/OTP. It runs as a long-lived background process with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration.
 
 ## Why Giulia Exists
 
