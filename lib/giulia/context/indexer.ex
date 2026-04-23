@@ -365,12 +365,23 @@ defmodule Giulia.Context.Indexer do
   end
 
   defp should_ignore?(file_path) do
-    # Check if path contains any ignored directory
+    # Check if path contains any ignored directory. `@ignore_dirs` may
+    # hold single-segment entries ("node_modules") OR multi-segment
+    # entries ("priv/static/assets"). For single-segment entries a split-
+    # and-match is enough; for multi-segment entries we need to look for
+    # the slash-wrapped substring because Path.split would never produce
+    # a single part equal to a compound path.
     path_parts = Path.split(file_path)
 
-    dir_ignored = Enum.any?(@ignore_dirs, fn ignored_dir ->
-      ignored_dir in path_parts
-    end)
+    dir_ignored =
+      Enum.any?(@ignore_dirs, fn ignored_dir ->
+        if String.contains?(ignored_dir, "/") do
+          String.contains?(file_path, "/" <> ignored_dir <> "/") or
+            String.ends_with?(file_path, "/" <> ignored_dir)
+        else
+          ignored_dir in path_parts
+        end
+      end)
 
     # Check if file matches any ignored pattern
     pattern_ignored = Enum.any?(@ignore_patterns, fn pattern ->
