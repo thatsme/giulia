@@ -791,6 +791,42 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     end
   end
 
+  # -------------------------------------------------------------------
+  # GET /api/knowledge/verify_l3 — Sample-identity check L1→L3 CALLS
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Verify function-level :calls edges round-trip from L1 (libgraph) to L3 (ArcadeDB). Stratified sample across resolution-path buckets; surfaces silent mismatches between stores.",
+    endpoint: "GET /api/knowledge/verify_l3",
+    params: %{path: :required, sample_per_bucket: :optional},
+    returns: "JSON report with per-bucket {ok, missing, errors} counts and overall pass/fail",
+    category: "knowledge"
+  }
+  get "/verify_l3" do
+    case resolve_project_path(conn) do
+      nil ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
+
+      project_path ->
+        sample_per_bucket =
+          case conn.query_params["sample_per_bucket"] do
+            nil ->
+              10
+
+            s ->
+              case Integer.parse(s) do
+                {n, _} -> n
+                :error -> 10
+              end
+          end
+
+        case Giulia.Storage.Arcade.Verifier.verify(project_path,
+               sample_per_bucket: sample_per_bucket) do
+          {:ok, report} -> send_json(conn, 200, report)
+          {:error, reason} -> send_json(conn, 500, %{error: "verify failed", detail: inspect(reason)})
+        end
+    end
+  end
+
   # Parse suppress param: "rule:Mod1,Mod2;rule2:Mod3,Mod4" -> %{"rule" => ["Mod1","Mod2"], ...}
   @spec parse_suppress(String.t() | nil) :: map()
   defp parse_suppress(nil), do: %{}
