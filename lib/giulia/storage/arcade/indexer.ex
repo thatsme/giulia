@@ -45,12 +45,14 @@ defmodule Giulia.Storage.Arcade.Indexer do
          :ok <- Client.ensure_schema(),
          {:ok, modules} <- Store.all_modules(project_path),
          {:ok, functions} <- Store.all_functions(project_path),
-         {:ok, edges} <- Store.all_dependencies(project_path) do
+         {:ok, module_edges} <- Store.all_dependencies(project_path),
+         {:ok, function_call_edges} <- Store.all_function_call_edges(project_path) do
 
       results = %{
         modules: write_modules(project_path, modules, build_id),
         functions: write_functions(project_path, functions, build_id),
-        edges: write_edges(project_path, edges, build_id)
+        module_edges: write_module_edges(project_path, module_edges, build_id),
+        function_call_edges: write_function_call_edges(project_path, function_call_edges, build_id)
       }
 
       elapsed = System.monotonic_time(:millisecond) - start
@@ -101,16 +103,43 @@ defmodule Giulia.Storage.Arcade.Indexer do
     count_results(results)
   end
 
-  defp write_edges(project, edges, build_id) do
-    results = Enum.map(edges, fn {from, to, type} ->
-      case type do
-        :depends_on -> Client.insert_dependency(project, from, to, build_id)
-        :calls -> Client.insert_call(project, from, to, build_id)
-        _ -> {:ok, :skipped}
-      end
-    end)
+  # Module-level edges only. L3 has explicit types for :depends_on and
+  # :implements; module-level :calls (from promote_function_edges_to_module)
+  # are *synthesized* for L1 queries and intentionally not persisted — the
+  # authoritative CALLS data lives at function level. Same for :references
+  # and :semantic, which are L1-only signals today.
+  defp write_module_edges(project, edges, build_id) do
+    {written, dropped} =
+      Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
+        case type do
+          :depends_on ->
+            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
 
-    count_results(results)
+          :implements ->
+            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
+
+          other ->
+            {writes, Map.update(drops, other, 1, &(&1 + 1))}
+        end
+      end)
+
+    if map_size(dropped) > 0 do
+      Logger.debug(
+        "[Arcade.Indexer] Module-edge types intentionally not persisted to L3: #{inspect(dropped)}"
+      )
+    end
+
+    Map.put(count_results(written), :dropped_by_type, dropped)
+  end
+
+  # Function-level :calls edges. These are the authoritative CALLS edges per
+  # the L3 schema (CALLS runs between Function vertices).
+  defp write_function_call_edges(project, edges, build_id) do
+    edges
+    |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
+      Client.insert_call(project, from_mfa, to_mfa, build_id)
+    end)
+    |> count_results()
   end
 
   defp count_results(results) do

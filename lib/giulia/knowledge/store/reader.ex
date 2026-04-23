@@ -310,36 +310,50 @@ defmodule Giulia.Knowledge.Store.Reader do
   All dependency edges in the graph as a list of `{from, to, type}` tuples.
 
   Returns `{:ok, [{"Giulia.Foo", "Giulia.Bar", :depends_on}, ...]}`.
-  Only includes module-level edges (:depends_on, :calls, :implements).
+  Only includes module-level edges (:depends_on, :calls, :implements,
+  :references, :semantic).
   """
   @spec all_dependencies(String.t()) :: {:ok, [{String.t(), String.t(), atom()}]}
   def all_dependencies(project_path) do
+    {:ok, edges_between(project_path, :module)}
+  end
+
+  @doc """
+  All function-level :calls edges in the graph as MFA→MFA tuples.
+
+  Returns `{:ok, [{"Foo.bar/2", "Baz.qux/1", :calls}, ...]}`.
+  Only includes edges where both endpoints are :function vertices. This is
+  the edge set that L3 CALLS ingestion expects (per Arcade schema, CALLS
+  edges run between Function vertices, not Module vertices).
+  """
+  @spec all_function_call_edges(String.t()) :: {:ok, [{String.t(), String.t(), atom()}]}
+  def all_function_call_edges(project_path) do
+    edges = edges_between(project_path, :function) |> Enum.filter(fn {_, _, l} -> l == :calls end)
+    {:ok, edges}
+  end
+
+  # Enumerate edges whose both endpoints have the given vertex label.
+  defp edges_between(project_path, vertex_label) do
     graph = get_graph(project_path)
 
-    # Only module-level vertices for dependency edges
-    module_set =
+    vertex_set =
       graph
       |> Graph.vertices()
-      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> Enum.filter(fn v -> vertex_label in Graph.vertex_labels(graph, v) end)
       |> MapSet.new()
 
-    edges =
-      graph
-      |> Graph.edges()
-      |> Enum.filter(fn edge ->
-        edge.v1 in module_set and edge.v2 in module_set
-      end)
-      |> Enum.map(fn edge ->
-        label =
-          case edge.label do
-            {:semantic, _reason} -> :semantic
-            other -> other
-          end
+    graph
+    |> Graph.edges()
+    |> Enum.filter(fn edge -> edge.v1 in vertex_set and edge.v2 in vertex_set end)
+    |> Enum.map(fn edge ->
+      label =
+        case edge.label do
+          {:semantic, _reason} -> :semantic
+          other -> other
+        end
 
-        {edge.v1, edge.v2, label}
-      end)
-
-    {:ok, edges}
+      {edge.v1, edge.v2, label}
+    end)
   end
 
   # --- Helpers for bulk extraction ---
