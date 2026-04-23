@@ -792,13 +792,13 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   end
 
   # -------------------------------------------------------------------
-  # GET /api/knowledge/verify_l2 — Round-trip check L1 graph ↔ L2 CubDB
+  # GET /api/knowledge/verify_l2 — Round-trip checks L1 ETS ↔ L2 CubDB
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Verify the live L1 graph matches the CubDB-persisted L2 graph after serialization round-trip. Vertex parity + edge parity + stratified per-label sample identity.",
+    intent: "Verify L1 (ETS) matches L2 (CubDB) for the graph, AST, and/or metrics payloads after serialization round-trip. Parity + stratified sample identity per payload.",
     endpoint: "GET /api/knowledge/verify_l2",
-    params: %{path: :required, sample_per_label: :optional},
-    returns: "JSON report with vertex_parity, edge_parity, sample_identity per label, and overall pass/fail",
+    params: %{path: :required, check: :optional, sample_per_label: :optional},
+    returns: "JSON report with per-payload checks and an overall pass/fail. `check` ∈ graph | ast | metrics | all (default all).",
     category: "knowledge"
   }
   get "/verify_l2" do
@@ -807,23 +807,63 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         send_json(conn, 400, %{error: "Missing required query param: path"})
 
       project_path ->
-        sample_per_label =
-          case conn.query_params["sample_per_label"] do
-            nil ->
-              10
+        sample = parse_int(conn.query_params["sample_per_label"], 10)
+        check = conn.query_params["check"] || "all"
 
-            s ->
-              case Integer.parse(s) do
-                {n, _} -> n
-                :error -> 10
-              end
-          end
+        results = run_l2_checks(project_path, check, sample)
+        status = if Enum.any?(results, fn {_, r} -> r[:overall] == :fail end), do: "fail", else: "pass"
 
-        case Giulia.Persistence.Verifier.verify_graph(project_path,
-               sample_per_label: sample_per_label) do
-          {:ok, report} -> send_json(conn, 200, report)
-          {:error, reason} -> send_json(conn, 500, %{error: "verify failed", detail: inspect(reason)})
-        end
+        send_json(conn, 200, %{project: project_path, overall: status, checks: Map.new(results)})
+    end
+  end
+
+  defp run_l2_checks(project, "graph", sample) do
+    [{:graph, run_graph(project, sample)}]
+  end
+
+  defp run_l2_checks(project, "ast", sample) do
+    [{:ast, run_ast(project, sample)}]
+  end
+
+  defp run_l2_checks(project, "metrics", _sample) do
+    [{:metrics, run_metrics(project)}]
+  end
+
+  defp run_l2_checks(project, _all, sample) do
+    [
+      {:graph, run_graph(project, sample)},
+      {:ast, run_ast(project, sample)},
+      {:metrics, run_metrics(project)}
+    ]
+  end
+
+  defp run_graph(project, sample) do
+    case Giulia.Persistence.Verifier.verify_graph(project, sample_per_label: sample) do
+      {:ok, r} -> r
+      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
+    end
+  end
+
+  defp run_ast(project, sample) do
+    case Giulia.Persistence.Verifier.verify_ast(project, sample_size: sample) do
+      {:ok, r} -> r
+      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
+    end
+  end
+
+  defp run_metrics(project) do
+    case Giulia.Persistence.Verifier.verify_metrics(project) do
+      {:ok, r} -> r
+      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
+    end
+  end
+
+  defp parse_int(nil, default), do: default
+
+  defp parse_int(s, default) do
+    case Integer.parse(s) do
+      {n, _} -> n
+      :error -> default
     end
   end
 
