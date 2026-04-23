@@ -792,6 +792,42 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   end
 
   # -------------------------------------------------------------------
+  # GET /api/knowledge/verify_l2 — Round-trip check L1 graph ↔ L2 CubDB
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Verify the live L1 graph matches the CubDB-persisted L2 graph after serialization round-trip. Vertex parity + edge parity + stratified per-label sample identity.",
+    endpoint: "GET /api/knowledge/verify_l2",
+    params: %{path: :required, sample_per_label: :optional},
+    returns: "JSON report with vertex_parity, edge_parity, sample_identity per label, and overall pass/fail",
+    category: "knowledge"
+  }
+  get "/verify_l2" do
+    case resolve_project_path(conn) do
+      nil ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
+
+      project_path ->
+        sample_per_label =
+          case conn.query_params["sample_per_label"] do
+            nil ->
+              10
+
+            s ->
+              case Integer.parse(s) do
+                {n, _} -> n
+                :error -> 10
+              end
+          end
+
+        case Giulia.Persistence.Verifier.verify_graph(project_path,
+               sample_per_label: sample_per_label) do
+          {:ok, report} -> send_json(conn, 200, report)
+          {:error, reason} -> send_json(conn, 500, %{error: "verify failed", detail: inspect(reason)})
+        end
+    end
+  end
+
+  # -------------------------------------------------------------------
   # GET /api/knowledge/verify_l3 — Sample-identity check L1→L3 CALLS
   # -------------------------------------------------------------------
   @skill %{
