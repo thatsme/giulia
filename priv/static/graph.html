@@ -208,12 +208,14 @@
     document.getElementById('build-label').textContent = 'Build ' + (m ? m[1] : v);
   }).catch(function(){});
 
-  // Discover projects from index status
+  // Discover all active project contexts
   function loadProjects() {
-    fetch('/api/index/status')
+    fetch('/api/projects')
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (d.project_path) addProject(d.project_path);
+        (d.projects || []).forEach(function(p) {
+          if (p.path && p.alive !== false) addProject(p.path);
+        });
       }).catch(function() {});
   }
 
