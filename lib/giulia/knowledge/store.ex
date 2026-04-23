@@ -327,6 +327,14 @@ defmodule Giulia.Knowledge.Store do
   # Private ETS write helpers
   # ============================================================================
 
+  @doc "Return every project_path that has a graph stored in memory."
+  @spec list_projects() :: [project_path()]
+  def list_projects do
+    @table
+    |> :ets.match({{:graph, :"$1"}, :_})
+    |> List.flatten()
+  end
+
   defp ets_get_graph(project_path) do
     case :ets.lookup(@table, {:graph, project_path}) do
       [{_, graph}] -> graph

@@ -161,14 +161,24 @@ defmodule Giulia.Daemon.Endpoint do
     send_json(conn, 200, status)
   end
 
-  # List projects
+  # List projects — union of supervised ProjectContexts (from /api/init) and
+  # scanned-only projects that have graph data but no ProjectContext yet.
   get "/api/projects" do
-    projects =
+    supervised =
       Enum.map(Giulia.Core.ContextManager.list_projects(), fn project ->
         Map.update(project, :pid, nil, &inspect/1)
       end)
 
-    send_json(conn, 200, %{projects: projects})
+    supervised_paths = MapSet.new(supervised, & &1.path)
+
+    scanned_extras =
+      Giulia.Knowledge.Store.list_projects()
+      |> Enum.reject(&MapSet.member?(supervised_paths, &1))
+      |> Enum.map(fn path ->
+        %{path: path, pid: nil, alive: true, started_at: nil, source: :scanned}
+      end)
+
+    send_json(conn, 200, %{projects: supervised ++ scanned_extras})
   end
 
   # Initialize project
