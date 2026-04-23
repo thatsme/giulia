@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 155 · v0.2.2 · 2026-03-28
+> **Document version**: Build 155 · v0.2.2 · 2026-04-23
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -116,7 +116,8 @@ Giulia.Supervisor (:one_for_one)
 |   |-- Tools.Registry (auto-discovers tool modules on boot)
 |   |-- Context.Indexer (background AST scanner, Task.async_stream)
 |   |-- Knowledge.Store (libgraph in-memory directed graph)
-|   |-- Storage.Arcade.Indexer (L2 graph sync on {:graph_ready})
+|   |-- Persistence.WarmRestore (boot-time L2→L1 restore, non-blocking)
+|   |-- Storage.Arcade.Indexer (L3 graph sync on {:graph_ready})
 |   +-- Storage.Arcade.Consolidator (periodic cross-build analysis)
 |
 |-- TIER 2: Heavy (skipped when GIULIA_ROLE=monitor)
@@ -194,6 +195,14 @@ On-disk key-value store for surviving restarts without re-scanning.
   files by comparing SHA-256 content hashes of source files against stored hashes.
   Stale entries trigger incremental re-scanning rather than a full rebuild.
 
+- **WarmRestore**: `Persistence.WarmRestore` is the startup driver. On boot it
+  walks `/projects/*` (and `GIULIA_PROJECTS_PATH` if set) for directories
+  containing the role-specific `.giulia/cache/cubdb[_<role>]/` layout and
+  calls `Loader.restore_graph/1` + `restore_metrics/1` for each. The work runs
+  in `handle_info(:run, _)` scheduled from `init/1` via `send/2` so supervisor
+  start isn't blocked on I/O. This is what keeps `/api/projects` populated
+  across `docker compose restart` without forcing a scan.
+
 - **Merkle tree**: `Persistence.Merkle` builds a SHA-256 Merkle tree over all cached
   entries. Used for integrity verification (`POST /api/index/verify`) and detecting
   corruption (if build version mismatches, the entire L2 cache is discarded and a
@@ -242,6 +251,13 @@ with live runtime data from the BEAM VM.
     v
 Sourceror.parse_string/1        (pure Elixir AST parser)
     |
+    v
+Giulia.AST.Extraction           Macro.traverse/4 with enclosing-module
+    |                           stack — recognizes defmodule / defprotocol
+    |                           / defimpl; nested names qualified
+    |                           (Outer.Inner, three levels deep);
+    |                           function_info carries :module so sibling
+    |                           modules don't collapse on {name, arity}
     v
 Context.Store (ETS)             {:ast, project_path, file_path}
     |                           modules, functions, specs, structs
@@ -601,3 +617,60 @@ The topology endpoint combines data from three sources in a single call:
 
 Both dashboards share a navigation bar for switching between Monitor and Graph
 Explorer views.
+
+
+## 11. Correctness-Floor Invariants
+
+Giulia enforces cross-store sync and extraction-output stability through three
+test-surface layers that ship alongside the code. Each catches a different
+class of regression that property-style or example-style tests miss on their
+own.
+
+### L1↔L2↔L3 Verifier Endpoints
+
+`Giulia.Persistence.Verifier` and `Giulia.Storage.Arcade.Verifier` implement
+round-trip integrity checks between the three storage tiers. They're exposed
+both as HTTP endpoints for live-daemon use and as mix-test jobs for CI:
+
+- `GET /api/knowledge/verify_l2?path=...&check=all` — L1 ETS ↔ L2 CubDB
+  round-trip for graph, AST, and metric caches. Vertex-set parity, edge-count
+  parity, and stratified sample identity per payload.
+- `GET /api/knowledge/verify_l3?path=...&sample_per_bucket=N` — L1 → L3
+  ArcadeDB CALLS. Stratified sample across `:via` buckets (`:direct`,
+  `:alias_resolved`, `:erlang_atom`, `:local`) plus a `?`/`!` orthogonal
+  cross-cut, and total-count parity.
+- `test/giulia/persistence/verifier_test.exs` (11 tests) and
+  `test/giulia/storage/arcade/verifier_test.exs` (4 tests) drive the same
+  verifier functions from mix test, with both happy-path assertions and
+  drift-detection cases (deliberately corrupted L2/L3 state that the
+  verifier must classify correctly).
+
+### Filter-Accountability Regression Tests
+
+For every filter predicate in a cross-store pipeline, both sides are tested:
+**drop-side fixtures** parametric over the filter's criteria, AND
+**pass-through fixtures** strictly larger than the drop set. Pass-through is
+what catches silent over-match — a predicate that rejects more than it claims
+to. Applied to four surfaces, this pattern caught 11 distinct silent-over-match
+bugs on first run (`Indexer.ignored?/1` multi-segment dir, `ToolSchema.mcp_
+compatible?/1` `/stream` substring, `Conventions.check_try_rescue_flow_control/
+3` source-text `String.contains?`, `Topology.fuzzy_score/2` empty-needle
+`String.contains?(_, "") == true`).
+
+### Property Tests + Golden Fixtures
+
+`StreamData` properties cover the pure-function layer: `Knowledge.Builder.
+build_graph/1` (determinism, module vertex parity, function vertex coverage,
+label sanity), `Topology.fuzzy_score/2` (bounded tier set, empty-needle
+absorbent, reflexive 100), `Conventions.walk_ast/3` (determinism, no-crash on
+generated Elixir, violations well-formed), and the extraction passes
+themselves (module/function shape, per-module attribution).
+
+Golden fixtures in `test/fixtures/extraction/` freeze the full `file_info`
+output from `Processor.analyze/2` for six curated source cases (predicate/
+bang names, default args, moduledoc variants, framework callbacks, protocols
++ defimpl, nested modules, macros + guards). Any drift in extraction output
+produces a visible diff against the frozen `.expected.exs` that the reviewer
+must ratify. Regeneration: `GOLDEN_UPDATE=1 mix test test/giulia/ast/golden_
+fixtures_test.exs`.
+

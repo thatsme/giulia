@@ -1,6 +1,6 @@
 # Giulia
 
-> **Build 155** · v0.2.1 · 2026-03-28
+> **Build 155** · v0.2.2 · 2026-04-23
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
@@ -149,10 +149,11 @@ Highlights from the self-analysis:
 ## Project Status
 
 - **Build**: 155
-- **Tests**: 1,732 tests
+- **Tests**: 1,875 unit/integration tests + 13 StreamData property tests + 6 golden-fixture tests for extraction output
+- **Cross-store invariants**: `GET /api/knowledge/verify_l2` and `verify_l3` endpoints run on every mix-test invocation, with drift-detection tests that tamper L2/L3 state and assert the verifier catches the mismatch
 - **API**: 83 self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
 - **MCP**: Native Model Context Protocol server — 74 tools + 5 resource templates, bearer token auth
-- **Storage**: Three-tier (ETS L1 + CubDB warm start + ArcadeDB L2)
+- **Storage**: Three-tier (ETS L1 + CubDB L2 + ArcadeDB L3) with startup warm-restore from L2 so `/api/projects` stays populated across `docker compose restart`
 - **Containers**: Dual-container architecture (worker + monitor)
 - **Visualization**: Logic Monitor (SSE) + Graph Explorer (Cytoscape.js)
 
