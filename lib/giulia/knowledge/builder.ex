@@ -593,15 +593,14 @@ defmodule Giulia.Knowledge.Builder do
   # Collect the set of project-module names reachable as __aliases__ atoms
   # anywhere in the AST.
   defp extract_module_references(ast, caller_module, all_modules) do
+    prefixes = caller_namespace_prefixes(caller_module)
+
     {_ast, refs} =
       Macro.prewalk(ast, MapSet.new(), fn
         {:__aliases__, _meta, parts} = node, set when is_list(parts) ->
-          mod = resolve_module_parts(parts, caller_module)
-
-          if MapSet.member?(all_modules, mod) do
-            {node, MapSet.put(set, mod)}
-          else
-            {node, set}
+          case resolve_with_fallback(parts, caller_module, prefixes, all_modules) do
+            {:ok, mod} -> {node, MapSet.put(set, mod)}
+            :not_found -> {node, set}
           end
 
         node, set ->
@@ -609,6 +608,36 @@ defmodule Giulia.Knowledge.Builder do
       end)
 
     refs
+  end
+
+  # Resolve __aliases__ parts to a project module. If the direct name isn't
+  # in all_modules, try prepending the caller's parent namespaces (deepest
+  # first). Handles Phoenix `scope "/", App do ...Controller end`, Ecto
+  # `has_many :posts, Post`, and any other same-app short-form references.
+  defp resolve_with_fallback(parts, caller_module, prefixes, all_modules) do
+    direct = resolve_module_parts(parts, caller_module)
+
+    if MapSet.member?(all_modules, direct) do
+      {:ok, direct}
+    else
+      Enum.find_value(prefixes, :not_found, fn prefix ->
+        candidate = "#{prefix}.#{direct}"
+        if MapSet.member?(all_modules, candidate), do: {:ok, candidate}, else: nil
+      end)
+    end
+  end
+
+  # Parent-namespace prefixes of a module, deepest first.
+  # "AlexClawWeb.Router" → ["AlexClawWeb"]
+  # "AlexClaw.Web.Api.Router" → ["AlexClaw.Web.Api", "AlexClaw.Web", "AlexClaw"]
+  # "AlexClaw" → []
+  defp caller_namespace_prefixes(caller_module) do
+    parts = String.split(caller_module, ".")
+
+    case length(parts) do
+      n when n <= 1 -> []
+      n -> for i <- (n - 1)..1//-1, do: parts |> Enum.take(i) |> Enum.join(".")
+    end
   end
 
   # Walk AST to find defdelegate ... to: Module targets
