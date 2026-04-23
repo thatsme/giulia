@@ -656,14 +656,42 @@ defmodule Giulia.Knowledge.Metrics do
     |> Map.new()
   end
 
-  # Walk all source files to collect function calls: remote (Module.func) and local (func)
-  defp collect_all_calls(all_asts) do
-    Enum.reduce(all_asts, MapSet.new(), fn {path, data}, acc ->
-      module_name = case data[:modules] do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
+  # Walk all source files to collect function calls: remote (Module.func) and local (func).
+  #
+  # Two bugs previously lived here, both the same "first module wins"
+  # class the Builder refactor closed elsewhere (commit 7792107):
+  #
+  # 1. Files with multiple top-level `defmodule` blocks attributed every
+  #    local call to the FIRST module. `Plausible.HTTPClient` (file has
+  #    three defmodules) saw its `defp call/5` callers tagged under the
+  #    first module (`Non200Error`) — dead_code then looked up
+  #    {HTTPClient, :local, call, 5} and missed, flagging the function
+  #    as dead despite obvious same-module callers.
+  # 2. Multi-segment aliases weren't resolved. `alias Plausible.Ingestion`
+  #    in a caller lets it reference `Ingestion.Request.build(...)`; the
+  #    old code stored that as {"Ingestion.Request", "build", 1} because
+  #    the alias map only indexed single-segment short names. dead_code's
+  #    full-qualified lookup ({"Plausible.Ingestion.Request", ...}) missed.
+  #
+  # Fix for (1): `Macro.traverse/4` with an enclosing-module stack, same
+  # pattern as `Giulia.AST.Extraction.extract_functions/1`. Fix for (2):
+  # resolve the first segment of `parts` through the alias map, then
+  # prepend the resolved full name to the remaining segments.
+  @local_call_exclusions [
+    :def, :defp, :defmodule, :defmacro, :defmacrop,
+    :defdelegate, :defguard, :defguardp,
+    :if, :unless, :case, :cond, :with, :for, :fn,
+    :quote, :unquote, :import, :alias, :use, :require,
+    :raise, :reraise, :throw, :try, :receive, :send,
+    :spawn, :spawn_link, :super, :__block__, :__aliases__,
+    :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
+    :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
+    :sigil_r, :sigil_s, :sigil_c, :sigil_w
+  ]
 
+  @doc false
+  def collect_all_calls(all_asts) do
+    Enum.reduce(all_asts, MapSet.new(), fn {path, data}, acc ->
       # Build alias map: "Schema" → "Realm.Compute.Schema"
       alias_map =
         (data[:imports] || [])
@@ -673,45 +701,28 @@ defmodule Giulia.Knowledge.Metrics do
           {short, imp.module}
         end)
 
-      # Read source from disk — ETS stores metadata, not raw source
-      source = case File.read(path) do
-        {:ok, content} -> content
-        _ -> ""
-      end
+      # Read source from disk — ETS stores metadata, not raw source.
+      source =
+        case File.read(path) do
+          {:ok, content} -> content
+          _ -> ""
+        end
 
       case Sourceror.parse_string(source) do
         {:ok, ast} ->
-          {_ast, calls} =
-            Macro.prewalk(ast, acc, fn
-              # Remote call: Module.func(args) — resolve aliases
-              {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, set
-              when is_atom(func_name) and is_list(args) ->
-                raw_mod = Enum.map_join(parts, ".", &safe_part_to_string/1)
-                mod = Map.get(alias_map, raw_mod, raw_mod)
-                {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
+          fallback_module =
+            case data[:modules] do
+              [%{name: name} | _] -> name
+              _ -> "Unknown"
+            end
 
-              # Remote call with full Elixir module: Elixir.Module.func(args)
-              {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
-              when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
-                mod = String.replace_leading(Atom.to_string(mod_atom), "Elixir.", "")
-                {node, MapSet.put(set, {mod, to_string(func_name), length(args)})}
-
-              # Local call: func(args) — track with module context
-              {func_name, _meta, args} = node, set
-              when is_atom(func_name) and is_list(args) and
-                   func_name not in [:def, :defp, :defmodule, :defmacro, :defmacrop,
-                                     :if, :unless, :case, :cond, :with, :for, :fn,
-                                     :quote, :unquote, :import, :alias, :use, :require,
-                                     :raise, :reraise, :throw, :try, :receive, :send,
-                                     :spawn, :spawn_link, :super, :__block__, :__aliases__,
-                                     :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
-                                     :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
-                                     :sigil_r, :sigil_s, :sigil_c, :sigil_w] ->
-                {node, MapSet.put(set, {module_name, :local, to_string(func_name), length(args)})}
-
-              node, set ->
-                {node, set}
-            end)
+          {_ast, {calls, _stack}} =
+            Macro.traverse(
+              ast,
+              {acc, []},
+              fn node, state -> call_traverse_pre(node, state, alias_map, fallback_module) end,
+              &call_traverse_post/2
+            )
 
           calls
 
@@ -719,6 +730,133 @@ defmodule Giulia.Knowledge.Metrics do
           acc
       end
     end)
+  end
+
+  defp call_traverse_pre(node, {set, stack} = state, alias_map, fallback_module) do
+    case safe_module_local_name(node) do
+      {:ok, local_name} ->
+        full_name = join_name(stack, local_name)
+        {node, {set, [full_name | stack]}}
+
+      :skip ->
+        current_module = List.first(stack) || fallback_module
+
+        case classify_call(node, alias_map, current_module) do
+          {:ok, entry} -> {node, {MapSet.put(set, entry), stack}}
+          :skip -> {node, state}
+        end
+    end
+  end
+
+  defp call_traverse_post(node, {set, stack}) do
+    case safe_module_local_name(node) do
+      {:ok, _} ->
+        case stack do
+          [_ | rest] -> {node, {set, rest}}
+          [] -> {node, {set, []}}
+        end
+
+      :skip ->
+        {node, {set, stack}}
+    end
+  end
+
+  # Narrow-scope detector of the same module-producing nodes
+  # `Extraction.module_node_info/1` handles. Kept local here rather than
+  # duplicating the full return-shape — we only need the local name.
+  defp safe_module_local_name({:defmodule, _meta, [{:__aliases__, _, parts} | _]})
+       when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp safe_module_local_name({:defmodule, _meta, [atom_name | _]}) when is_atom(atom_name) do
+    {:ok, Atom.to_string(atom_name)}
+  end
+
+  defp safe_module_local_name({:defprotocol, _meta, [{:__aliases__, _, parts} | _]})
+       when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp safe_module_local_name(
+         {:defimpl, _meta, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | _]}
+       )
+       when is_list(proto_parts) do
+    if for_key == :for or match?({:__block__, _, [:for]}, for_key) do
+      proto = proto_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+
+      case type_ast_parts(type_ast) do
+        {:ok, type_name} -> {:ok, "#{proto}.#{type_name}"}
+        :skip -> :skip
+      end
+    else
+      :skip
+    end
+  end
+
+  defp safe_module_local_name(_), do: :skip
+
+  defp type_ast_parts({:__aliases__, _, parts}) when is_list(parts),
+    do: {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+
+  defp type_ast_parts({:__block__, _, [{:__aliases__, _, parts}]}) when is_list(parts),
+    do: {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+
+  defp type_ast_parts(atom) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+
+  defp type_ast_parts({:__block__, _, [atom]}) when is_atom(atom),
+    do: {:ok, Atom.to_string(atom)}
+
+  defp type_ast_parts(_), do: :skip
+
+  defp join_name([], local), do: local
+  defp join_name([top | _], local), do: "#{top}.#{local}"
+
+  # Classify a non-module node as a remote call / local call / skip.
+  defp classify_call(
+         {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args},
+         alias_map,
+         _current_module
+       )
+       when is_atom(func_name) and is_list(args) do
+    {:ok, {resolve_alias(parts, alias_map), to_string(func_name), length(args)}}
+  end
+
+  defp classify_call(
+         {{:., _, [mod_atom, func_name]}, _meta, args},
+         _alias_map,
+         _current_module
+       )
+       when is_atom(mod_atom) and is_atom(func_name) and is_list(args) do
+    mod = String.replace_leading(Atom.to_string(mod_atom), "Elixir.", "")
+    {:ok, {mod, to_string(func_name), length(args)}}
+  end
+
+  defp classify_call({func_name, _meta, args}, _alias_map, current_module)
+       when is_atom(func_name) and is_list(args) and func_name not in @local_call_exclusions do
+    {:ok, {current_module, :local, to_string(func_name), length(args)}}
+  end
+
+  defp classify_call(_node, _alias_map, _current_module), do: :skip
+
+  # Resolve a multi-segment alias reference. `alias Plausible.Ingestion`
+  # makes `Ingestion.Request` mean `Plausible.Ingestion.Request` — the
+  # old code only indexed single-segment short names, so multi-segment
+  # references fell through and landed in the call-set under the
+  # unresolved short form.
+  defp resolve_alias(parts, alias_map) do
+    raw_segments = Enum.map(parts, &safe_part_to_string/1)
+
+    case raw_segments do
+      [first | rest] ->
+        case Map.get(alias_map, first) do
+          nil -> Enum.join(raw_segments, ".")
+          full -> Enum.join([full | rest], ".")
+        end
+
+      [] ->
+        ""
+    end
   end
 
   # Check if a function is called with any arity (handles default arguments)

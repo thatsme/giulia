@@ -3,6 +3,136 @@ defmodule Giulia.Knowledge.MetricsTest do
 
   alias Giulia.Knowledge.Metrics
 
+  describe "collect_all_calls/1 — module-stack regression" do
+    # Regression for the "first module wins" bug that caused dead_code
+    # to flag live same-module calls in files with multiple top-level
+    # `defmodule` blocks (observed in Plausible.HTTPClient, three
+    # defmodules in one file — see commit <post-11ccbd3>).
+    @tmp_dir Path.join(System.tmp_dir!(), "giulia_metrics_collect_calls_test")
+
+    setup do
+      File.mkdir_p!(@tmp_dir)
+      on_exit(fn -> File.rm_rf!(@tmp_dir) end)
+      :ok
+    end
+
+    defp write_fixture!(filename, contents) do
+      path = Path.join(@tmp_dir, filename)
+      File.write!(path, contents)
+      path
+    end
+
+    test "local calls are attributed to the enclosing defmodule, not the file-first module" do
+      source = """
+      defmodule Fixtures.First do
+        def only_in_first, do: :ok
+      end
+
+      defmodule Fixtures.Second do
+        def entry, do: helper(:payload)
+
+        defp helper(x) do
+          x |> transform() |> finalize()
+        end
+
+        defp transform(x), do: {:transformed, x}
+        defp finalize(x), do: {:final, x}
+      end
+      """
+
+      path = write_fixture!("multi_module.ex", source)
+
+      ast_data = %{
+        modules: [
+          %{name: "Fixtures.First", line: 1, moduledoc: nil, impl_for: nil},
+          %{name: "Fixtures.Second", line: 5, moduledoc: nil, impl_for: nil}
+        ],
+        imports: []
+      }
+
+      calls = Metrics.collect_all_calls(%{path => ast_data})
+
+      # The local pipe chain inside Fixtures.Second must attribute
+      # to Fixtures.Second, not the file-first Fixtures.First.
+      assert {"Fixtures.Second", :local, "helper", 1} in calls,
+             "helper/1 local call should be under Fixtures.Second"
+
+      assert {"Fixtures.Second", :local, "transform", 1} in calls,
+             "transform/1 should be under Fixtures.Second, not First"
+
+      assert {"Fixtures.Second", :local, "finalize", 1} in calls,
+             "finalize/1 should be under Fixtures.Second, not First"
+
+      # And must NOT be attributed to Fixtures.First (which was the
+      # pre-fix behavior — file-first module grabbed every local call).
+      refute {"Fixtures.First", :local, "helper", 1} in calls
+      refute {"Fixtures.First", :local, "transform", 1} in calls
+    end
+
+    test "multi-segment aliases resolve through the first segment" do
+      # Regression for `Ingestion.Request.build(...)` under
+      # `alias Plausible.Ingestion` — the old alias map only indexed
+      # single-segment shorts, so multi-segment references landed in
+      # the call-set under the unresolved form and dead_code missed.
+      source = """
+      defmodule Caller do
+        alias Plausible.Ingestion
+
+        def run(conn), do: Ingestion.Request.build(conn)
+      end
+      """
+
+      path = write_fixture!("multi_alias.ex", source)
+
+      ast_data = %{
+        modules: [%{name: "Caller", line: 1, moduledoc: nil, impl_for: nil}],
+        imports: [%{module: "Plausible.Ingestion", type: :alias, line: 2}]
+      }
+
+      calls = Metrics.collect_all_calls(%{path => ast_data})
+
+      assert {"Plausible.Ingestion.Request", "build", 1} in calls,
+             "multi-segment alias must resolve first segment: " <>
+               "Ingestion.Request.build → Plausible.Ingestion.Request.build"
+
+      refute {"Ingestion.Request", "build", 1} in calls,
+             "unresolved form must not appear — dead_code would miss the lookup"
+    end
+
+    test "defimpl module body gets the impl-module name on its stack" do
+      # Without the stack, local calls inside `defimpl` get attributed
+      # to the enclosing `defmodule` (or the file-first module). With
+      # the stack, they get the Proto.Type composite name.
+      source = """
+      defimpl Jason.Encoder, for: SomeType do
+        def encode(value, opts), do: serialize(value, opts)
+
+        defp serialize(value, _opts), do: inspect(value)
+      end
+      """
+
+      path = write_fixture!("defimpl_body.ex", source)
+
+      ast_data = %{
+        modules: [
+          %{
+            name: "Jason.Encoder.SomeType",
+            line: 1,
+            moduledoc: nil,
+            impl_for: "Jason.Encoder"
+          }
+        ],
+        imports: []
+      }
+
+      calls = Metrics.collect_all_calls(%{path => ast_data})
+
+      assert {"Jason.Encoder.SomeType", :local, "serialize", 2} in calls,
+             "serialize/2 local call inside defimpl must attribute to " <>
+               "Jason.Encoder.SomeType"
+    end
+  end
+
   describe "coupling_from_calls/1" do
     test "groups call triples into coupling pairs" do
       triples = [
