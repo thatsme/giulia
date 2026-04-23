@@ -45,12 +45,23 @@ defmodule Giulia.Storage.Arcade.Client do
     body = %{command: "create database #{db()}"}
 
     case Req.post(url, json: body, auth: {:basic, "#{user()}:#{password()}"}, receive_timeout: @default_timeout) do
-      {:ok, %{status: 200}} -> :ok
-      # Already exists — not an error
-      {:ok, %{status: 500, body: %{"detail" => detail}}} when is_binary(detail) ->
-        if String.contains?(detail, "already exists"), do: :ok, else: {:error, detail}
-      {:ok, %{status: status, body: resp}} -> {:error, {status, resp}}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: 200}} ->
+        :ok
+
+      # Already exists — not an error. ArcadeDB returns 400 in current
+      # versions and 500 in older ones; match on the detail string rather
+      # than the status code so we survive future server-side changes.
+      {:ok, %{status: status, body: %{"detail" => detail}}}
+      when status in [400, 500] and is_binary(detail) ->
+        if String.contains?(detail, "already exists"),
+          do: :ok,
+          else: {:error, {status, detail}}
+
+      {:ok, %{status: status, body: resp}} ->
+        {:error, {status, resp}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
