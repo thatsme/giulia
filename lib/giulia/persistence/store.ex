@@ -26,7 +26,8 @@ defmodule Giulia.Persistence.Store do
   # v4: fix Enum.find_value silently dropping false (falsy) — use reduce_while.
   # v5: function_info gains :min_arity — tracks default-arg arities for graph.
   # v6: mix.exs included in scan + references pass for framework wiring.
-  @schema_version 6
+  # v7: :calls edges carry {:calls, via} label with resolution-path metadata.
+  @schema_version 7
 
   # Client API
 

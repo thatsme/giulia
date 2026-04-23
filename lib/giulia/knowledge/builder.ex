@@ -323,7 +323,7 @@ defmodule Giulia.Knowledge.Builder do
       callee = String.replace_leading(Atom.to_string(callee_mod), "Elixir.", "")
 
       if Graph.has_vertex?(g, caller) and Graph.has_vertex?(g, callee) and caller != callee do
-        Graph.add_edge(g, caller, callee, label: :calls)
+        Graph.add_edge(g, caller, callee, label: {:calls, :xref})
       else
         g
       end
@@ -385,8 +385,7 @@ defmodule Giulia.Knowledge.Builder do
           arity = if is_list(args), do: length(args), else: 0
           caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
           calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
-          existing = Map.get(acc, caller_mfa, MapSet.new())
-          {node, Map.put(acc, caller_mfa, MapSet.union(existing, calls))}
+          {node, merge_calls(acc, caller_mfa, calls)}
 
         # Match def/defp with guard clause: def foo(x) when is_integer(x)
         {def_type, _meta, [{:when, _, [{func_name, _fn_meta, args} | _guards]}, body]} = node, acc
@@ -394,19 +393,21 @@ defmodule Giulia.Knowledge.Builder do
           arity = if is_list(args), do: length(args), else: 0
           caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
           calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
-          existing = Map.get(acc, caller_mfa, MapSet.new())
-          {node, Map.put(acc, caller_mfa, MapSet.union(existing, calls))}
+          {node, merge_calls(acc, caller_mfa, calls)}
 
         node, acc ->
           {node, acc}
       end)
 
-    # Add edges for all discovered caller→callee relationships
+    # Add edges for all discovered caller→callee relationships.
+    # Each edge is labeled {:calls, via} where via ∈ :direct | :alias_resolved
+    # | :erlang_atom | :local, recording how the target module resolved at
+    # extraction time. Used by the stratified sample-identity check in L3.
     Enum.reduce(func_call_map, graph, fn {caller_mfa, call_targets}, g ->
       if Graph.has_vertex?(g, caller_mfa) do
-        Enum.reduce(call_targets, g, fn target_mfa, g2 ->
+        Enum.reduce(call_targets, g, fn {target_mfa, via}, g2 ->
           if target_mfa != caller_mfa and Graph.has_vertex?(g2, target_mfa) do
-            Graph.add_edge(g2, caller_mfa, target_mfa, label: :calls)
+            Graph.add_edge(g2, caller_mfa, target_mfa, label: {:calls, via})
           else
             g2
           end
@@ -417,35 +418,48 @@ defmodule Giulia.Knowledge.Builder do
     end)
   end
 
-  # Walk a function body AST and collect all call targets as MFA strings
+  # First-writer-wins merge of per-caller call-target maps.
+  defp merge_calls(acc, caller_mfa, new_calls) do
+    Map.update(acc, caller_mfa, new_calls, fn existing ->
+      Map.merge(existing, new_calls, fn _k, v, _v -> v end)
+    end)
+  end
+
+  # Walk a function body AST and collect all call targets.
+  # Returns %{target_mfa => via} where via ∈ :direct | :alias_resolved
+  # | :erlang_atom | :local. First-writer-wins if the same target appears
+  # through multiple paths.
   defp extract_calls_from_body(body, caller_module, alias_map, all_modules) do
     {_body, calls} =
-      Macro.prewalk(body, MapSet.new(), fn
+      Macro.prewalk(body, %{}, fn
         # Remote call: Module.func(args) — resolve aliases
-        {{:., _, [{:__aliases__, _meta, parts}, func_name]}, _call_meta, args} = node, set
+        {{:., _, [{:__aliases__, _meta, parts}, func_name]}, _call_meta, args} = node, acc
         when is_atom(func_name) and is_list(args) ->
           raw_mod = resolve_module_parts(parts, caller_module)
           mod = Map.get(alias_map, raw_mod, raw_mod)
+
           if MapSet.member?(all_modules, mod) do
             target_mfa = "#{mod}.#{func_name}/#{length(args)}"
-            {node, MapSet.put(set, target_mfa)}
+            via = if mod == raw_mod, do: :direct, else: :alias_resolved
+            {node, Map.put_new(acc, target_mfa, via)}
           else
-            {node, set}
+            {node, acc}
           end
 
         # Remote call with atom module: :erlang.func(args)
-        {{:., _, [mod_atom, func_name]}, _meta, args} = node, set
+        {{:., _, [mod_atom, func_name]}, _meta, args} = node, acc
         when is_atom(mod_atom) and is_atom(func_name) and is_list(args) ->
           mod = String.replace_leading(Atom.to_string(mod_atom), "Elixir.", "")
+
           if MapSet.member?(all_modules, mod) do
             target_mfa = "#{mod}.#{func_name}/#{length(args)}"
-            {node, MapSet.put(set, target_mfa)}
+            {node, Map.put_new(acc, target_mfa, :erlang_atom)}
           else
-            {node, set}
+            {node, acc}
           end
 
         # Local call: func(args) — same module
-        {local_name, _meta, args} = node, set
+        {local_name, _meta, args} = node, acc
         when is_atom(local_name) and is_list(args) and
              local_name not in [:def, :defp, :defmodule, :defmacro, :defmacrop,
                                 :if, :unless, :case, :cond, :with, :for, :fn,
@@ -456,10 +470,10 @@ defmodule Giulia.Knowledge.Builder do
                                 :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
                                 :sigil_r, :sigil_s, :sigil_c, :sigil_w] ->
           target_mfa = "#{caller_module}.#{local_name}/#{length(args)}"
-          {node, MapSet.put(set, target_mfa)}
+          {node, Map.put_new(acc, target_mfa, :local)}
 
-        node, set ->
-          {node, set}
+        node, acc ->
+          {node, acc}
       end)
 
     calls
@@ -476,7 +490,7 @@ defmodule Giulia.Knowledge.Builder do
 
     graph
     |> Graph.edges()
-    |> Enum.filter(fn edge -> edge.label == :calls end)
+    |> Enum.filter(fn edge -> match?({:calls, _}, edge.label) end)
     |> Enum.reduce(graph, fn edge, g ->
       caller_mod = extract_module_from_mfa(edge.v1)
       callee_mod = extract_module_from_mfa(edge.v2)
@@ -488,7 +502,7 @@ defmodule Giulia.Knowledge.Builder do
          Graph.has_vertex?(g, caller_mod) &&
          Graph.has_vertex?(g, callee_mod) &&
          not has_module_edge?(g, caller_mod, callee_mod) do
-        Graph.add_edge(g, caller_mod, callee_mod, label: :calls)
+        Graph.add_edge(g, caller_mod, callee_mod, label: {:calls, :promoted})
       else
         g
       end

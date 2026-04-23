@@ -332,8 +332,37 @@ defmodule Giulia.Knowledge.Store.Reader do
     {:ok, edges}
   end
 
-  # Enumerate edges whose both endpoints have the given vertex label.
+  @doc """
+  All function-level :calls edges with resolution-path (`via`) metadata.
+
+  Returns `{:ok, [{from_mfa, to_mfa, :calls, via}, ...]}` where via records
+  how the target module was resolved at extraction time — one of
+  :direct | :alias_resolved | :erlang_atom | :local. Used by the stratified
+  sample-identity check to cover the high-risk resolution buckets.
+  """
+  @spec all_function_call_edges_with_via(String.t()) ::
+          {:ok, [{String.t(), String.t(), atom(), atom()}]}
+  def all_function_call_edges_with_via(project_path) do
+    edges =
+      edges_between_raw(project_path, :function)
+      |> Enum.flat_map(fn {v1, v2, raw_label} ->
+        case raw_label do
+          {:calls, via} -> [{v1, v2, :calls, via}]
+          _ -> []
+        end
+      end)
+
+    {:ok, edges}
+  end
+
+  # Enumerate edges whose both endpoints have the given vertex label,
+  # normalizing compound labels back to the atom head for public 3-tuple API.
   defp edges_between(project_path, vertex_label) do
+    edges_between_raw(project_path, vertex_label)
+    |> Enum.map(fn {v1, v2, raw_label} -> {v1, v2, normalize_label(raw_label)} end)
+  end
+
+  defp edges_between_raw(project_path, vertex_label) do
     graph = get_graph(project_path)
 
     vertex_set =
@@ -345,16 +374,12 @@ defmodule Giulia.Knowledge.Store.Reader do
     graph
     |> Graph.edges()
     |> Enum.filter(fn edge -> edge.v1 in vertex_set and edge.v2 in vertex_set end)
-    |> Enum.map(fn edge ->
-      label =
-        case edge.label do
-          {:semantic, _reason} -> :semantic
-          other -> other
-        end
-
-      {edge.v1, edge.v2, label}
-    end)
+    |> Enum.map(fn edge -> {edge.v1, edge.v2, edge.label} end)
   end
+
+  defp normalize_label({:semantic, _reason}), do: :semantic
+  defp normalize_label({:calls, _via}), do: :calls
+  defp normalize_label(other), do: other
 
   # --- Helpers for bulk extraction ---
 
