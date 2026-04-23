@@ -20,14 +20,16 @@ defmodule Giulia.Storage.Arcade.IndexerTest do
 
       assert result.modules.ok == 0
       assert result.functions.ok == 0
-      assert result.edges.ok == 0
+      assert result.function_call_edges.ok == 0
+      assert result.module_edges.ok == 0
     end
 
     test "returns ok tuple with module/function/edge counts" do
       {:ok, result} = Indexer.snapshot("/test/indexer_shape", 138)
       assert is_map(result.modules)
       assert is_map(result.functions)
-      assert is_map(result.edges)
+      assert is_map(result.function_call_edges)
+      assert is_map(result.module_edges)
       assert Map.has_key?(result.modules, :ok)
       assert Map.has_key?(result.modules, :error)
     end
