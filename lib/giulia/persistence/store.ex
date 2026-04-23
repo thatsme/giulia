@@ -27,7 +27,23 @@ defmodule Giulia.Persistence.Store do
   # v5: function_info gains :min_arity — tracks default-arg arities for graph.
   # v6: mix.exs included in scan + references pass for framework wiring.
   # v7: :calls edges carry {:calls, via} label with resolution-path metadata.
-  @schema_version 7
+  # v8: GRAPH-COMPLETENESS FIX (commits 7792107 / 6da8764 / 9d5cb1e).
+  #     Three AST walkers (Extraction, Metrics.collect_all_calls,
+  #     Builder.add_function_call_edges) had the same "first-module-wins"
+  #     bug for multi-defmodule files + single-segment-only alias
+  #     resolution. Fixed with Macro.traverse + module-stack and
+  #     resolve_alias_prefix. Quantified impact on analytics-master
+  #     (Plausible, 466 files): +319 call edges (+5.6%), −176 components,
+  #     −66 dead_code false positives. Top change_risk / heatmap / SCC
+  #     findings unchanged (bug was in bridge edges, not hub-of-hubs
+  #     edges), but pre_impact_check and tail-rank analyses were
+  #     undercounted. Bumping v8 forces cold rescan on next load —
+  #     cached graphs from v7 are known-incomplete.
+  # `module_info` gains :impl_for (commit 11ccbd3) for protocol-dispatch
+  # edge synthesis; `function_info` gains :module (commit 7792107).
+  # Cached AST data shape is compatible with v7 via fallbacks in
+  # Builder/Query, but cached graphs are not — force the bump.
+  @schema_version 8
 
   # Client API
 

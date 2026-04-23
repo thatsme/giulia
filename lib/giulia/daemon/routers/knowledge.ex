@@ -511,7 +511,21 @@ defmodule Giulia.Daemon.Routers.Knowledge do
 
       case Giulia.Knowledge.Store.pre_impact_check(resolved_path, conn.body_params) do
         {:ok, result} ->
-          send_json(conn, 200, result)
+          # Stamp the result with the schema version of the extractor +
+          # graph-builder that produced it. Agents calling this endpoint
+          # in automated refactor-safety loops can compare against a
+          # known-complete version (v8, the graph-completeness fix) to
+          # decide whether the caller set is trustworthy. Pre-v8 answers
+          # undercounted callers for modules reached through aliased
+          # calls — see CHANGELOG.md v0.2.2.
+          result_with_version =
+            Map.put(
+              result,
+              :schema_version,
+              Giulia.Persistence.Store.schema_version()
+            )
+
+          send_json(conn, 200, result_with_version)
 
         {:error, {:not_found, vertex}} ->
           send_json(conn, 404, %{error: "Vertex not found in graph", vertex: vertex})
