@@ -102,7 +102,10 @@ defmodule Giulia.MixProject do
       {:burrito, "~> 1.0", runtime: false},
 
       # MCP (Model Context Protocol) server
-      {:anubis_mcp, "~> 1.0"}
+      {:anubis_mcp, "~> 1.0"},
+
+      # Property-based testing (test-only)
+      {:stream_data, "~> 1.1", only: [:dev, :test], runtime: false}
     ]
   end
 end
