@@ -6,11 +6,11 @@ using Giulia's API. It is the canonical reference for both human operators and A
 ## Prerequisites
 
 1. Giulia daemon running (`GET /health` returns `status: ok`)
-2. Project scanned (`POST /api/index/scan` with project path)
-3. Wait for scan completion — poll `GET /api/index/status?path=...` until `state: idle`
+2. Project scanned (`POST /api/index/scan` with project path). A 422 response means the path is missing, not a directory, or lacks a project marker (mix.exs / GIULIA.md / package.json / Cargo.toml / go.mod) — fix the input before retrying.
+3. Wait for scan completion — poll `GET /api/index/status?path=...` until `state` is `idle` OR `empty`. Both are terminal; `empty` means the scan completed with zero indexed files (wrong subdirectory, over-aggressive ignore rules, or a deps-only project) and downstream steps will return empty/zero results. Stop and investigate rather than polling further.
 4. Knowledge graph built — verify `GET /api/knowledge/stats?path=...` returns `vertices > 0`
 
-If the graph has 0 vertices after scan, the graph builder crashed. Check daemon logs.
+If the graph has 0 vertices after scan, either the indexer produced zero files (`state: empty` — see step 3) or the graph builder crashed. Check daemon logs.
 
 ---
 

@@ -65,7 +65,7 @@ Lifecycle, status, and project management endpoints. These are core daemon route
 | Daemon status | `GET /api/status` | Node name, started_at, uptime, active project count |
 | Ping project | `POST /api/ping` | Check if a project is initialized without triggering inference. Body: `{"path":"P"}`. Returns `ok`, `needs_init`, or `error` |
 | List active projects | `GET /api/projects` | All projects currently loaded in the daemon |
-| Initialize project | `POST /api/init` | Load a project into the daemon. Body: `{"path":"P"}` — creates ProjectContext, scans GIULIA.md |
+| Initialize project | `POST /api/init` | Load a project into the daemon. Body: `{"path":"P"}` — creates ProjectContext, scans GIULIA.md. Returns 422 if `:path` is missing or does not resolve to a real directory. |
 | Debug path mappings | `GET /api/debug/paths` | Shows host↔container path translations and `in_container` flag |
 
 ### 1. Understanding Code
@@ -83,7 +83,7 @@ Use these to inspect modules, functions, types, and dependencies before making c
 | Semantic search | `GET /api/search/semantic?path=P&concept=Q&top_k=N` | Top N modules + functions ranked by cosine similarity to concept Q (Bumblebee embeddings) |
 | Semantic index status | `GET /api/search/semantic/status?path=P` | Module/function vector counts, availability |
 | What X depends on | `GET /api/knowledge/dependencies?path=P&module=X` | Upstream dependencies |
-| Index status | `GET /api/index/status?path=P` | Scanning state, file count, last scan time, cache_status, merkle_root |
+| Index status | `GET /api/index/status?path=P` | State (`idle` / `scanning` / `empty`), file count, last scan time, cache_status, merkle_root. `empty` means the scan completed but found zero source files — wrong path or over-aggressive ignore rules. |
 
 ### 2. Analyzing Impact
 
@@ -309,7 +309,7 @@ Staging buffer for atomic multi-file changes with compile-check gates.
 
 | Intent | Method |
 |--------|--------|
-| Re-index after file changes | `POST /api/index/scan` with `{"path":"P"}` — cache-aware: only re-scans changed files |
+| Re-index after file changes | `POST /api/index/scan` with `{"path":"P"}` — cache-aware: only re-scans changed files. Returns 422 if the path is missing, not a directory, or lacks a project marker (mix.exs, GIULIA.md, package.json, Cargo.toml, go.mod). |
 | Verify cache integrity | `POST /api/index/verify` with `{"path":"P"}` — Merkle tree recomputation |
 | Compact cache | `POST /api/index/compact` with `{"path":"P"}` — reclaim CubDB disk space |
 | Check behaviour contracts | `GET /api/knowledge/integrity?path=P` |
