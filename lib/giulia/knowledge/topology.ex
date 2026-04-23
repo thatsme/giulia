@@ -280,8 +280,18 @@ defmodule Giulia.Knowledge.Topology do
     |> Enum.reject(fn {_name, targets} -> targets == [] end)
   end
 
-  # Simple fuzzy scoring: substring match + bonus for matching final segment
-  defp fuzzy_score(haystack, needle) do
+  # Simple fuzzy scoring: substring match + bonus for matching final segment.
+  #
+  # Empty needle is rejected unconditionally — `String.contains?(x, "")`
+  # is `true` for every `x` (empty string is a substring of every
+  # string), so without the guard every haystack would score 50 and the
+  # top-5 suggestion list in `impact_map/3` would fill with arbitrary
+  # modules. See `test/giulia/knowledge/topology_test.exs` for the
+  # regression fixtures.
+  @doc false
+  def fuzzy_score(_haystack, ""), do: 0
+
+  def fuzzy_score(haystack, needle) do
     cond do
       haystack == needle -> 100
       String.contains?(haystack, needle) -> 50
@@ -291,7 +301,10 @@ defmodule Giulia.Knowledge.Topology do
     end
   end
 
-  defp last_segment_match?(haystack, needle) do
+  @doc false
+  def last_segment_match?(_haystack, ""), do: false
+
+  def last_segment_match?(haystack, needle) do
     h_parts = String.split(haystack, ".")
     n_parts = String.split(needle, ".")
     last_h = List.last(h_parts) || ""
@@ -299,7 +312,10 @@ defmodule Giulia.Knowledge.Topology do
     String.contains?(last_h, last_n) or String.contains?(last_n, last_h)
   end
 
-  defp segments_overlap?(haystack, needle) do
+  @doc false
+  def segments_overlap?(_haystack, ""), do: false
+
+  def segments_overlap?(haystack, needle) do
     h_parts = MapSet.new(String.split(haystack, "."))
     n_parts = String.split(needle, ".")
     Enum.any?(n_parts, fn part ->

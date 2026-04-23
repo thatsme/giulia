@@ -186,4 +186,190 @@ defmodule Giulia.Knowledge.TopologyTest do
       assert length(hd(result.cycles)) == 2
     end
   end
+
+  # ============================================================================
+  # fuzzy_score/2 — filter-accountability
+  #
+  # Scoring tiers: 100 (exact), 50 (substring), 30 (last-segment match),
+  # 10 (any segment overlap), 0 (no match). `fuzzy_score/2` drives the
+  # "did you mean?" suggestion list in `impact_map/3` when the requested
+  # vertex is missing, so silent over-match here surfaces as garbage
+  # suggestions. Helpers (`last_segment_match?/2`, `segments_overlap?/2`)
+  # were exposed `@doc false` alongside `fuzzy_score/2` for test
+  # harnessing.
+  # ============================================================================
+
+  describe "fuzzy_score/2 — drop-side accountability" do
+    # Each fixture is {haystack, needle, expected_score}. The haystacks
+    # are pre-downcased because `impact_map/3` downcases both sides
+    # before scoring.
+    @drop_fixtures [
+      {"giulia.knowledge.topology", "giulia.knowledge.topology", 100},
+      {"giulia.knowledge.topology", "topology", 50},
+      {"giulia.knowledge.topology", "knowledge", 50},
+      {"giulia.knowledge.topology", "giulia", 50},
+      {"foo.bar.baz", "bar", 50},
+      # Last-segment match requires identical (or bidirectional
+      # substring) final segments.
+      {"foo.bar", "quux.bar", 30},
+      {"alpha.beta.gamma", "x.y.gamma", 30},
+      # Shared middle segment — only segments_overlap fires.
+      {"foo.bar", "bar.quux", 10},
+      {"alpha.beta.gamma", "x.gamma.y", 10}
+    ]
+
+    for {haystack, needle, expected} <- @drop_fixtures do
+      @tag haystack: haystack, needle: needle
+      test "scores #{inspect(needle)} vs #{inspect(haystack)} as #{expected}",
+           %{haystack: haystack, needle: needle} do
+        assert Topology.fuzzy_score(haystack, needle) == unquote(expected),
+               "fuzzy_score(#{inspect(haystack)}, #{inspect(needle)}) produced " <>
+                 inspect(Topology.fuzzy_score(haystack, needle)) <>
+                 " — expected #{unquote(expected)}"
+      end
+    end
+  end
+
+  describe "fuzzy_score/2 — pass-through accountability" do
+    # Each fixture is {haystack, needle}. Must score 0 — no match of any
+    # tier. Pathological cases are the silent-over-match bait: a naive
+    # `String.contains?(haystack, "")` returns true for any haystack
+    # (empty string is a substring of every string), so an empty needle
+    # would wrongly score 50 and poison the top-5 fuzzy suggestion list
+    # with arbitrary modules.
+    @pass_through_fixtures [
+      # Completely unrelated tokens — baseline sanity.
+      {"foo", "xyz"},
+      {"alpha", "beta"},
+      {"enum", "registry"},
+      {"mymod.foo", "otherns.bar"},
+      # No shared segments, no substring, no last-segment overlap.
+      {"a.b.c", "x.y.z"},
+      {"alpha.beta", "gamma.delta"},
+      # Disjoint despite shared initial letters.
+      {"store", "search"},
+      {"router", "repository"},
+      {"indexer", "inspector"},
+      # PATHOLOGICAL: empty needle. `String.contains?(x, "") == true`
+      # would wrongly return score 50 for any haystack. An empty needle
+      # is never a meaningful query.
+      {"any.module", ""},
+      {"foo", ""},
+      {"alpha.beta.gamma", ""}
+    ]
+
+    for {haystack, needle} <- @pass_through_fixtures do
+      @tag haystack: haystack, needle: needle
+      test "scores 0 for #{inspect(needle)} vs #{inspect(haystack)}",
+           %{haystack: haystack, needle: needle} do
+        assert Topology.fuzzy_score(haystack, needle) == 0,
+               "fuzzy_score(#{inspect(haystack)}, #{inspect(needle)}) wrongly scored " <>
+                 inspect(Topology.fuzzy_score(haystack, needle)) <>
+                 " — pass-through fixture should score 0"
+      end
+    end
+
+    test "pass-through fixtures outnumber drop fixtures" do
+      assert length(@pass_through_fixtures) > length(@drop_fixtures)
+    end
+  end
+
+  describe "last_segment_match?/2 — accountability" do
+    # Last-segment matches are bidirectional substring checks on the
+    # final `.`-delimited segments. Documents the intentional fuzziness
+    # (e.g. `B` ⊆ `BarBaz` produces a match) and guards against
+    # empty-needle over-match.
+    test "matches identical last segments" do
+      assert Topology.last_segment_match?("foo.bar", "baz.bar")
+    end
+
+    test "matches when one last segment contains the other" do
+      assert Topology.last_segment_match?("foo.bar", "baz.barbaz")
+    end
+
+    test "does not match unrelated last segments" do
+      refute Topology.last_segment_match?("foo.bar", "foo.baz")
+    end
+
+    test "does not match on empty needle" do
+      # `String.contains?(last_h, "") == true` would make any module
+      # match. Pin the fixed behavior.
+      refute Topology.last_segment_match?("foo.bar", "")
+      refute Topology.last_segment_match?("anything", "")
+    end
+  end
+
+  describe "segments_overlap?/2 — accountability" do
+    test "matches on any shared segment (bidirectional substring)" do
+      assert Topology.segments_overlap?("foo.bar.baz", "quux.bar.corge")
+    end
+
+    test "matches when a segment is a substring of another segment" do
+      # "bar" as a segment is a substring of "barbaz" — documented
+      # bidirectional behavior of the fuzzy matcher.
+      assert Topology.segments_overlap?("foo.bar", "x.barbaz")
+    end
+
+    test "does not match completely disjoint segment sets" do
+      refute Topology.segments_overlap?("alpha.beta", "gamma.delta")
+    end
+
+    test "does not match on empty needle" do
+      refute Topology.segments_overlap?("foo.bar", "")
+      refute Topology.segments_overlap?("a.b.c", "")
+    end
+  end
+
+  # ============================================================================
+  # get_function_edges/2 via impact_map/3 — filter-accountability
+  #
+  # `get_function_edges/2` keeps only vertices `String.starts_with?(v,
+  # module_name <> ".")` that are labeled `:function`. Prefix matching
+  # on raw strings is the same shape that bit `Indexer.ignored?/1` —
+  # worth pinning the boundary cases explicitly.
+  # ============================================================================
+
+  describe "impact_map/3 function_edges — drop/pass accountability" do
+    setup do
+      # Graph with modules `Foo` and `FooBar`, each with one function.
+      # Key test: `Foo`'s function edges must NOT include FooBar's
+      # functions even though "FooBar.qux" starts with "Foo".
+      graph =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("Foo", :module)
+        |> Graph.add_vertex("FooBar", :module)
+        |> Graph.add_vertex("Foo.bar/1", :function)
+        |> Graph.add_vertex("Foo.baz/0", :function)
+        |> Graph.add_vertex("FooBar.qux/2", :function)
+        |> Graph.add_edge("Foo.bar/1", "FooBar")
+        |> Graph.add_edge("FooBar.qux/2", "Foo")
+
+      %{graph: graph}
+    end
+
+    test "keeps function vertices belonging to the module", %{graph: graph} do
+      {:ok, result} = Topology.impact_map(graph, "Foo", 1)
+      short_names = Enum.map(result.function_edges, fn {name, _targets} -> name end)
+      assert "bar/1" in short_names
+    end
+
+    test "excludes function vertices from sibling modules sharing a prefix",
+         %{graph: graph} do
+      # "FooBar.qux/2" starts with "Foo" but NOT with "Foo." — the
+      # `"."` separator in the prefix is what makes this safe. Pinning
+      # the assertion guards against a regression that would drop the
+      # dot and over-match sibling modules.
+      {:ok, result} = Topology.impact_map(graph, "Foo", 1)
+      short_names = Enum.map(result.function_edges, fn {name, _targets} -> name end)
+      refute "qux/2" in short_names
+    end
+
+    test "excludes function vertices with no outgoing edges", %{graph: graph} do
+      # "Foo.baz/0" has no out-neighbors, so the filter's final
+      # `Enum.reject(&(targets == []))` step must drop it.
+      {:ok, result} = Topology.impact_map(graph, "Foo", 1)
+      short_names = Enum.map(result.function_edges, fn {name, _targets} -> name end)
+      refute "baz/0" in short_names
+    end
+  end
 end
