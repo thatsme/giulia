@@ -108,13 +108,28 @@ defmodule Giulia.MCP.ToolSchema do
 
   # --- Filtering ---
 
-  defp mcp_compatible?(skill) do
+  @doc false
+  # Public for filter-accountability testing. Not part of the module's
+  # API surface. A skill is MCP-compatible unless its return type is
+  # HTML/SSE/stream or its endpoint ends in `/stream`. Kept as a pure
+  # function of the skill map so the test suite can exercise it with
+  # hand-crafted fixtures rather than the live routers' @skill data.
+  @spec mcp_compatible?(map()) :: boolean()
+  def mcp_compatible?(skill) do
     returns = String.downcase(skill.returns)
     endpoint = String.downcase(skill.endpoint)
 
     not String.contains?(returns, "html") and
       not String.contains?(returns, "server-sent events") and
       not String.contains?(returns, "sse stream") and
-      not String.contains?(endpoint, "/stream")
+      not ends_with_stream?(endpoint)
+  end
+
+  # Match the path suffix `/stream` anchored at the end. Using
+  # String.contains?(endpoint, "/stream") was over-eager — it would
+  # also match paths like `/api/foo/stream_stats` or anything with
+  # the substring. The intent is terminal SSE endpoints only.
+  defp ends_with_stream?(endpoint) do
+    String.ends_with?(endpoint, "/stream")
   end
 end
