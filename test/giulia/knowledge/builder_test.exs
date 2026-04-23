@@ -13,6 +13,40 @@ defmodule Giulia.Knowledge.BuilderTest do
   alias Giulia.Knowledge.Builder
 
   # ============================================================================
+  # Helpers: source-on-disk fixtures
+  # ============================================================================
+
+  # Pass 4 (AST-based function-call edges), Pass 5 (module-edge promotion),
+  # and Pass 6 (module references) re-read the source file from disk in
+  # addition to walking the already-extracted ast_data. Tests that exercise
+  # those passes need real files. `with_sources/2` writes a temp tree,
+  # analyzes each file through the normal Processor path, invokes the
+  # callback with the ast_data map, and cleans up.
+  defp with_sources(sources, callback) do
+    dir = Path.join(System.tmp_dir!(), "giulia_test_#{:erlang.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+
+    try do
+      ast_data =
+        for {filename, content} <- sources, into: %{} do
+          path = Path.join(dir, filename)
+          File.write!(path, content)
+          {:ok, data} = Giulia.AST.Processor.analyze_file(path)
+          {path, data}
+        end
+
+      callback.(ast_data)
+    after
+      File.rm_rf!(dir)
+    end
+  end
+
+  # Find edges between two vertices, regardless of label shape
+  defp edges(graph, from, to) do
+    Graph.edges(graph, from, to)
+  end
+
+  # ============================================================================
   # Helpers: AST data fixtures
   # ============================================================================
 
@@ -448,6 +482,211 @@ defmodule Giulia.Knowledge.BuilderTest do
       graph = Builder.build_graph(data)
       # At least 50 module vertices + 50 function vertices
       assert Graph.num_vertices(graph) >= 100
+    end
+  end
+
+  # ============================================================================
+  # Regression guards for Step 1 fixes — these require source files on disk
+  # because Pass 4 / Pass 5 / Pass 6 re-parse the source in addition to
+  # walking the ast_data map.
+  # ============================================================================
+
+  describe "regression: predicate/bang function edge promotion" do
+    # Commit cfc8d54. Before the fix, extract_module_from_mfa used ~r/\w+\/\d+/
+    # which did not match `?` / `!`. Function-level :calls edges with
+    # predicate targets were added correctly, but promote_function_edges_to_module
+    # silently dropped them because the callee_mod regex returned nil.
+    test "module-level edge exists when caller invokes a predicate function" do
+      # No alias/import between Caller and Target — the module-level edge
+      # can only come from :calls promotion. If extract_module_from_mfa's
+      # regex silently drops predicate names, no edge is created and this
+      # fails loudly.
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def run(x), do: Target.valid?(x)
+          end
+          """,
+          "target.ex" => """
+          defmodule Target do
+            def valid?(x), do: is_integer(x)
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          # Function-level edge must exist
+          assert Graph.has_vertex?(graph, "Caller.run/1")
+          assert Graph.has_vertex?(graph, "Target.valid?/1")
+          # Module-level edge must be promoted
+          assert Enum.any?(edges(graph, "Caller", "Target"), fn e ->
+                   match?({:calls, _}, e.label)
+                 end)
+        end
+      )
+    end
+
+    test "module-level edge exists when caller invokes a bang function" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def run(x), do: Target.update!(x)
+          end
+          """,
+          "target.ex" => """
+          defmodule Target do
+            def update!(x), do: x + 1
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          assert Enum.any?(edges(graph, "Caller", "Target"), fn e ->
+                   match?({:calls, _}, e.label)
+                 end)
+        end
+      )
+    end
+  end
+
+  describe "regression: :calls edges carry via metadata" do
+    # Commit 2a18e2a. Every function-level :calls edge must be labeled
+    # {:calls, via} where via ∈ :direct | :alias_resolved | :erlang_atom
+    # | :local. The via bucket is load-bearing for the stratified
+    # sample-identity check in L1↔L3 verification.
+    test "fully-qualified remote call tags :direct" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def run, do: Giulia.Nested.Target.compute(1)
+          end
+          """,
+          "target.ex" => """
+          defmodule Giulia.Nested.Target do
+            def compute(x), do: x
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edge = Enum.find(edges(graph, "Caller.run/0", "Giulia.Nested.Target.compute/1"), & &1)
+          assert edge != nil
+          assert edge.label == {:calls, :direct}
+        end
+      )
+    end
+
+    test "aliased short-form call tags :alias_resolved" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            alias Giulia.Nested.Target
+            def run, do: Target.compute(1)
+          end
+          """,
+          "target.ex" => """
+          defmodule Giulia.Nested.Target do
+            def compute(x), do: x
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edge = Enum.find(edges(graph, "Caller.run/0", "Giulia.Nested.Target.compute/1"), & &1)
+          assert edge != nil
+          assert edge.label == {:calls, :alias_resolved}
+        end
+      )
+    end
+
+    test "intra-module call tags :local" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def outer, do: inner(1)
+            def inner(x), do: x + 1
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edge = Enum.find(edges(graph, "Caller.outer/0", "Caller.inner/1"), & &1)
+          assert edge != nil
+          assert edge.label == {:calls, :local}
+        end
+      )
+    end
+  end
+
+  describe "regression: :references pass + namespace-prefix fallback" do
+    # Commits 5db432e + 9c67dbc. The references pass catches framework
+    # wiring where modules are passed as atoms to macros (supervisor
+    # children lists, Phoenix router verbs, etc.). The namespace fallback
+    # resolves short-form refs inside Phoenix `scope` blocks and Ecto
+    # short associations.
+    test "module named in a list literal produces a :references edge" do
+      with_sources(
+        %{
+          "app.ex" => """
+          defmodule AlexClaw.Application do
+            def start(_type, _args) do
+              children = [AlexClawWeb.Endpoint]
+              Supervisor.start_link(children, strategy: :one_for_one)
+            end
+          end
+          """,
+          "endpoint.ex" => """
+          defmodule AlexClawWeb.Endpoint do
+            def init(_), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          assert Enum.any?(
+                   edges(graph, "AlexClaw.Application", "AlexClawWeb.Endpoint"),
+                   fn e -> e.label == :references end
+                 )
+        end
+      )
+    end
+
+    test "short-form sibling resolved via caller's namespace prefix" do
+      with_sources(
+        %{
+          "router.ex" => """
+          defmodule AlexClawWeb.Router do
+            # Phoenix-style short-form: HealthController is a sibling in
+            # AlexClawWeb.*. Without the namespace fallback, [:HealthController]
+            # resolves to just "HealthController" and never matches.
+            def routes, do: [get: {"/health", HealthController, :check}]
+          end
+          """,
+          "health_controller.ex" => """
+          defmodule AlexClawWeb.HealthController do
+            def check(conn, _), do: conn
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          # Either via :references (preferred) or :depends_on — we just
+          # need *some* edge to be created thanks to the fallback.
+          refs =
+            edges(graph, "AlexClawWeb.Router", "AlexClawWeb.HealthController")
+            |> Enum.map(& &1.label)
+
+          assert refs != [], "expected an edge from Router to HealthController via namespace fallback"
+        end
+      )
     end
   end
 end
