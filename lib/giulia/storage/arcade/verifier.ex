@@ -31,13 +31,28 @@ defmodule Giulia.Storage.Arcade.Verifier do
         }
 
   @doc """
-  Verify L1→L3 CALLS identity for `project_path`.
+  Verify L1→L3 CALLS integrity for `project_path`.
+
+  Runs two orthogonal checks:
+
+    * **Sample identity** — stratified sample of function-level :calls
+      edges from L1; each is looked up in L3 by MFA endpoints. Catches
+      endpoint-mismatch bugs where edges exist but point at the wrong
+      vertices.
+    * **Count parity** — total L1 function :calls vs total L3 CALLS
+      for the project. Catches accumulation bugs (duplicate edges from
+      non-idempotent inserts) and loss bugs (partial writes) that
+      sample identity alone misses by definition.
+
+  Both checks must pass for `overall: :pass`. Neither alone is
+  sufficient — together they cover the main failure modes of
+  cross-store graph sync.
 
   Options:
     * `:sample_per_bucket` — per-bucket sample size (default #{@default_sample_per_bucket})
 
-  Returns `{:ok, %{report: %{bucket => bucket_result}, l3_calls_total: n,
-  overall: :pass | :fail}}`.
+  Returns `{:ok, map}` with `:report`, `:count_parity`, `:l3_calls_total`,
+  `:l1_calls_total`, `:overall`.
   """
   @spec verify(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def verify(project_path, opts \\ []) do
@@ -56,16 +71,33 @@ defmodule Giulia.Storage.Arcade.Verifier do
         end)
         |> Map.new()
 
-      overall = if any_failure?(report), do: :fail, else: :pass
+      l1_total = length(edges)
+      count_parity = classify_count_parity(l1_total, l3_total)
+
+      overall =
+        if any_failure?(report) or count_parity.status != :match,
+          do: :fail,
+          else: :pass
 
       {:ok,
        %{
          project: project_path,
          l3_calls_total: l3_total,
-         l1_calls_total: length(edges),
+         l1_calls_total: l1_total,
+         count_parity: count_parity,
          report: report,
          overall: overall
        }}
+    end
+  end
+
+  defp classify_count_parity(l1, l3) do
+    cond do
+      l1 == l3 -> %{status: :match, l1: l1, l3: l3, delta: 0}
+      l3 > l1 -> %{status: :l3_exceeds_l1, l1: l1, l3: l3, delta: l3 - l1,
+                   hint: "non-idempotent inserts or duplicate snapshots"}
+      l3 < l1 -> %{status: :l3_under_l1, l1: l1, l3: l3, delta: l1 - l3,
+                   hint: "partial write, failed inserts, or stale L3"}
     end
   end
 

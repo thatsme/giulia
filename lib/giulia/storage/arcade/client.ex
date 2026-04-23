@@ -244,6 +244,25 @@ defmodule Giulia.Storage.Arcade.Client do
     """, "sql", %{p: project})
   end
 
+  @doc """
+  Delete all edges of `edge_type` scoped to `(project, build_id)`.
+
+  `CREATE EDGE` is not idempotent in ArcadeDB — re-running a snapshot
+  under the same build_id appends duplicate edges. Callers invoke this
+  before re-inserting so each (project, build_id) has one authoritative
+  edge set. Cross-build history is preserved because the delete is
+  filtered by build_id.
+  """
+  @spec delete_edges_for_build(String.t(), String.t(), integer()) ::
+          {:ok, term()} | {:error, term()}
+  def delete_edges_for_build(edge_type, project, build_id)
+      when edge_type in ["CALLS", "DEPENDS_ON"] do
+    command(
+      "DELETE FROM #{edge_type} WHERE project = :project AND build_id = :build_id",
+      %{project: project, build_id: build_id}
+    )
+  end
+
   @doc "Create a DEPENDS_ON edge between two modules for a given build."
   @spec insert_dependency(String.t(), String.t(), String.t(), integer()) :: {:ok, term()} | {:error, term()}
   def insert_dependency(project, from_module, to_module, build_id) do

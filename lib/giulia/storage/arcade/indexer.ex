@@ -109,6 +109,10 @@ defmodule Giulia.Storage.Arcade.Indexer do
   # authoritative CALLS data lives at function level. Same for :references
   # and :semantic, which are L1-only signals today.
   defp write_module_edges(project, edges, build_id) do
+    # CREATE EDGE is not idempotent — purge this (project, build_id) first
+    # so re-snapshots replace rather than accumulate.
+    Client.delete_edges_for_build("DEPENDS_ON", project, build_id)
+
     {written, dropped} =
       Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
         case type do
@@ -135,6 +139,8 @@ defmodule Giulia.Storage.Arcade.Indexer do
   # Function-level :calls edges. These are the authoritative CALLS edges per
   # the L3 schema (CALLS runs between Function vertices).
   defp write_function_call_edges(project, edges, build_id) do
+    Client.delete_edges_for_build("CALLS", project, build_id)
+
     edges
     |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
       Client.insert_call(project, from_mfa, to_mfa, build_id)
