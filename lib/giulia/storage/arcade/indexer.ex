@@ -41,6 +41,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
     start = System.monotonic_time(:millisecond)
 
     with {:ok, _} <- Client.health(),
+         :ok <- Client.create_db(),
          :ok <- Client.ensure_schema(),
          {:ok, modules} <- Store.all_modules(project_path),
          {:ok, functions} <- Store.all_functions(project_path),
