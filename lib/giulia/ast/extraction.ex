@@ -181,12 +181,24 @@ defmodule Giulia.AST.Extraction do
 
   defp build_function_info(name, args, def_type, meta) do
     arity = if is_list(args), do: length(args), else: 0
+    defaults = if is_list(args), do: count_default_args(args), else: 0
+
     %{
       name: name,
       arity: arity,
+      min_arity: arity - defaults,
       type: def_type,
       line: Keyword.get(meta, :line, 0)
     }
+  end
+
+  # Count args shaped `{:\\, _, [var, default]}` — Elixir auto-generates a
+  # function head for every arity from (length - defaults)..length.
+  defp count_default_args(args) do
+    Enum.count(args, fn
+      {:\\, _, _} -> true
+      _ -> false
+    end)
   end
 
   # ============================================================================

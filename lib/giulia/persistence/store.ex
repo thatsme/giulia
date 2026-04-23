@@ -24,7 +24,8 @@ defmodule Giulia.Persistence.Store do
   # v2: added {:mtime, file_path} keys, fixed hash/AST desync from write storm.
   # v3: AST data shape change — moduledoc preserves `false` (not nil).
   # v4: fix Enum.find_value silently dropping false (falsy) — use reduce_while.
-  @schema_version 4
+  # v5: function_info gains :min_arity — tracks default-arg arities for graph.
+  @schema_version 5
 
   # Client API
 

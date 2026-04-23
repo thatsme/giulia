@@ -88,8 +88,15 @@ defmodule Giulia.Knowledge.Builder do
 
     if module_name do
       Enum.reduce(functions, graph, fn func, g ->
-        vertex_id = "#{module_name}.#{func.name}/#{func.arity}"
-        Graph.add_vertex(g, vertex_id, :function)
+        # Elixir auto-generates a function head for each arity from
+        # min_arity..arity when default args are present. Emit a vertex for
+        # each so call sites at any generated arity can find their target.
+        min_arity = Map.get(func, :min_arity, func.arity)
+
+        Enum.reduce(min_arity..func.arity, g, fn arity, g_acc ->
+          vertex_id = "#{module_name}.#{func.name}/#{arity}"
+          Graph.add_vertex(g_acc, vertex_id, :function)
+        end)
       end)
     else
       graph
