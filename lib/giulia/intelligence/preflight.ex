@@ -73,9 +73,12 @@ defmodule Giulia.Intelligence.Preflight do
     if SemanticIndex.available?() do
       case SemanticIndex.search(project_path, prompt, top_k) do
         {:ok, %{modules: modules}} when modules != [] ->
-          # Also embed the prompt for semantic integrity checks
+          # SemanticIndex.search hard-codes 3 modules regardless of
+          # `top_k` (top_k controls functions-per-module). Preflight
+          # exposes `top_k` as a module limit, so truncate here to
+          # honor the documented contract.
           query_vector = embed_prompt(prompt)
-          {modules, true, query_vector}
+          {Enum.take(modules, top_k), true, query_vector}
 
         {:ok, _} ->
           {[], true, nil}

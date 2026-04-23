@@ -78,16 +78,25 @@ defmodule Giulia.Knowledge.Store do
     GenServer.call(__MODULE__, {:add_semantic_edge, project_path, from, to, reason})
   end
 
-  @doc "Restore a previously persisted knowledge graph (called by Loader during warm start)."
+  @doc """
+  Restore a previously persisted knowledge graph (called by Loader
+  during warm start). Synchronous so callers can rely on the graph
+  being visible in ETS (and thus in `list_projects/0`) once it
+  returns — the warm-restore path depends on this ordering.
+  """
   @spec restore_graph(project_path(), term()) :: :ok
   def restore_graph(project_path, graph) do
-    GenServer.cast(__MODULE__, {:restore_graph, project_path, graph})
+    GenServer.call(__MODULE__, {:restore_graph, project_path, graph})
   end
 
-  @doc "Restore previously persisted metric caches (called by Loader during warm start)."
+  @doc """
+  Restore previously persisted metric caches. Synchronous for the
+  same reason as `restore_graph/2` — downstream code may read the
+  metrics immediately after restore returns.
+  """
   @spec restore_metrics(project_path(), map()) :: :ok
   def restore_metrics(project_path, metrics) do
-    GenServer.cast(__MODULE__, {:restore_metrics, project_path, metrics})
+    GenServer.call(__MODULE__, {:restore_metrics, project_path, metrics})
   end
 
   # ============================================================================
@@ -283,23 +292,22 @@ defmodule Giulia.Knowledge.Store do
   end
 
   @impl true
-  def handle_cast({:restore_graph, project_path, graph}, state) do
+  def handle_call({:restore_graph, project_path, graph}, _from, state) do
     vertex_count = Graph.num_vertices(graph)
     edge_count = Graph.num_edges(graph)
     Logger.info("Knowledge graph restored from cache for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
 
     ets_put_graph(project_path, graph)
 
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
-  @impl true
-  def handle_cast({:restore_metrics, project_path, metrics}, state) do
+  def handle_call({:restore_metrics, project_path, metrics}, _from, state) do
     Logger.info("Metric cache restored from disk for #{project_path}: #{Enum.join(Map.keys(metrics), ", ")}")
 
     ets_put_metrics(project_path, metrics)
 
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
   # --- Calls (sync writes) ---

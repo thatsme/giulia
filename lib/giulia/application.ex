@@ -89,6 +89,11 @@ defmodule Giulia.Application do
       # Knowledge graph (depends on Store + Indexer)
       Giulia.Knowledge.Store,
 
+      # L1↔L2 warm-restore on boot (must come after Knowledge.Store +
+      # Persistence.Store + Context.Store — calls restore_graph/restore_metrics
+      # which write into their ETS tables).
+      Giulia.Persistence.WarmRestore,
+
       # ArcadeDB L2: Indexer (listens for {:graph_ready} from Knowledge.Store)
       Giulia.Storage.Arcade.Indexer,
 
