@@ -86,9 +86,13 @@ defmodule Giulia.Storage.Arcade.Verifier do
 
   @spec verify_edge(String.t(), edge()) :: :ok | :missing | {:error, term()}
   defp verify_edge(project_path, {from_mfa, to_mfa, :calls, _via}) do
+    # ArcadeDB requires outV()/inV() function calls to traverse from edge to
+    # vertex. The intuitive `out.name` / `in.name` property syntax silently
+    # returns null and yields zero matches — a trap the verifier itself fell
+    # into on first implementation.
     sql = """
     SELECT count(*) AS n FROM CALLS
-    WHERE project = :project AND out.name = :from AND in.name = :to
+    WHERE project = :project AND outV().name = :from AND inV().name = :to
     """
 
     case Client.query(sql, "sql", %{project: project_path, from: from_mfa, to: to_mfa}) do
