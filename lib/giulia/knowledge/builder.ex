@@ -358,34 +358,31 @@ defmodule Giulia.Knowledge.Builder do
 
   defp add_function_call_edges(graph, ast_data, all_modules) do
     Enum.reduce(ast_data, graph, fn {path, data}, g ->
-      modules = data[:modules] || []
-      functions = data[:functions] || []
+      # Build alias map for this file — the multi-segment fix is
+      # resolved inside `extract_calls_from_body` via `resolve_alias/2`.
+      alias_map =
+        (data[:imports] || [])
+        |> Enum.filter(fn imp -> imp.type == :alias end)
+        |> Map.new(fn imp ->
+          short = imp.module |> String.split(".") |> List.last()
+          {short, imp.module}
+        end)
 
-      case modules do
-        [source_mod | _] ->
-          caller_module = source_mod.name
+      source =
+        case File.read(path) do
+          {:ok, content} -> content
+          _ -> ""
+        end
 
-          # Build alias map for this file
-          alias_map =
-            (data[:imports] || [])
-            |> Enum.filter(fn imp -> imp.type == :alias end)
-            |> Map.new(fn imp ->
-              short = imp.module |> String.split(".") |> List.last()
-              {short, imp.module}
-            end)
+      case Sourceror.parse_string(source) do
+        {:ok, ast} ->
+          fallback_caller =
+            case data[:modules] do
+              [%{name: name} | _] -> name
+              _ -> "Unknown"
+            end
 
-          # Read and parse source
-          source = case File.read(path) do
-            {:ok, content} -> content
-            _ -> ""
-          end
-
-          case Sourceror.parse_string(source) do
-            {:ok, ast} ->
-              extract_calls_per_function(g, ast, caller_module, functions, alias_map, all_modules)
-            _ ->
-              g
-          end
+          extract_calls_per_function(g, ast, fallback_caller, alias_map, all_modules)
 
         _ ->
           g
@@ -393,31 +390,50 @@ defmodule Giulia.Knowledge.Builder do
     end)
   end
 
-  # Single-pass: walk the entire AST, find def/defp nodes, extract calls from their body.
-  # This avoids relying on get_function_range (whose line-range detection is fragile with Sourceror).
-  defp extract_calls_per_function(graph, ast, caller_module, _functions, alias_map, all_modules) do
-    # Walk the AST to find all def/defp nodes and their bodies
-    {_ast, func_call_map} =
-      Macro.prewalk(ast, %{}, fn
-        # Match def/defp function definitions (with args)
-        {def_type, _meta, [{func_name, _fn_meta, args}, body]} = node, acc
-        when def_type in [:def, :defp] and is_atom(func_name) ->
-          arity = if is_list(args), do: length(args), else: 0
-          caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
-          calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
-          {node, merge_calls(acc, caller_mfa, calls)}
+  # Walk the AST with an enclosing-module stack so def/defp nodes are
+  # attributed to their real enclosing `defmodule` — not the file's
+  # first module. Previously all def nodes inherited `caller_module =
+  # data[:modules] |> List.first().name`, which silently miscounted
+  # call-edges in every file with multiple top-level defmodules
+  # (Plausible.HTTPClient had 3, so every private-helper call became
+  # a non-matching MFA and no edges landed in the graph).
+  defp extract_calls_per_function(graph, ast, fallback_caller, alias_map, all_modules) do
+    {_ast, {func_call_map, _stack}} =
+      Macro.traverse(
+        ast,
+        {%{}, []},
+        fn node, {acc, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, local_name} ->
+              {node, {acc, [join_module_name(stack, local_name) | stack]}}
 
-        # Match def/defp with guard clause: def foo(x) when is_integer(x)
-        {def_type, _meta, [{:when, _, [{func_name, _fn_meta, args} | _guards]}, body]} = node, acc
-        when def_type in [:def, :defp] and is_atom(func_name) ->
-          arity = if is_list(args), do: length(args), else: 0
-          caller_mfa = "#{caller_module}.#{func_name}/#{arity}"
-          calls = extract_calls_from_body(body, caller_module, alias_map, all_modules)
-          {node, merge_calls(acc, caller_mfa, calls)}
+            :skip ->
+              current_caller = List.first(stack) || fallback_caller
 
-        node, acc ->
-          {node, acc}
-      end)
+              case def_node_signature(node) do
+                {:ok, func_name, arity, body} ->
+                  caller_mfa = "#{current_caller}.#{func_name}/#{arity}"
+                  calls = extract_calls_from_body(body, current_caller, alias_map, all_modules)
+                  {node, {merge_calls(acc, caller_mfa, calls), stack}}
+
+                :skip ->
+                  {node, state}
+              end
+          end
+        end,
+        fn node, {acc, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, _} ->
+              case stack do
+                [_ | rest] -> {node, {acc, rest}}
+                [] -> {node, {acc, []}}
+              end
+
+            :skip ->
+              {node, state}
+          end
+        end
+      )
 
     # Add edges for all discovered caller→callee relationships.
     # Each edge is labeled {:calls, via} where via ∈ :direct | :alias_resolved
@@ -438,6 +454,81 @@ defmodule Giulia.Knowledge.Builder do
     end)
   end
 
+  # Narrow helpers for the module-stack traversal. Kept separate from
+  # `Giulia.AST.Extraction.module_node_info/1` because we only need the
+  # local name here — not body, line, or impl_for.
+  defp def_module_local_name({:defmodule, _, [{:__aliases__, _, parts} | _]}) when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp def_module_local_name({:defmodule, _, [atom | _]}) when is_atom(atom) do
+    {:ok, Atom.to_string(atom)}
+  end
+
+  defp def_module_local_name({:defprotocol, _, [{:__aliases__, _, parts} | _]})
+       when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp def_module_local_name({:defimpl, _, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | _]})
+       when is_list(proto_parts) do
+    if for_key == :for or match?({:__block__, _, [:for]}, for_key) do
+      proto = proto_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+
+      case builder_type_ast_parts(type_ast) do
+        {:ok, type_name} -> {:ok, "#{proto}.#{type_name}"}
+        :skip -> :skip
+      end
+    else
+      :skip
+    end
+  end
+
+  defp def_module_local_name(_), do: :skip
+
+  defp builder_type_ast_parts({:__aliases__, _, parts}) when is_list(parts),
+    do: {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+
+  defp builder_type_ast_parts({:__block__, _, [{:__aliases__, _, parts}]}) when is_list(parts),
+    do: {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+
+  defp builder_type_ast_parts(atom) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+
+  defp builder_type_ast_parts({:__block__, _, [atom]}) when is_atom(atom),
+    do: {:ok, Atom.to_string(atom)}
+
+  defp builder_type_ast_parts(_), do: :skip
+
+  defp join_module_name([], local), do: local
+  defp join_module_name([top | _], local), do: "#{top}.#{local}"
+
+  # Returns {:ok, func_name, arity, body} for def/defp nodes, :skip otherwise.
+  # Handles the two shapes the original prewalk matched:
+  # `def foo(args), do: body` and `def foo(args) when guard, do: body`.
+  defp def_node_signature({def_type, _meta, [{func_name, _fn_meta, args}, body]})
+       when def_type in [:def, :defp] and is_atom(func_name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, func_name, arity, body}
+  end
+
+  defp def_node_signature(
+         {def_type, _meta, [{:when, _, [{func_name, _fn_meta, args} | _guards]}, body]}
+       )
+       when def_type in [:def, :defp] and is_atom(func_name) do
+    arity = if is_list(args), do: length(args), else: 0
+    {:ok, func_name, arity, body}
+  end
+
+  defp def_node_signature(_), do: :skip
+
+  # Mirror of `Metrics.safe_part_to_string/1`. Kept private here so
+  # Builder can stand alone — the alternative is a `use` / shared
+  # module, which feels heavier than duplicating three clauses.
+  defp safe_part_to_string(part) when is_atom(part), do: Atom.to_string(part)
+  defp safe_part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
+  defp safe_part_to_string({atom, _, _}) when is_atom(atom), do: Atom.to_string(atom)
+  defp safe_part_to_string(other), do: inspect(other)
+
   # First-writer-wins merge of per-caller call-target maps.
   defp merge_calls(acc, caller_mfa, new_calls) do
     Map.update(acc, caller_mfa, new_calls, fn existing ->
@@ -452,11 +543,16 @@ defmodule Giulia.Knowledge.Builder do
   defp extract_calls_from_body(body, caller_module, alias_map, all_modules) do
     {_body, calls} =
       Macro.prewalk(body, %{}, fn
-        # Remote call: Module.func(args) — resolve aliases
+        # Remote call: Module.func(args) — resolve aliases, including
+        # multi-segment forms. `alias Plausible.Ingestion` lets a caller
+        # write `Ingestion.Request.build(conn)`; parts come through as
+        # [:Ingestion, :Request] and the single-segment alias_map lookup
+        # on the joined "Ingestion.Request" misses. Instead, resolve
+        # the FIRST segment through the alias map and prepend to the rest.
         {{:., _, [{:__aliases__, _meta, parts}, func_name]}, _call_meta, args} = node, acc
         when is_atom(func_name) and is_list(args) ->
           raw_mod = resolve_module_parts(parts, caller_module)
-          mod = Map.get(alias_map, raw_mod, raw_mod)
+          mod = resolve_alias_prefix(raw_mod, alias_map)
 
           if MapSet.member?(all_modules, mod) do
             target_mfa = "#{mod}.#{func_name}/#{length(args)}"
@@ -695,6 +791,23 @@ defmodule Giulia.Knowledge.Builder do
 
   # Resolve __MODULE__ AST tuples in alias parts to the enclosing module name.
   # Sourceror represents `__MODULE__.Foo` as [{:__MODULE__, meta, nil}, :Foo].
+  # `raw_mod` is the dot-joined name as written at the call site.
+  # Split on the first dot, look the prefix up in the alias map, and
+  # prepend the resolved form to the suffix if present. Falls back to
+  # `raw_mod` when the prefix isn't aliased.
+  defp resolve_alias_prefix(raw_mod, alias_map) do
+    case String.split(raw_mod, ".", parts: 2) do
+      [first] ->
+        Map.get(alias_map, first, raw_mod)
+
+      [first, rest] ->
+        case Map.get(alias_map, first) do
+          nil -> raw_mod
+          full -> "#{full}.#{rest}"
+        end
+    end
+  end
+
   defp resolve_module_parts(parts, caller_module) do
     parts
     |> Enum.map(fn
