@@ -61,9 +61,18 @@ defmodule Giulia.Knowledge.Builder do
     # Collapses MFA→MFA :calls edges into Module→Module :calls edges,
     # catching fully-qualified calls that bypass alias/import.
     # Also detects defdelegate targets as module dependencies.
-    graph
-    |> promote_function_edges_to_module(all_modules)
-    |> add_defdelegate_edges(ast_data, all_modules)
+    graph =
+      graph
+      |> promote_function_edges_to_module(all_modules)
+      |> add_defdelegate_edges(ast_data, all_modules)
+
+    # Pass 6: Module-reference edges — catches modules passed as atom args to
+    # framework macros (Phoenix router `get("/x", Controller, :action)`, Plug
+    # `plug(Auth)`, supervision `children = [Endpoint]`, struct literals
+    # `%Foo{}`). These aren't call-shaped, so passes 3-5 miss them.
+    # Labeled `:references` (distinct from `:depends_on`/`:calls`) so
+    # queries can filter it out for pure architectural views.
+    add_reference_edges(graph, ast_data, all_modules)
   end
 
   # ============================================================================
@@ -536,6 +545,70 @@ defmodule Giulia.Knowledge.Builder do
         _ -> g
       end
     end)
+  end
+
+  # Walk every file's AST and add `:references` edges for any __aliases__
+  # atom pointing at another project module that isn't already linked via
+  # :depends_on / :implements / :calls. Catches framework wiring that
+  # passes modules as atoms to macros (router verbs, plug, supervisor
+  # children), struct literals `%Foo{}`, and typespec references.
+  defp add_reference_edges(graph, ast_data, all_modules) do
+    Enum.reduce(ast_data, graph, fn {path, data}, g ->
+      modules = data[:modules] || []
+
+      case modules do
+        [source_mod | _] ->
+          source_name = source_mod.name
+
+          source =
+            case File.read(path) do
+              {:ok, content} -> content
+              _ -> ""
+            end
+
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              refs = extract_module_references(ast, source_name, all_modules)
+
+              Enum.reduce(refs, g, fn target, g2 ->
+                if target != source_name and
+                     Graph.has_vertex?(g2, target) and
+                     not has_module_edge?(g2, source_name, target) do
+                  Graph.add_edge(g2, source_name, target, label: :references)
+                else
+                  g2
+                end
+              end)
+
+            _ ->
+              g
+          end
+
+        _ ->
+          g
+      end
+    end)
+  end
+
+  # Collect the set of project-module names reachable as __aliases__ atoms
+  # anywhere in the AST.
+  defp extract_module_references(ast, caller_module, all_modules) do
+    {_ast, refs} =
+      Macro.prewalk(ast, MapSet.new(), fn
+        {:__aliases__, _meta, parts} = node, set when is_list(parts) ->
+          mod = resolve_module_parts(parts, caller_module)
+
+          if MapSet.member?(all_modules, mod) do
+            {node, MapSet.put(set, mod)}
+          else
+            {node, set}
+          end
+
+        node, set ->
+          {node, set}
+      end)
+
+    refs
   end
 
   # Walk AST to find defdelegate ... to: Module targets

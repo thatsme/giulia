@@ -293,7 +293,11 @@ defmodule Giulia.Context.Indexer do
     end)
 
     # Update project files list (merge cached + stale)
-    all_files = find_elixir_files(Path.join(project_path, "lib"))
+    all_files =
+      Path.join(project_path, "lib")
+      |> find_elixir_files()
+      |> maybe_include_mix_exs(project_path)
+
     Giulia.Context.Store.put_project_files(project_path, all_files)
     Logger.info("Incremental scan complete: #{length(stale_files)} files re-indexed")
   end
@@ -304,7 +308,11 @@ defmodule Giulia.Context.Indexer do
     if File.dir?(lib_path) do
       Giulia.Context.Store.clear_asts(project_path)
 
-      files = find_elixir_files(lib_path)
+      files =
+        lib_path
+        |> find_elixir_files()
+        |> maybe_include_mix_exs(project_path)
+
       Logger.info("Found #{length(files)} Elixir files to scan")
 
       # Debug first file to understand AST structure
@@ -346,6 +354,14 @@ defmodule Giulia.Context.Indexer do
     |> Path.join("**/*.{ex,exs}")
     |> Path.wildcard()
     |> Enum.reject(&should_ignore?/1)
+  end
+
+  # mix.exs lives at the project root (outside lib/) but defines the top-level
+  # application module (`mod: {Foo.Application, []}`) and referenced modules.
+  # Including it in the scan lets the graph see those references.
+  defp maybe_include_mix_exs(files, project_path) do
+    mix_path = Path.join(project_path, "mix.exs")
+    if File.exists?(mix_path), do: [mix_path | files], else: files
   end
 
   defp should_ignore?(file_path) do

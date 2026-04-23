@@ -25,7 +25,8 @@ defmodule Giulia.Persistence.Store do
   # v3: AST data shape change — moduledoc preserves `false` (not nil).
   # v4: fix Enum.find_value silently dropping false (falsy) — use reduce_while.
   # v5: function_info gains :min_arity — tracks default-arg arities for graph.
-  @schema_version 5
+  # v6: mix.exs included in scan + references pass for framework wiring.
+  @schema_version 6
 
   # Client API
 
