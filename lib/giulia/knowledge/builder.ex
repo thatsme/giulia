@@ -479,9 +479,11 @@ defmodule Giulia.Knowledge.Builder do
     end)
   end
 
-  # Extract module name from MFA string like "Giulia.Role.role/0" → "Giulia.Role"
+  # Extract module name from MFA string like "Giulia.Role.role/0" → "Giulia.Role".
+  # The function-name class includes `?` and `!` so predicate/bang functions
+  # (e.g. `valid?/1`, `update!/2`) promote to module-level edges.
   defp extract_module_from_mfa(mfa) when is_binary(mfa) do
-    case Regex.run(~r/^(.+)\.\w+\/\d+$/, mfa) do
+    case Regex.run(~r/^(.+)\.[\w!?]+\/\d+$/, mfa) do
       [_, mod] -> mod
       _ -> nil
     end
