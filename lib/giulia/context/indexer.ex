@@ -444,12 +444,25 @@ defmodule Giulia.Context.Indexer do
       Logger.info("Compiling #{project_path} for xref analysis (build: #{build_path})")
 
       try do
-        # Fetch deps first if needed, then compile
-        deps_dir = Path.join(project_path, "deps")
+        # Always run `mix deps.get`. Mix considers a dep "not available" if
+        # its tracking state (mix.lock registration, .fetch markers) is out
+        # of sync with the filesystem, even when deps/<name>/ is populated
+        # from a prior partial checkout. The previous `File.dir?("deps")`
+        # guard treated a half-populated deps/ as "done" and skipped the
+        # reconcile, which made `mix compile` fail with "Unchecked
+        # dependencies" and xref quietly never run. deps.get is idempotent
+        # and <1s when up-to-date; always-run costs little and closes the
+        # gap.
+        Logger.info("Fetching deps for #{project_path}...")
 
-        unless File.dir?(deps_dir) do
-          Logger.info("Fetching deps for #{project_path}...")
+        {deps_output, deps_exit} =
           System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
+
+        if deps_exit != 0 do
+          Logger.warning(
+            "mix deps.get failed for #{project_path} (exit #{deps_exit}): " <>
+              String.slice(deps_output, 0, 500)
+          )
         end
 
         # Compile with project-specific build path to isolate multi-project builds.
