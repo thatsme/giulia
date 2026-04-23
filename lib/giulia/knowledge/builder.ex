@@ -72,7 +72,17 @@ defmodule Giulia.Knowledge.Builder do
     # `%Foo{}`). These aren't call-shaped, so passes 3-5 miss them.
     # Labeled `:references` (distinct from `:depends_on`/`:calls`) so
     # queries can filter it out for pure architectural views.
-    add_reference_edges(graph, ast_data, all_modules)
+    graph = add_reference_edges(graph, ast_data, all_modules)
+
+    # Pass 7: Protocol-dispatch edges — synthesizes {:calls, :protocol_impl}
+    # edges from a protocol module to each function in its `defimpl` modules.
+    # `Jason.encode(%Plausible.Goal{})` would otherwise look like a dead-end
+    # to the static call graph because the dispatcher is compile-time
+    # generated. This pass produces the edge the static call graph couldn't
+    # see, so downstream detectors (dead_code, change_risk, etc.) treat
+    # impl functions as live. See `feedback_dispatch_edge_synthesis.md`
+    # for the architectural commitment this implements.
+    add_protocol_dispatch_edges(graph, ast_data)
   end
 
   # ============================================================================
@@ -707,6 +717,78 @@ defmodule Giulia.Knowledge.Builder do
         _ ->
           Enum.join(resolved, ".")
       end
+    end)
+  end
+
+  # ============================================================================
+  # Pass 7: Protocol-dispatch edges
+  # ============================================================================
+
+  # For each module declaring `impl_for: ProtoName`, add an edge from
+  # `ProtoName` to every function vertex belonging to the impl module,
+  # labeled `{:calls, :protocol_impl}`. This makes protocol-dispatched
+  # functions reachable in graph traversal — dead_code, change_risk,
+  # unprotected_hubs and friends all benefit without per-detector filter
+  # logic (Option B in `feedback_dispatch_edge_synthesis.md`).
+  #
+  # Only emits edges when the protocol vertex already exists in the
+  # graph. A project implementing `Jason.Encoder` without Jason in its
+  # dependency scope would otherwise spawn orphan vertices.
+  defp add_protocol_dispatch_edges(graph, ast_data) do
+    impls =
+      ast_data
+      |> Enum.flat_map(fn {_path, data} ->
+        Enum.filter(data[:modules] || [], fn m ->
+          is_binary(Map.get(m, :impl_for)) and is_binary(Map.get(m, :name))
+        end)
+      end)
+
+    Enum.reduce(impls, graph, fn impl_mod, g ->
+      proto = impl_mod.impl_for
+      impl_name = impl_mod.name
+
+      g = ensure_protocol_vertex(g, proto)
+
+      impl_name
+      |> function_vertices_of(g)
+      |> Enum.reduce(g, fn fn_vertex, g2 ->
+        if Graph.has_vertex?(g2, proto) and
+             not has_dispatch_edge?(g2, proto, fn_vertex) do
+          Graph.add_edge(g2, proto, fn_vertex, label: {:calls, :protocol_impl})
+        else
+          g2
+        end
+      end)
+    end)
+  end
+
+  # A defimpl without a corresponding defprotocol in scope still deserves
+  # the dispatch edge — synthesize a module vertex so the edge has a
+  # valid endpoint. This is a synthetic vertex, not an extraction claim.
+  defp ensure_protocol_vertex(graph, proto_name) do
+    if Graph.has_vertex?(graph, proto_name) do
+      graph
+    else
+      Graph.add_vertex(graph, proto_name, :module)
+    end
+  end
+
+  defp function_vertices_of(module_name, graph) do
+    prefix = module_name <> "."
+
+    graph
+    |> Graph.vertices()
+    |> Enum.filter(fn v ->
+      is_binary(v) and String.starts_with?(v, prefix) and
+        :function in Graph.vertex_labels(graph, v)
+    end)
+  end
+
+  defp has_dispatch_edge?(graph, from, to) do
+    graph
+    |> Graph.out_edges(from)
+    |> Enum.any?(fn edge ->
+      edge.v2 == to and match?({:calls, :protocol_impl}, edge.label)
     end)
   end
 end

@@ -70,17 +70,24 @@
   line_count: :normalized,
   modules: [
     %{
+      impl_for: nil,
       line: 1,
       moduledoc:
         "Protocol declaration. Extraction should recognize this as a\ndistinct structure from `defmodule` — `defprotocol` expands to\na module but the callbacks are the contract, not plain functions.\n\nHistorical context: `defprotocol` used to surface as just another\nmodule with a few odd functions. Any future refactor that tightens\nprotocol handling will diff against this fixture.\n",
       name: "Giulia.Fixtures.Serializable"
     },
     %{
+      impl_for: "Giulia.Fixtures.Serializable",
       line: 23,
       moduledoc: "BitString implementation of the Serializable protocol.",
       name: "Giulia.Fixtures.Serializable.BitString"
     },
-    %{line: 31, moduledoc: nil, name: "Giulia.Fixtures.Serializable.Integer"}
+    %{
+      impl_for: "Giulia.Fixtures.Serializable",
+      line: 31,
+      moduledoc: nil,
+      name: "Giulia.Fixtures.Serializable.Integer"
+    }
   ],
   optional_callbacks: [],
   path: "<fixture>",

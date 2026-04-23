@@ -352,6 +352,19 @@ defmodule Giulia.Knowledge.Metrics do
       end)
       |> MapSet.new()
 
+    # Step 4b: Build set of modules that are `defimpl` implementations.
+    # Functions inside a defimpl are reached via protocol dispatch at
+    # runtime — the static call graph never sees the call site, so
+    # without this signal every defimpl function looks dead. `impl_for`
+    # is set by the extractor (see `Giulia.AST.Extraction.module_node_info/1`
+    # for the defimpl clause). See `feedback_dispatch_edge_synthesis.md`
+    # for why this lives here rather than as a per-detector heuristic.
+    protocol_impl_modules =
+      all_asts
+      |> Enum.flat_map(fn {_path, data} -> data[:modules] || [] end)
+      |> Enum.filter(fn mod -> is_binary(Map.get(mod, :impl_for)) end)
+      |> MapSet.new(& &1.name)
+
     # Step 5: Find dead functions
     dead =
       all_functions
@@ -359,6 +372,7 @@ defmodule Giulia.Knowledge.Metrics do
         name_arity = {to_string(func.name), func.arity}
 
         MapSet.member?(ignored_modules, func.module) or
+          MapSet.member?(protocol_impl_modules, func.module) or
           MapSet.member?(@implicit_functions, name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or

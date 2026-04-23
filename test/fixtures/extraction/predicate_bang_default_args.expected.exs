@@ -89,6 +89,7 @@
   line_count: :normalized,
   modules: [
     %{
+      impl_for: nil,
       line: 1,
       moduledoc:
         "Covers the two Step 1 extraction regressions:\n\n- Predicate functions (`?` suffix) and bang functions (`!` suffix)\n  were dropped by a regex that only accepted `\\\\w+` — `?` and `!`\n  are not word characters.\n- Default args produce multiple arities at extraction time\n  (`def foo(x, y \\\\\\\\ :default)` emits both `foo/1` and `foo/2`),\n  and earlier passes tracked only the max arity.\n\nBoth have regression tests; this fixture freezes the extraction\noutput so a future refactor that silently changes the arity list,\nreorders functions, or drops the `?`/`!` suffix gets surfaced as\na diff to the golden file.\n",

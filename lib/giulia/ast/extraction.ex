@@ -54,14 +54,19 @@ defmodule Giulia.AST.Extraction do
 
   defp module_traverse_pre(node, {mods, stack}) do
     case safe_module_node_info(node) do
-      {:ok, local_name, line, body} ->
+      {:ok, local_name, line, body, impl_for} ->
         full_name = qualify(stack, local_name)
         moduledoc = extract_moduledoc_from_body(body)
 
+        # `impl_for` is the protocol name declared by `defimpl Proto, for: T`;
+        # nil for plain `defmodule` / `defprotocol`. Carried through so the
+        # Builder can synthesize protocol-dispatch edges without having to
+        # reverse-engineer the signal from module name patterns.
         mod_info = %{
           name: full_name,
           line: line,
-          moduledoc: moduledoc
+          moduledoc: moduledoc,
+          impl_for: impl_for
         }
 
         {node, {[mod_info | mods], [full_name | stack]}}
@@ -73,7 +78,7 @@ defmodule Giulia.AST.Extraction do
 
   defp module_traverse_post(node, {mods, stack}) do
     case safe_module_node_info(node) do
-      {:ok, _, _, _} ->
+      {:ok, _, _, _, _} ->
         # Pop the module we pushed in pre
         case stack do
           [_top | rest] -> {node, {mods, rest}}
@@ -88,10 +93,12 @@ defmodule Giulia.AST.Extraction do
   defp qualify([], local_name), do: local_name
   defp qualify([top | _rest], local_name), do: "#{top}.#{local_name}"
 
-  # Safe wrapper that never crashes. Returns {:ok, local_name, line,
-  # body} for module-producing nodes, :skip otherwise. `local_name`
-  # is the module's name as declared at this level (the enclosing
-  # stack prefixes it for nested cases).
+  # Safe wrapper that never crashes. Returns
+  # `{:ok, local_name, line, body, impl_for}` for module-producing
+  # nodes, `:skip` otherwise. `local_name` is the module's name as
+  # declared at this level (the enclosing stack prefixes it for nested
+  # cases). `impl_for` is the protocol module name for `defimpl` nodes,
+  # `nil` for plain `defmodule` / `defprotocol`.
   defp safe_module_node_info(node) do
     try do
       module_node_info(node)
@@ -106,24 +113,25 @@ defmodule Giulia.AST.Extraction do
   defp module_node_info({:defmodule, meta, [{:__aliases__, _, parts} | rest]})
        when is_list(parts) do
     name = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
-    {:ok, name, Keyword.get(meta, :line, 0), rest}
+    {:ok, name, Keyword.get(meta, :line, 0), rest, nil}
   end
 
   # defmodule :atom_name do ... end (rare)
   defp module_node_info({:defmodule, meta, [module_atom | rest]}) when is_atom(module_atom) do
-    {:ok, Atom.to_string(module_atom), Keyword.get(meta, :line, 0), rest}
+    {:ok, Atom.to_string(module_atom), Keyword.get(meta, :line, 0), rest, nil}
   end
 
   # defprotocol Name do ... end — same shape as defmodule for naming.
   defp module_node_info({:defprotocol, meta, [{:__aliases__, _, parts} | rest]})
        when is_list(parts) do
     name = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
-    {:ok, name, Keyword.get(meta, :line, 0), rest}
+    {:ok, name, Keyword.get(meta, :line, 0), rest, nil}
   end
 
   # defimpl Proto, for: Type do ... end
-  # Name is constructed as "Proto.Type". Handle both plain-kw ([for: Type])
-  # and Sourceror's __block__-wrapped form.
+  # Name is constructed as "Proto.Type". `impl_for` is the protocol
+  # module so the Builder can synthesize dispatch edges. Handle both
+  # plain-kw ([for: Type]) and Sourceror's __block__-wrapped form.
   defp module_node_info(
          {:defimpl, meta, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | rest]}
        )
@@ -133,7 +141,7 @@ defmodule Giulia.AST.Extraction do
     if for_key_is_for?(for_key) do
       case type_ast_to_string(type_ast) do
         {:ok, type_name} ->
-          {:ok, "#{proto_name}.#{type_name}", Keyword.get(meta, :line, 0), rest}
+          {:ok, "#{proto_name}.#{type_name}", Keyword.get(meta, :line, 0), rest, proto_name}
 
         :skip ->
           :skip
@@ -250,7 +258,7 @@ defmodule Giulia.AST.Extraction do
 
   defp function_traverse_pre(node, {funcs, stack} = acc) do
     case safe_module_node_info(node) do
-      {:ok, local_name, _line, _body} ->
+      {:ok, local_name, _line, _body, _impl_for} ->
         full_name = qualify(stack, local_name)
         {node, {funcs, [full_name | stack]}}
 
@@ -268,7 +276,7 @@ defmodule Giulia.AST.Extraction do
 
   defp function_traverse_post(node, {funcs, stack}) do
     case safe_module_node_info(node) do
-      {:ok, _, _, _} ->
+      {:ok, _, _, _, _} ->
         case stack do
           [_top | rest] -> {node, {funcs, rest}}
           [] -> {node, {funcs, []}}

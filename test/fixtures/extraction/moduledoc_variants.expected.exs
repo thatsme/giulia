@@ -53,19 +53,22 @@
   line_count: :normalized,
   modules: [
     %{
+      impl_for: nil,
       line: 1,
       moduledoc:
         "Heredoc form.\n\nMulti-line content with embedded `quoted tokens` and **markdown**.\nThe extractor must preserve the string content verbatim.\n",
       name: "Giulia.Fixtures.ModuledocHeredoc"
     },
     %{
+      impl_for: nil,
       line: 12,
       moduledoc: "Single-line string form.",
       name: "Giulia.Fixtures.ModuledocSingleLine"
     },
-    %{line: 18, moduledoc: false, name: "Giulia.Fixtures.ModuledocFalse"},
-    %{line: 27, moduledoc: nil, name: "Giulia.Fixtures.ModuledocMissing"},
+    %{impl_for: nil, line: 18, moduledoc: false, name: "Giulia.Fixtures.ModuledocFalse"},
+    %{impl_for: nil, line: 27, moduledoc: nil, name: "Giulia.Fixtures.ModuledocMissing"},
     %{
+      impl_for: nil,
       line: 32,
       moduledoc: "Sigil_S form — no interpolation, preserves \#{literals}.\n",
       name: "Giulia.Fixtures.ModuledocSigilS"

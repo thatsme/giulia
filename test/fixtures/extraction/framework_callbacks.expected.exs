@@ -65,6 +65,7 @@
   line_count: :normalized,
   modules: [
     %{
+      impl_for: nil,
       line: 1,
       moduledoc:
         "GenServer-style module exercising common framework wiring that\nextraction must see: `use GenServer`, `@impl true`, callback\nfunctions (`init/1`, `handle_call/3`, `handle_cast/2`,\n`terminate/2`), plus `@behaviour` + `@callback` declarations.\n\nHistorical regressions in this area: callbacks missed entirely\nbecause the extraction walked only top-level `def`; `@impl true`\non a `def` was sometimes attributed to the wrong function when\nsibling attributes were reordered.\n",

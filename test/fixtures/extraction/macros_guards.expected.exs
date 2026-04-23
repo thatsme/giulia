@@ -88,6 +88,7 @@
   line_count: :normalized,
   modules: [
     %{
+      impl_for: nil,
       line: 1,
       moduledoc:
         "Covers `defmacro` / `defmacrop` / `defguard` / `defguardp` extraction\nagainst plain `def` / `defp`. Each has a distinct `type` atom in\n`function_info` and different downstream semantics (macros expand\nat compile time; guards have a restricted expression subset).\n",
