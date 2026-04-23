@@ -82,7 +82,16 @@ defmodule Giulia.Knowledge.Builder do
     # see, so downstream detectors (dead_code, change_risk, etc.) treat
     # impl functions as live. See `feedback_dispatch_edge_synthesis.md`
     # for the architectural commitment this implements.
-    add_protocol_dispatch_edges(graph, ast_data)
+    graph = add_protocol_dispatch_edges(graph, ast_data)
+
+    # Pass 8: Behaviour-dispatch edges — synthesizes
+    # {:calls, :behaviour_impl} edges from an external-framework behaviour
+    # module (GenServer, Mix.Task, Ecto.Type, Phoenix.LiveView, etc.) to
+    # each callback function in each implementer. Reuses the static known-
+    # behaviours map in `Knowledge.Behaviours` as the source of truth for
+    # callback signatures; only emits edges for callbacks the implementer
+    # actually defines.
+    add_behaviour_dispatch_edges(graph, ast_data)
   end
 
   # ============================================================================
@@ -902,6 +911,89 @@ defmodule Giulia.Knowledge.Builder do
     |> Graph.out_edges(from)
     |> Enum.any?(fn edge ->
       edge.v2 == to and match?({:calls, :protocol_impl}, edge.label)
+    end)
+  end
+
+  # ============================================================================
+  # Pass 8: Behaviour-dispatch edges
+  # ============================================================================
+
+  # Iterate each module's `imports` for `use X` / `@behaviour X` where X
+  # is a known framework behaviour. For each declared callback whose
+  # `{name, arity}` matches a function the module defines, emit an
+  # edge from the behaviour module to the implementer function. Same
+  # architectural role as Pass 7 (`add_protocol_dispatch_edges`) — makes
+  # runtime-dispatched callbacks reachable in graph traversal so
+  # downstream analyses don't need their own behaviour-awareness logic.
+  defp add_behaviour_dispatch_edges(graph, ast_data) do
+    Enum.reduce(ast_data, graph, fn {_path, data}, g ->
+      modules = data[:modules] || []
+      imports = data[:imports] || []
+      functions = data[:functions] || []
+
+      declared = Giulia.Knowledge.Behaviours.declared_known_behaviours(imports)
+
+      if declared == [] do
+        g
+      else
+        # "First module wins" is acceptable here: mixed-module-in-one-file
+        # is rare for behaviour implementations (GenServers, Phoenix
+        # LiveViews, Ecto types all conventionally live one-per-file).
+        # If observed later, lift this to a module-stack traversal.
+        primary_module =
+          case modules do
+            [%{name: name} | _] -> name
+            _ -> nil
+          end
+
+        if primary_module do
+          Enum.reduce(declared, g, fn behaviour_name, g2 ->
+            g2 = ensure_behaviour_vertex(g2, behaviour_name)
+            add_edges_for_declared_behaviour(g2, behaviour_name, primary_module, functions)
+          end)
+        else
+          g
+        end
+      end
+    end)
+  end
+
+  defp ensure_behaviour_vertex(graph, behaviour_name) do
+    if Graph.has_vertex?(graph, behaviour_name) do
+      graph
+    else
+      Graph.add_vertex(graph, behaviour_name, :module)
+    end
+  end
+
+  defp add_edges_for_declared_behaviour(graph, behaviour_name, module_name, functions) do
+    defined = MapSet.new(functions, fn f -> {to_string(f.name), f.arity} end)
+
+    behaviour_name
+    |> Giulia.Knowledge.Behaviours.callbacks_for()
+    |> Enum.reduce(graph, fn {cb_name, cb_arity}, g ->
+      key = {to_string(cb_name), cb_arity}
+
+      if MapSet.member?(defined, key) do
+        impl_vertex = "#{module_name}.#{cb_name}/#{cb_arity}"
+
+        if Graph.has_vertex?(g, impl_vertex) and
+             not has_behaviour_dispatch_edge?(g, behaviour_name, impl_vertex) do
+          Graph.add_edge(g, behaviour_name, impl_vertex, label: {:calls, :behaviour_impl})
+        else
+          g
+        end
+      else
+        g
+      end
+    end)
+  end
+
+  defp has_behaviour_dispatch_edge?(graph, from, to) do
+    graph
+    |> Graph.out_edges(from)
+    |> Enum.any?(fn edge ->
+      edge.v2 == to and match?({:calls, :behaviour_impl}, edge.label)
     end)
   end
 end

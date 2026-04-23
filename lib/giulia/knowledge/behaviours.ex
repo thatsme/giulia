@@ -11,6 +11,73 @@ defmodule Giulia.Knowledge.Behaviours do
   alias Giulia.Knowledge.MacroMap
 
   # ============================================================================
+  # Known external behaviours
+  # ============================================================================
+  #
+  # Static map of stdlib / ecosystem behaviours to their callback
+  # signatures. Keyed by the string module name as it appears in
+  # `use SomeModule` or `@behaviour SomeModule` declarations. Covers
+  # the frameworks that account for the bulk of real-world Elixir
+  # dispatch — dead_code and future graph-traversal analyses use this
+  # to avoid flagging callback functions as dead.
+  #
+  # v1 approach (inline static map): simplest, ships immediately,
+  # adequate for the behaviours implemented by >95% of Elixir projects.
+  # Maintenance liability acknowledged — callback sets evolve as
+  # frameworks change. TODO for future slice: compile-time introspection
+  # against loadable behaviour modules so the map becomes derivative,
+  # not authoritative.
+  @known_behaviour_callbacks %{
+    "GenServer" => [
+      init: 1, handle_call: 3, handle_cast: 2, handle_info: 2,
+      handle_continue: 2, terminate: 2, code_change: 3, format_status: 1, format_status: 2
+    ],
+    "Supervisor" => [init: 1],
+    "DynamicSupervisor" => [init: 1],
+    "Application" => [start: 2, stop: 1, config_change: 3, prep_stop: 1, start_phase: 3],
+    "Mix.Task" => [run: 1],
+    "Mix.Task.Compiler" => [run: 1, manifests: 0, clean: 0],
+    "Mix.Project" => [project: 0, application: 0, cli: 0, config: 0, aliases: 0],
+    "PromEx.Plugin" => [
+      event_metrics: 1, polling_metrics: 1, manual_metrics: 1,
+      execute_cache_metrics: 1, execute_write_buffer_metrics: 1
+    ],
+    "Ecto.Type" => [type: 0, cast: 1, load: 1, dump: 1, equal?: 2, embed_as: 1],
+    "Ecto.ParameterizedType" => [
+      type: 1, init: 1, cast: 2, load: 3, dump: 2, equal?: 3, embed_as: 1
+    ],
+    "Plug" => [init: 1, call: 2],
+    "Plug.ErrorHandler" => [handle_errors: 2],
+    "Phoenix.Controller" => [action: 2, init: 1, call: 2],
+    "Phoenix.LiveView" => [
+      mount: 3, render: 1, handle_params: 3, handle_event: 3, handle_info: 2,
+      handle_call: 3, handle_cast: 2, terminate: 2, handle_async: 3
+    ],
+    "Phoenix.LiveComponent" => [mount: 1, update: 2, render: 1, handle_event: 3],
+    "Phoenix.Endpoint" => [init: 1, call: 2],
+    "Phoenix.Param" => [to_param: 1],
+    "Phoenix.HTML.Safe" => [to_iodata: 1],
+    "Oban.Worker" => [perform: 1, backoff: 1, timeout: 1, new: 2],
+    "Bamboo.Adapter" => [deliver: 2, handle_config: 1, supports_attachments?: 0],
+    "Jason.Encoder" => [encode: 2]
+  }
+
+  @doc """
+  List of behaviour module names recognized by the indexer.
+  """
+  @spec known_behaviours() :: [String.t()]
+  def known_behaviours, do: Map.keys(@known_behaviour_callbacks)
+
+  @doc """
+  Callback `{name, arity}` pairs for a known behaviour module name,
+  or `[]` if the behaviour is unknown.
+  """
+  @spec callbacks_for(String.t()) :: [{atom(), non_neg_integer()}]
+  def callbacks_for(behaviour_name) do
+    Map.get(@known_behaviour_callbacks, behaviour_name, [])
+  end
+
+  # ============================================================================
   # Behaviour Integrity Check
   # ============================================================================
 
@@ -151,18 +218,66 @@ defmodule Giulia.Knowledge.Behaviours do
   """
   @spec collect_behaviour_callbacks(Graph.t(), String.t()) :: MapSet.t()
   def collect_behaviour_callbacks(graph, project_path) do
-    Graph.edges(graph)
-    |> Enum.filter(fn edge -> edge.label == :implements end)
-    |> Enum.reduce(MapSet.new(), fn edge, acc ->
-      implementer = edge.v1
-      behaviour = edge.v2
+    # Source 1: in-tree behaviours — modules declaring @callback that
+    # have an :implements edge from an implementer. This has always
+    # worked; `Plausible.Imported.Importer`'s callbacks appear here.
+    in_tree =
+      Graph.edges(graph)
+      |> Enum.filter(fn edge -> edge.label == :implements end)
+      |> Enum.reduce(MapSet.new(), fn edge, acc ->
+        implementer = edge.v1
+        behaviour = edge.v2
 
-      callbacks = Giulia.Context.Store.Query.list_callbacks(project_path, behaviour)
+        callbacks = Giulia.Context.Store.Query.list_callbacks(project_path, behaviour)
 
-      Enum.reduce(callbacks, acc, fn cb, set ->
-        MapSet.put(set, {implementer, to_string(cb.function), cb.arity})
+        Enum.reduce(callbacks, acc, fn cb, set ->
+          MapSet.put(set, {implementer, to_string(cb.function), cb.arity})
+        end)
       end)
+
+    # Source 2: external behaviours from `@known_behaviour_callbacks`.
+    # The behaviour module (GenServer, Mix.Task, Ecto.Type, etc.) is
+    # not in the project graph, so there's no :implements edge to walk.
+    # Instead, iterate module_info entries, find declarations of known
+    # behaviours via `use X` or `@behaviour X` in imports, and emit
+    # exemption tuples for each callback in the known map.
+    all_asts = Giulia.Context.Store.all_asts(project_path)
+
+    external =
+      Enum.reduce(all_asts, MapSet.new(), fn {_path, data}, acc ->
+        modules = data[:modules] || []
+        imports = data[:imports] || []
+
+        declared = declared_known_behaviours(imports)
+
+        Enum.reduce(modules, acc, fn mod, acc2 ->
+          Enum.reduce(declared, acc2, fn behaviour_name, acc3 ->
+            Enum.reduce(callbacks_for(behaviour_name), acc3, fn {cb_name, cb_arity}, set ->
+              MapSet.put(set, {mod.name, to_string(cb_name), cb_arity})
+            end)
+          end)
+        end)
+      end)
+
+    MapSet.union(in_tree, external)
+  end
+
+  @doc false
+  # Returns the list of known-behaviour module names declared by a
+  # module's imports. Handles both `use X` and `@behaviour X`; the
+  # current extractor conflates them under `type: :use` so we look at
+  # that type and filter against the known-behaviours table. Either
+  # form is treated as "this module commits to implementing X's
+  # callbacks" — which is true at the Elixir level too (use typically
+  # injects @behaviour).
+  @spec declared_known_behaviours([map()]) :: [String.t()]
+  def declared_known_behaviours(imports) do
+    imports
+    |> Enum.filter(fn imp ->
+      imp.type in [:use, :behaviour] and Map.has_key?(@known_behaviour_callbacks, imp.module)
     end)
+    |> Enum.map(& &1.module)
+    |> Enum.uniq()
   end
 
   # --- Private helpers ---
