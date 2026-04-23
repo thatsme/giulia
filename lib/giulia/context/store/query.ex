@@ -105,27 +105,32 @@ defmodule Giulia.Context.Store.Query do
     all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       functions = ast_data[:functions] || []
-      modules = ast_data[:modules] || []
-      module_name = case modules do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
 
-      if module_filter == nil or module_name == module_filter do
-        Enum.map(functions, fn func ->
-          %{
-            module: module_name,
-            name: func.name,
-            arity: func.arity,
-            type: func.type,
-            file: path,
-            line: func.line,
-            complexity: Map.get(func, :complexity, 0)
-          }
-        end)
-      else
-        []
-      end
+      # Fallback for pre-traversal-refactor cached entries where
+      # function_info had no :module field. Uses the file's first
+      # declared module — matches the old "first module wins"
+      # attribution for any legacy data that slipped through.
+      fallback_module =
+        case ast_data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
+
+      functions
+      |> Enum.map(fn func ->
+        %{
+          module: Map.get(func, :module) || fallback_module,
+          name: func.name,
+          arity: func.arity,
+          type: func.type,
+          file: path,
+          line: func.line,
+          complexity: Map.get(func, :complexity, 0)
+        }
+      end)
+      |> Enum.filter(fn entry ->
+        module_filter == nil or entry.module == module_filter
+      end)
     end)
     |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
   end

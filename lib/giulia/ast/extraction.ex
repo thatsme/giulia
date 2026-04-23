@@ -12,22 +12,31 @@ defmodule Giulia.AST.Extraction do
   # ============================================================================
 
   @doc """
-  Extract module definitions from AST using Macro.prewalk.
+  Extract module definitions from AST.
+
+  Walks the AST with `Macro.traverse/4` so that nested modules are
+  qualified by their enclosing namespace (`defmodule Outer do
+  defmodule Inner do ... end end` emits both `Outer` and
+  `Outer.Inner` as distinct entries).
+
+  Recognizes three module-producing constructs:
+    * `defmodule Name`
+    * `defprotocol Name` — compiles to a module
+    * `defimpl Proto, for: Type` — compiles to `Proto.Type` (optionally
+      prefixed by the enclosing namespace)
   """
   @spec extract_modules(Macro.t()) :: [Giulia.AST.Processor.module_info()]
   def extract_modules(ast) do
     require Logger
 
     try do
-      {_ast, modules} = Macro.prewalk(ast, [], fn node, acc ->
-        case safe_extract_module_info(node) do
-          {:ok, module_info} ->
-            Logger.info("FOUND MODULE: #{inspect(module_info)}")
-            {node, [module_info | acc]}
-          :skip ->
-            {node, acc}
-        end
-      end)
+      {_ast, {modules, _stack}} =
+        Macro.traverse(
+          ast,
+          {[], []},
+          &module_traverse_pre/2,
+          &module_traverse_post/2
+        )
 
       result = Enum.reverse(modules)
       Logger.info("extract_modules found #{length(result)} modules")
@@ -43,10 +52,49 @@ defmodule Giulia.AST.Extraction do
     end
   end
 
-  # Safe wrapper that never crashes
-  defp safe_extract_module_info(node) do
+  defp module_traverse_pre(node, {mods, stack}) do
+    case safe_module_node_info(node) do
+      {:ok, local_name, line, body} ->
+        full_name = qualify(stack, local_name)
+        moduledoc = extract_moduledoc_from_body(body)
+
+        mod_info = %{
+          name: full_name,
+          line: line,
+          moduledoc: moduledoc
+        }
+
+        {node, {[mod_info | mods], [full_name | stack]}}
+
+      :skip ->
+        {node, {mods, stack}}
+    end
+  end
+
+  defp module_traverse_post(node, {mods, stack}) do
+    case safe_module_node_info(node) do
+      {:ok, _, _, _} ->
+        # Pop the module we pushed in pre
+        case stack do
+          [_top | rest] -> {node, {mods, rest}}
+          [] -> {node, {mods, []}}
+        end
+
+      :skip ->
+        {node, {mods, stack}}
+    end
+  end
+
+  defp qualify([], local_name), do: local_name
+  defp qualify([top | _rest], local_name), do: "#{top}.#{local_name}"
+
+  # Safe wrapper that never crashes. Returns {:ok, local_name, line,
+  # body} for module-producing nodes, :skip otherwise. `local_name`
+  # is the module's name as declared at this level (the enclosing
+  # stack prefixes it for nested cases).
+  defp safe_module_node_info(node) do
     try do
-      extract_module_info(node)
+      module_node_info(node)
     rescue
       _ -> :skip
     catch
@@ -54,31 +102,65 @@ defmodule Giulia.AST.Extraction do
     end
   end
 
-  # Extract module info from various AST patterns
-  defp extract_module_info({:defmodule, meta, [{:__aliases__, _, parts} | rest]}) when is_list(parts) do
-    moduledoc = extract_moduledoc_from_body(rest)
-    {:ok, %{
-      name: parts |> Enum.map(&safe_part_to_string/1) |> Enum.join("."),
-      line: Keyword.get(meta, :line, 0),
-      moduledoc: moduledoc
-    }}
+  # defmodule Name.Parts do ... end
+  defp module_node_info({:defmodule, meta, [{:__aliases__, _, parts} | rest]})
+       when is_list(parts) do
+    name = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+    {:ok, name, Keyword.get(meta, :line, 0), rest}
   end
 
-  # Handle atom module names (e.g., defmodule :SomeAtom do)
-  defp extract_module_info({:defmodule, meta, [module_atom | rest]}) when is_atom(module_atom) do
-    moduledoc = extract_moduledoc_from_body(rest)
-    {:ok, %{
-      name: Atom.to_string(module_atom),
-      line: Keyword.get(meta, :line, 0),
-      moduledoc: moduledoc
-    }}
+  # defmodule :atom_name do ... end (rare)
+  defp module_node_info({:defmodule, meta, [module_atom | rest]}) when is_atom(module_atom) do
+    {:ok, Atom.to_string(module_atom), Keyword.get(meta, :line, 0), rest}
   end
 
-  # Handle interpolated or dynamic module names - skip these
-  defp extract_module_info({:defmodule, _meta, _args}), do: :skip
+  # defprotocol Name do ... end — same shape as defmodule for naming.
+  defp module_node_info({:defprotocol, meta, [{:__aliases__, _, parts} | rest]})
+       when is_list(parts) do
+    name = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+    {:ok, name, Keyword.get(meta, :line, 0), rest}
+  end
 
-  # Not a defmodule node
-  defp extract_module_info(_), do: :skip
+  # defimpl Proto, for: Type do ... end
+  # Name is constructed as "Proto.Type". Handle both plain-kw ([for: Type])
+  # and Sourceror's __block__-wrapped form.
+  defp module_node_info(
+         {:defimpl, meta, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | rest]}
+       )
+       when is_list(proto_parts) do
+    proto_name = proto_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+
+    if for_key_is_for?(for_key) do
+      case type_ast_to_string(type_ast) do
+        {:ok, type_name} ->
+          {:ok, "#{proto_name}.#{type_name}", Keyword.get(meta, :line, 0), rest}
+
+        :skip ->
+          :skip
+      end
+    else
+      :skip
+    end
+  end
+
+  defp module_node_info({:defmodule, _meta, _args}), do: :skip
+  defp module_node_info(_), do: :skip
+
+  defp for_key_is_for?(:for), do: true
+  defp for_key_is_for?({:__block__, _, [:for]}), do: true
+  defp for_key_is_for?(_), do: false
+
+  defp type_ast_to_string({:__aliases__, _, parts}) when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp type_ast_to_string({:__block__, _, [{:__aliases__, _, parts}]}) when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp type_ast_to_string(atom) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+  defp type_ast_to_string({:__block__, _, [atom]}) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+  defp type_ast_to_string(_), do: :skip
 
   # Extract @moduledoc from module body
   # Handle standard Code.string_to_quoted format
@@ -127,27 +209,73 @@ defmodule Giulia.AST.Extraction do
   # ============================================================================
 
   @doc """
-  Extract function definitions from AST using Macro.prewalk.
+  Extract function definitions from AST.
+
+  Walks with `Macro.traverse/4` so each function is tagged with the
+  name of its enclosing module (pushed/popped on the stack by the
+  same module-recognition logic used in `extract_modules/1`).
+  Dedup is `{module, name, arity}` — identically-named functions in
+  sibling modules of the same file no longer collapse.
+
+  When a function is declared outside any module (unusual but
+  possible at the top level of a script), the module name is
+  `"Unknown"`.
   """
   @spec extract_functions(Macro.t()) :: [Giulia.AST.Processor.function_info()]
   def extract_functions(ast) do
     require Logger
 
     try do
-      {_ast, functions} = Macro.prewalk(ast, [], fn node, acc ->
-        case safe_extract_function_info(node) do
-          {:ok, func_info} -> {node, [func_info | acc]}
-          :skip -> {node, acc}
-        end
-      end)
+      {_ast, {functions, _stack}} =
+        Macro.traverse(
+          ast,
+          {[], []},
+          &function_traverse_pre/2,
+          &function_traverse_post/2
+        )
 
-      funcs = functions |> Enum.reverse() |> Enum.uniq_by(fn f -> {f.name, f.arity} end)
+      funcs =
+        functions
+        |> Enum.reverse()
+        |> Enum.uniq_by(fn f -> {f.module, f.name, f.arity} end)
+
       Logger.info("extract_functions found #{length(funcs)} functions")
       funcs
     rescue
       _ -> []
     catch
       _, _ -> []
+    end
+  end
+
+  defp function_traverse_pre(node, {funcs, stack} = acc) do
+    case safe_module_node_info(node) do
+      {:ok, local_name, _line, _body} ->
+        full_name = qualify(stack, local_name)
+        {node, {funcs, [full_name | stack]}}
+
+      :skip ->
+        case safe_extract_function_info(node) do
+          {:ok, func_info} ->
+            module = List.first(stack) || "Unknown"
+            {node, {[Map.put(func_info, :module, module) | funcs], stack}}
+
+          :skip ->
+            {node, acc}
+        end
+    end
+  end
+
+  defp function_traverse_post(node, {funcs, stack}) do
+    case safe_module_node_info(node) do
+      {:ok, _, _, _} ->
+        case stack do
+          [_top | rest] -> {node, {funcs, rest}}
+          [] -> {node, {funcs, []}}
+        end
+
+      :skip ->
+        {node, {funcs, stack}}
     end
   end
 

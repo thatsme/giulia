@@ -88,28 +88,38 @@ defmodule Giulia.Knowledge.Builder do
   end
 
   defp add_function_vertices(graph, data) do
-    modules = data[:modules] || []
     functions = data[:functions] || []
-    module_name = case modules do
-      [first | _] -> first.name
-      _ -> nil
-    end
 
-    if module_name do
-      Enum.reduce(functions, graph, fn func, g ->
-        # Elixir auto-generates a function head for each arity from
-        # min_arity..arity when default args are present. Emit a vertex for
-        # each so call sites at any generated arity can find their target.
-        min_arity = Map.get(func, :min_arity, func.arity)
+    # Each function carries its own enclosing module name in
+    # `func.module` (populated by the traversal-based extractor).
+    # Fall back to the file's first module for AST data that predates
+    # the :module field (tests that build function_info maps by hand,
+    # cached CubDB entries written before the traversal refactor).
+    # Functions with no resolvable owner are skipped — a function
+    # without a module can't produce a qualified vertex.
+    fallback_module =
+      case data[:modules] do
+        [%{name: name} | _] -> name
+        _ -> nil
+      end
 
-        Enum.reduce(min_arity..func.arity, g, fn arity, g_acc ->
-          vertex_id = "#{module_name}.#{func.name}/#{arity}"
-          Graph.add_vertex(g_acc, vertex_id, :function)
-        end)
-      end)
-    else
-      graph
-    end
+    Enum.reduce(functions, graph, fn func, g ->
+      module_name = Map.get(func, :module) || fallback_module
+
+      cond do
+        module_name in [nil, "Unknown"] ->
+          g
+
+        true ->
+          # Default args emit a vertex per arity from min_arity..arity.
+          min_arity = Map.get(func, :min_arity, func.arity)
+
+          Enum.reduce(min_arity..func.arity, g, fn arity, g_acc ->
+            vertex_id = "#{module_name}.#{func.name}/#{arity}"
+            Graph.add_vertex(g_acc, vertex_id, :function)
+          end)
+      end
+    end)
   end
 
   defp add_struct_vertices(graph, data) do

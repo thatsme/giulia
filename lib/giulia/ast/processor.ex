@@ -33,7 +33,7 @@ defmodule Giulia.AST.Processor do
         }
 
   @type module_info :: %{name: String.t(), line: non_neg_integer(), moduledoc: String.t() | false | nil}
-  @type function_info :: %{name: atom(), arity: non_neg_integer(), min_arity: non_neg_integer(), type: :def | :defp | :defmacro | :defmacrop | :defdelegate | :defguard | :defguardp, line: non_neg_integer(), complexity: non_neg_integer()}
+  @type function_info :: %{name: atom(), module: String.t(), arity: non_neg_integer(), min_arity: non_neg_integer(), type: :def | :defp | :defmacro | :defmacrop | :defdelegate | :defguard | :defguardp, line: non_neg_integer(), complexity: non_neg_integer()}
   @type import_info :: %{type: :import | :alias | :use | :require, module: String.t(), line: non_neg_integer()}
   @type type_info :: %{name: atom(), arity: non_neg_integer(), visibility: :type | :typep | :opaque, line: non_neg_integer(), definition: String.t()}
   @type spec_info :: %{function: atom(), arity: non_neg_integer(), spec: String.t(), line: non_neg_integer()}

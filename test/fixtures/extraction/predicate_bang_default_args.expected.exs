@@ -3,15 +3,87 @@
   complexity: :normalized,
   docs: [],
   functions: [
-    %{arity: 1, complexity: 1, line: 19, min_arity: 1, name: :valid?, type: :def},
-    %{arity: 2, complexity: 0, line: 22, min_arity: 2, name: :has_key?, type: :def},
-    %{arity: 2, complexity: 0, line: 25, min_arity: 2, name: :get!, type: :def},
-    %{arity: 3, complexity: 0, line: 28, min_arity: 3, name: :put!, type: :def},
-    %{arity: 2, complexity: 0, line: 32, min_arity: 1, name: :greet, type: :def},
-    %{arity: 3, complexity: 0, line: 35, min_arity: 1, name: :configure, type: :def},
-    %{arity: 1, complexity: 0, line: 41, min_arity: 1, name: :can_proceed?, type: :defp},
-    %{arity: 1, complexity: 0, line: 42, min_arity: 1, name: :must_retry!, type: :defp},
-    %{arity: 1, complexity: 0, line: 45, min_arity: 1, name: :delegated_check, type: :defdelegate}
+    %{
+      arity: 1,
+      complexity: 1,
+      line: 19,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :valid?,
+      type: :def
+    },
+    %{
+      arity: 2,
+      complexity: 0,
+      line: 22,
+      min_arity: 2,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :has_key?,
+      type: :def
+    },
+    %{
+      arity: 2,
+      complexity: 0,
+      line: 25,
+      min_arity: 2,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :get!,
+      type: :def
+    },
+    %{
+      arity: 3,
+      complexity: 0,
+      line: 28,
+      min_arity: 3,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :put!,
+      type: :def
+    },
+    %{
+      arity: 2,
+      complexity: 0,
+      line: 32,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :greet,
+      type: :def
+    },
+    %{
+      arity: 3,
+      complexity: 0,
+      line: 35,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :configure,
+      type: :def
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 41,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :can_proceed?,
+      type: :defp
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 42,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :must_retry!,
+      type: :defp
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 45,
+      min_arity: 1,
+      module: "Giulia.Fixtures.PredicateBangDefaultArgs",
+      name: :delegated_check,
+      type: :defdelegate
+    }
   ],
   imports: [],
   line_count: :normalized,

@@ -2,7 +2,53 @@
   callbacks: [],
   complexity: :normalized,
   docs: [],
-  functions: [%{arity: 0, complexity: 0, line: 9, min_arity: 0, name: :run, type: :def}],
+  functions: [
+    %{
+      arity: 0,
+      complexity: 0,
+      line: 9,
+      min_arity: 0,
+      module: "Giulia.Fixtures.ModuledocHeredoc",
+      name: :run,
+      type: :def
+    },
+    %{
+      arity: 0,
+      complexity: 0,
+      line: 15,
+      min_arity: 0,
+      module: "Giulia.Fixtures.ModuledocSingleLine",
+      name: :run,
+      type: :def
+    },
+    %{
+      arity: 0,
+      complexity: 0,
+      line: 24,
+      min_arity: 0,
+      module: "Giulia.Fixtures.ModuledocFalse",
+      name: :run,
+      type: :def
+    },
+    %{
+      arity: 0,
+      complexity: 0,
+      line: 29,
+      min_arity: 0,
+      module: "Giulia.Fixtures.ModuledocMissing",
+      name: :run,
+      type: :def
+    },
+    %{
+      arity: 0,
+      complexity: 0,
+      line: 37,
+      min_arity: 0,
+      module: "Giulia.Fixtures.ModuledocSigilS",
+      name: :run,
+      type: :def
+    }
+  ],
   imports: [],
   line_count: :normalized,
   modules: [

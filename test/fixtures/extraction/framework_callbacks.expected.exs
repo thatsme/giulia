@@ -3,12 +3,60 @@
   complexity: :normalized,
   docs: [],
   functions: [
-    %{arity: 1, complexity: 0, line: 24, min_arity: 1, name: :start_link, type: :def},
-    %{arity: 1, complexity: 0, line: 29, min_arity: 1, name: :init, type: :def},
-    %{arity: 3, complexity: 0, line: 34, min_arity: 3, name: :handle_call, type: :def},
-    %{arity: 2, complexity: 0, line: 43, min_arity: 2, name: :handle_cast, type: :def},
-    %{arity: 2, complexity: 0, line: 48, min_arity: 2, name: :terminate, type: :def},
-    %{arity: 1, complexity: 0, line: 52, min_arity: 1, name: :plain_helper, type: :def}
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 24,
+      min_arity: 1,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :start_link,
+      type: :def
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 29,
+      min_arity: 1,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :init,
+      type: :def
+    },
+    %{
+      arity: 3,
+      complexity: 0,
+      line: 34,
+      min_arity: 3,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :handle_call,
+      type: :def
+    },
+    %{
+      arity: 2,
+      complexity: 0,
+      line: 43,
+      min_arity: 2,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :handle_cast,
+      type: :def
+    },
+    %{
+      arity: 2,
+      complexity: 0,
+      line: 48,
+      min_arity: 2,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :terminate,
+      type: :def
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 52,
+      min_arity: 1,
+      module: "Giulia.Fixtures.FrameworkCallbacks",
+      name: :plain_helper,
+      type: :def
+    }
   ],
   imports: [
     %{line: 14, module: "GenServer", type: :use},
