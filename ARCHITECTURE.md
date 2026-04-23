@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 155 · v0.2.1 · 2026-03-28
+> **Document version**: Build 155 · v0.2.2 · 2026-03-28
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -29,7 +29,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   88 API endpoints          |
+ |   85 API endpoints          |
  |   MCP server (/mcp)         |
  +-----------------------------+
 ```
@@ -60,8 +60,8 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 88 API endpoints          |    | - Performance profiling   | |
-|  | - MCP server (74 tools)     |    |                           | |
+|  | - 85 API endpoints          |    | - Performance profiling   | |
+|  | - MCP server (71 tools)     |    |                           | |
 |  | - CubDB persistence         |    | Skips:                    | |
 |  | - ArcadeDB L2 snapshots     |    |  EmbeddingServing (~90MB) | |
 |  |                             |    |  Inference pools           | |
@@ -83,7 +83,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
 scanning, property graph construction, semantic embeddings), the inference engine
-(OODA loop with LLM providers), and serves all 88 API endpoints. Memory limit: 4GB.
+(OODA loop with LLM providers), and serves all 85 API endpoints. Memory limit: 4GB.
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
 via distributed Erlang on startup (AutoConnect GenServer). Its job is runtime
@@ -101,7 +101,7 @@ default `giulia_dev`) for authenticated distribution.
 
 `Giulia.Application.start/2` detects whether it is running in client mode (thin
 HTTP client, empty supervision tree) or daemon mode. In daemon mode, it starts
-children under a single `:one_for_one` supervisor (`Giulia.Supervisor`) in four
+children under a single `:one_for_one` supervisor (`Giulia.Supervisor`) in five
 tiers:
 
 ```
@@ -328,7 +328,7 @@ directly as structured tool calls, without constructing HTTP requests.
 | Module | Responsibility |
 |--------|---------------|
 | `MCP.Server` | Anubis MCP server — handles `tools/call`, `tools/list`, `resources/read` |
-| `MCP.ToolSchema` | Auto-generates 74 MCP tool definitions from `@skill` annotations on sub-routers |
+| `MCP.ToolSchema` | Auto-generates 71 MCP tool definitions from `@skill` annotations on sub-routers (74 skills minus 3 non-MCP-compatible HTML/SSE monitor endpoints) |
 | `MCP.ResourceProvider` | 5 resource templates (`giulia://projects/`, `giulia://modules/`, `giulia://graph/`, `giulia://skills/`, `giulia://status`) |
 | `Daemon.Plugs.McpAuth` | Bearer token authentication via `GIULIA_MCP_KEY` env var (constant-time comparison) |
 | `Daemon.Plugs.McpForward` | Runtime forwarder to Anubis StreamableHTTP transport (defers init to avoid persistent_term race) |
@@ -432,6 +432,7 @@ Core routes that remain in Endpoint.ex (not forwarded):
 - `GET /api/debug/paths` -- path mapping diagnostics
 - `GET /api/agent/last_trace` -- last inference trace
 - `GET /api/approvals` -- pending approval requests
+- `GET /favicon.ico` -- static favicon
 
 
 ## 7. Sub-Router Architecture (Build 94)
@@ -474,7 +475,7 @@ Sub-routers and their domains:
 | Prefix              | Router                 | Routes | Domain                              |
 |---------------------|------------------------|--------|-------------------------------------|
 | /api/index          | Routers.Index          | 9      | Module/function index, scan, verify, compact, complexity |
-| /api/knowledge      | Routers.Knowledge      | 26     | Graph queries, metrics, insights, topology, conventions |
+| /api/knowledge      | Routers.Knowledge      | 25     | Graph queries, metrics, insights, topology, conventions |
 | /api/intelligence   | Routers.Intelligence   | 5      | Briefing, preflight, architect, validate, report_rules |
 | /api/runtime        | Routers.Runtime        | 16     | BEAM introspection, trace, connect, profiles, ingest, observations |
 | /api/search         | Routers.Search         | 3      | Text search, semantic search, semantic status |
