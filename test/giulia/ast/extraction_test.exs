@@ -121,6 +121,64 @@ defmodule Giulia.AST.ExtractionTest do
       {:ok, ast} = Sourceror.parse_string("defmodule Empty do end")
       assert Extraction.extract_functions(ast) == []
     end
+
+    # Regression guard: default-arg arities. Elixir auto-generates a
+    # function head for every arity from (arity - default_count)..arity.
+    # The extractor must record min_arity so the graph can emit one
+    # function vertex per generated arity; call sites at any arity
+    # must find their target vertex.
+    test "records min_arity equal to arity when no default args" do
+      {:ok, ast} = Sourceror.parse_string("""
+      defmodule M do
+        def foo(a, b), do: {a, b}
+      end
+      """)
+
+      [func] = Extraction.extract_functions(ast)
+      assert func.arity == 2
+      assert func.min_arity == 2
+    end
+
+    test "records min_arity below arity when default args present" do
+      {:ok, ast} = Sourceror.parse_string("""
+      defmodule M do
+        def chunk(content, opts \\\\ []), do: {content, opts}
+      end
+      """)
+
+      [func] = Extraction.extract_functions(ast)
+      assert func.arity == 2
+      assert func.min_arity == 1
+    end
+
+    test "min_arity reflects every default arg" do
+      {:ok, ast} = Sourceror.parse_string("""
+      defmodule M do
+        def multi(a, b \\\\ 1, c \\\\ 2, d \\\\ 3), do: {a, b, c, d}
+      end
+      """)
+
+      [func] = Extraction.extract_functions(ast)
+      assert func.arity == 4
+      assert func.min_arity == 1
+    end
+
+    # Regression guard: predicate (`?`) and bang (`!`) function names
+    # should extract cleanly. These were silently dropped by a later
+    # regex in the builder that used \w+ (no ? or !) — the extractor
+    # itself always handled them but the coverage gap let the bug
+    # downstream live for a while.
+    test "preserves predicate ? and bang ! in function names" do
+      {:ok, ast} = Sourceror.parse_string("""
+      defmodule M do
+        def valid?(x), do: is_integer(x)
+        def update!(x), do: x + 1
+      end
+      """)
+
+      names = ast |> Extraction.extract_functions() |> Enum.map(& &1.name) |> Enum.sort()
+      assert names == [:update!, :valid?]
+    end
   end
 
   # ============================================================================
@@ -276,7 +334,12 @@ defmodule Giulia.AST.ExtractionTest do
       assert Extraction.extract_moduledoc(ast) == nil
     end
 
-    test "returns nil when moduledoc is false" do
+    test "preserves `false` when @moduledoc false is set" do
+      # @moduledoc false is semantically distinct from an absent moduledoc:
+      # it signals "this module is intentionally undocumented / internal",
+      # which downstream reporting (conventions checker, API surface, docs
+      # coverage) uses to avoid false-positive warnings. Preserve false,
+      # don't collapse to nil. See commit 979e0ff.
       source = """
       defmodule M do
         @moduledoc false
@@ -284,7 +347,7 @@ defmodule Giulia.AST.ExtractionTest do
       """
 
       {:ok, ast} = Sourceror.parse_string(source)
-      assert Extraction.extract_moduledoc(ast) == nil
+      assert Extraction.extract_moduledoc(ast) == false
     end
   end
 end

@@ -166,6 +166,51 @@ defmodule Giulia.Knowledge.BuilderTest do
       assert :function in Graph.vertex_labels(graph, "Alpha.start/0")
     end
 
+    # Regression guard: default args auto-generate function heads at every
+    # arity in min_arity..arity. The extractor records min_arity; the
+    # builder must emit a vertex per generated arity so call sites at any
+    # arity find their target vertex.
+    test "emits a vertex for each arity when min_arity < arity" do
+      ast_data = %{
+        "lib/m.ex" => %{
+          modules: [%{name: "M", line: 1}],
+          # def chunk(content, opts \\ []) → min_arity 1, arity 2
+          functions: [%{name: :chunk, arity: 2, min_arity: 1, type: :def, line: 3}],
+          imports: [],
+          structs: [],
+          callbacks: [],
+          types: [],
+          specs: [],
+          docs: []
+        }
+      }
+
+      graph = Builder.build_graph(ast_data)
+      assert Graph.has_vertex?(graph, "M.chunk/1")
+      assert Graph.has_vertex?(graph, "M.chunk/2")
+    end
+
+    test "min_arity missing falls back to single vertex at arity" do
+      # Back-compat: fixtures without min_arity (e.g. from v6 cache) should
+      # behave as before — one vertex at the reported arity.
+      ast_data = %{
+        "lib/m.ex" => %{
+          modules: [%{name: "M", line: 1}],
+          functions: [%{name: :run, arity: 1, type: :def, line: 3}],
+          imports: [],
+          structs: [],
+          callbacks: [],
+          types: [],
+          specs: [],
+          docs: []
+        }
+      }
+
+      graph = Builder.build_graph(ast_data)
+      assert Graph.has_vertex?(graph, "M.run/1")
+      refute Graph.has_vertex?(graph, "M.run/0")
+    end
+
     test "creates struct vertices" do
       graph = Builder.build_graph(ast_data_with_struct())
       # Struct vertex uses module name with :struct label
