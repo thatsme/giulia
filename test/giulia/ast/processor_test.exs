@@ -704,7 +704,11 @@ defmodule Giulia.AST.ProcessorTest do
       assert Processor.extract_moduledoc(ast) == nil
     end
 
-    test "returns nil for @moduledoc false" do
+    test "preserves `false` for @moduledoc false" do
+      # `@moduledoc false` is a deliberate opt-out signal — distinct from
+      # "no @moduledoc at all" — so downstream reporting (conventions
+      # checker, docs coverage) can avoid flagging these modules. See
+      # commit 979e0ff.
       source = """
       defmodule MyApp.Hidden do
         @moduledoc false
@@ -713,7 +717,7 @@ defmodule Giulia.AST.ProcessorTest do
       """
 
       {:ok, ast, _} = Processor.parse(source)
-      assert Processor.extract_moduledoc(ast) == nil
+      assert Processor.extract_moduledoc(ast) == false
     end
   end
 end

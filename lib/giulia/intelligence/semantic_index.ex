@@ -348,6 +348,15 @@ defmodule Giulia.Intelligence.SemanticIndex do
         :error ->
           {:error, "No embeddings for this project. Run /api/index/scan first."}
 
+        # An empty list is functionally equivalent to :error for search —
+        # nothing to match against. An earlier `embed_project/1` call on
+        # a project with no indexable modules writes {:ok, []} to ETS,
+        # which otherwise falls through and returns {:ok, %{modules: [],
+        # functions: []}} — indistinguishable from a successful search
+        # that happened to score no modules.
+        {:ok, []} ->
+          {:error, "No embeddings for this project. Run /api/index/scan first."}
+
         {:ok, module_entries} ->
           # Embed the query
           [query_result] = Nx.Serving.batched_run(Giulia.EmbeddingServing, [concept])

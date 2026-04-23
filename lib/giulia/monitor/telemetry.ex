@@ -45,8 +45,15 @@ defmodule Giulia.Monitor.Telemetry do
   # ============================================================================
 
   @doc false
-  @spec handle_inference_event(list(), map(), map(), term()) :: :ok
+  @spec handle_inference_event(list(), map() | nil, map() | nil, term()) :: :ok
   def handle_inference_event(event_name, measurements, metadata, _config) do
+    # Telemetry handlers must not crash on malformed inputs — a handler
+    # that raises gets detached by :telemetry, which silently loses
+    # every future event of the same name until the process restarts.
+    # Normalize nils rather than pattern-matching on them.
+    metadata = metadata || %{}
+    measurements = measurements || %{}
+
     # Promote project_path to top-level `project` for dashboard filtering
     project = Map.get(metadata, :project_path) || Map.get(metadata, "project_path")
 

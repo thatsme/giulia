@@ -91,8 +91,8 @@ defmodule Giulia.AST.Processor do
   @spec extract_docs(Macro.t()) :: [doc_info()]
   defdelegate extract_docs(ast), to: Giulia.AST.Extraction
 
-  @doc "Extract @moduledoc from a module."
-  @spec extract_moduledoc(Macro.t()) :: String.t() | nil
+  @doc "Extract @moduledoc from a module. `false` is preserved (distinct from `nil`) because `@moduledoc false` is a deliberate opt-out signal."
+  @spec extract_moduledoc(Macro.t()) :: String.t() | false | nil
   defdelegate extract_moduledoc(ast), to: Giulia.AST.Extraction
 
   # ============================================================================
