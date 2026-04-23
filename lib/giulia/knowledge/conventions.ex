@@ -222,7 +222,8 @@ defmodule Giulia.Knowledge.Conventions do
     end)
   end
 
-  defp walk_ast(ast, file, module_name) do
+  @doc false
+  def walk_ast(ast, file, module_name) do
     {_ast, violations} =
       Macro.prewalk(ast, %{violations: [], context: []}, fn node, acc ->
         new_violations =
@@ -246,52 +247,102 @@ defmodule Giulia.Knowledge.Conventions do
   end
 
   # Rule: Use Repo.get not Repo.get! + rescue / Use Integer.parse not String.to_integer + rescue
-  defp check_try_rescue_flow_control({:try, meta, _} = node, file, module_name) do
-    source = Macro.to_string(node)
+  #
+  # The detection walks the try's `:do` body AST looking for actual call
+  # sites of the banned functions. An earlier implementation used
+  # `String.contains?(Macro.to_string(node), "Repo.get!")` which matched
+  # on string literals, function captures, and variable-name fragments
+  # inside the try body — silent over-match. See
+  # `test/giulia/knowledge/conventions_test.exs` for the regression
+  # fixtures.
+  defp check_try_rescue_flow_control({:try, meta, [clauses]}, file, module_name)
+       when is_list(clauses) do
+    body = get_try_clause(clauses, :do)
+    rescues = get_try_clause(clauses, :rescue)
 
-    cond do
-      String.contains?(source, "Repo.get!") ->
-        [violation(
-          rule: "try_rescue_flow_control",
-          message: "Repo.get! inside try/rescue — use Repo.get/2 + case instead",
-          category: "error_handling",
-          severity: "error",
-          file: file,
-          line: meta[:line] || 0,
-          module: module_name,
-          convention_ref: "Error Handling > Use Repo.get not Repo.get! + rescue"
-        )]
+    if body != nil and is_list(rescues) and rescues != [] do
+      cond do
+        try_body_calls?(body, [:Repo], :get!) ->
+          [violation(
+            rule: "try_rescue_flow_control",
+            message: "Repo.get! inside try/rescue — use Repo.get/2 + case instead",
+            category: "error_handling",
+            severity: "error",
+            file: file,
+            line: meta[:line] || 0,
+            module: module_name,
+            convention_ref: "Error Handling > Use Repo.get not Repo.get! + rescue"
+          )]
 
-      String.contains?(source, "String.to_integer") ->
-        [violation(
-          rule: "try_rescue_flow_control",
-          message: "String.to_integer inside try/rescue — use Integer.parse/1 instead",
-          category: "error_handling",
-          severity: "error",
-          file: file,
-          line: meta[:line] || 0,
-          module: module_name,
-          convention_ref: "Error Handling > Use Integer.parse not String.to_integer + rescue"
-        )]
+        try_body_calls?(body, [:String], :to_integer) ->
+          [violation(
+            rule: "try_rescue_flow_control",
+            message: "String.to_integer inside try/rescue — use Integer.parse/1 instead",
+            category: "error_handling",
+            severity: "error",
+            file: file,
+            line: meta[:line] || 0,
+            module: module_name,
+            convention_ref: "Error Handling > Use Integer.parse not String.to_integer + rescue"
+          )]
 
-      String.contains?(source, "String.to_float") ->
-        [violation(
-          rule: "try_rescue_flow_control",
-          message: "String.to_float inside try/rescue — use Float.parse/1 instead",
-          category: "error_handling",
-          severity: "error",
-          file: file,
-          line: meta[:line] || 0,
-          module: module_name,
-          convention_ref: "Error Handling > Use Integer.parse not String.to_integer + rescue"
-        )]
+        try_body_calls?(body, [:String], :to_float) ->
+          [violation(
+            rule: "try_rescue_flow_control",
+            message: "String.to_float inside try/rescue — use Float.parse/1 instead",
+            category: "error_handling",
+            severity: "error",
+            file: file,
+            line: meta[:line] || 0,
+            module: module_name,
+            convention_ref: "Error Handling > Use Integer.parse not String.to_integer + rescue"
+          )]
 
-      true ->
-        []
+        true ->
+          []
+      end
+    else
+      []
     end
   end
 
   defp check_try_rescue_flow_control(_node, _file, _module), do: []
+
+  # Sourceror wraps keyword keys in `{:__block__, meta, [atom]}` tuples
+  # instead of bare atoms, so `Keyword.get/2` does not find them. Handle
+  # both shapes: the `:do`/`:rescue` clause keys from Sourceror-parsed
+  # source, and the bare-atom form that `Code.string_to_quoted/1` emits.
+  defp get_try_clause(clauses, key) do
+    Enum.find_value(clauses, fn
+      {{:__block__, _, [^key]}, value} -> value
+      {^key, value} -> value
+      _ -> false
+    end)
+  end
+
+  # Returns true iff `body_ast` contains a direct call node matching
+  # `Module.func(arg, ...)` with at least one argument. Skips capture
+  # expressions (`&Mod.f/n` and `&(...)`) because a call inside a
+  # capture is deferred — it is not evaluated inside the enclosing try.
+  defp try_body_calls?(body_ast, module_aliases, func) when is_list(module_aliases) do
+    {_ast, found} =
+      Macro.prewalk(body_ast, false, fn
+        node, true ->
+          {node, true}
+
+        {:&, _, _}, false ->
+          {[], false}
+
+        {{:., _, [{:__aliases__, _, ^module_aliases}, ^func]}, _, args} = node, false
+        when is_list(args) and args != [] ->
+          {node, true}
+
+        node, false ->
+          {node, false}
+      end)
+
+    found
+  end
 
   # Rule: Never swallow errors silently (rescue _ -> nil)
   defp check_silent_rescue({:try, meta, [body]} = _node, file, module_name) do
