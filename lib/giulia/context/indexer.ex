@@ -43,8 +43,8 @@ defmodule Giulia.Context.Indexer do
     .nuxt
   )
 
-  @type project_status :: %{status: :idle | :scanning, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
-  @type indexer_status :: %{project_path: String.t() | nil, status: :idle | :scanning, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
+  @type project_status :: %{status: :idle | :scanning | :empty, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
+  @type indexer_status :: %{project_path: String.t() | nil, status: :idle | :scanning | :empty, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
 
   # File patterns to ignore
   @ignore_patterns [
@@ -212,15 +212,29 @@ defmodule Giulia.Context.Indexer do
   def handle_cast({:scan_complete, project_path}, state) do
     stats = Giulia.Context.Store.stats(project_path)
 
+    # A successful scan that indexed zero files is almost certainly a
+    # bug, not a valid state — wrong path, over-aggressive ignore
+    # rules, or a directory with only dependencies. Surface it as
+    # `:empty` so clients can distinguish "scan complete, nothing to
+    # do" from "scan complete, 0 files found — someone should look."
+    status = if stats.ast_files == 0, do: :empty, else: :idle
+
     project_state = %{
-      status: :idle,
+      status: status,
       last_scan: DateTime.utc_now(),
       file_count: stats.ast_files
     }
 
     new_state = put_project_status(state, project_path, project_state)
 
-    Logger.info("Scan complete for #{project_path}. Indexed #{stats.ast_files} files.")
+    if stats.ast_files == 0 do
+      Logger.warning(
+        "[Indexer] Scan of #{project_path} completed with 0 indexed files — " <>
+          "project appears empty or all files were filtered. Status set to :empty."
+      )
+    else
+      Logger.info("Scan complete for #{project_path}. Indexed #{stats.ast_files} files.")
+    end
 
     # Debug: Inspect what's actually in ETS
     Giulia.Context.Store.debug_inspect(project_path)
@@ -513,11 +527,27 @@ defmodule Giulia.Context.Indexer do
     end
   end
 
-  defp valid_project_root?(nil), do: false
+  @doc """
+  List the filenames that identify a directory as a project root.
+  Public so the HTTP layer can report expected markers in 422 errors.
+  """
+  @spec project_markers() :: [String.t()]
+  def project_markers, do: @project_markers
 
-  defp valid_project_root?(path) do
+  @doc """
+  Returns true iff `path` is a binary pointing at a directory that
+  contains at least one of `project_markers/0`. Public so the HTTP
+  layer can validate upfront and reject with 422 instead of
+  accepting a cast that the scan handler will silently refuse.
+  """
+  @spec valid_project_root?(term()) :: boolean()
+  def valid_project_root?(nil), do: false
+
+  def valid_project_root?(path) when is_binary(path) do
     Enum.any?(@project_markers, fn marker ->
       File.exists?(Path.join(path, marker))
     end)
   end
+
+  def valid_project_root?(_), do: false
 end

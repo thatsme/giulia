@@ -18,9 +18,54 @@ defmodule Giulia.Context.IndexerTest do
       assert Map.has_key?(status, :file_count)
     end
 
-    test "status is :idle or :scanning" do
+    test "status is :idle, :scanning, or :empty" do
       %{status: s} = Indexer.status()
-      assert s in [:idle, :scanning]
+      assert s in [:idle, :scanning, :empty]
+    end
+  end
+
+  describe "valid_project_root?/1 + project_markers/0" do
+    # These are the hooks `/api/index/scan` uses to reject bad paths
+    # with a 422 before dispatching a cast the Indexer would silently
+    # refuse. Pin the contract so the HTTP layer stays in sync.
+    test "project_markers/0 returns the canonical marker list" do
+      markers = Indexer.project_markers()
+      assert is_list(markers)
+      assert "mix.exs" in markers
+      assert "GIULIA.md" in markers
+      assert "package.json" in markers
+      assert "Cargo.toml" in markers
+      assert "go.mod" in markers
+    end
+
+    test "valid_project_root?/1 returns false for nil, non-binary, and missing paths" do
+      refute Indexer.valid_project_root?(nil)
+      refute Indexer.valid_project_root?(:not_a_path)
+      refute Indexer.valid_project_root?(42)
+      refute Indexer.valid_project_root?("/definitely/does/not/exist/#{System.unique_integer([:positive])}")
+    end
+
+    test "valid_project_root?/1 returns true when a project marker exists" do
+      tmp = Path.join(System.tmp_dir!(), "giulia_valid_root_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "mix.exs"), "# marker")
+
+      try do
+        assert Indexer.valid_project_root?(tmp)
+      after
+        File.rm_rf!(tmp)
+      end
+    end
+
+    test "valid_project_root?/1 returns false for a directory without any marker" do
+      tmp = Path.join(System.tmp_dir!(), "giulia_no_marker_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(tmp)
+
+      try do
+        refute Indexer.valid_project_root?(tmp)
+      after
+        File.rm_rf!(tmp)
+      end
     end
   end
 

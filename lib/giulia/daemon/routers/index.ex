@@ -143,8 +143,35 @@ defmodule Giulia.Daemon.Routers.Index do
     path = conn.body_params["path"]
     resolved_path = Giulia.Core.PathMapper.resolve_path(path)
 
-    Giulia.Context.Indexer.scan(resolved_path)
-    send_json(conn, 200, %{status: "scanning", path: resolved_path})
+    cond do
+      not is_binary(resolved_path) or resolved_path == "" ->
+        send_json(conn, 422, %{
+          error: "Missing or invalid :path",
+          received: path
+        })
+
+      not File.dir?(resolved_path) ->
+        send_json(conn, 422, %{
+          error: "Path does not exist or is not a directory",
+          path: resolved_path,
+          received: path
+        })
+
+      not Giulia.Context.Indexer.valid_project_root?(resolved_path) ->
+        # The Indexer refuses to scan directories without a project
+        # marker anyway (see valid_project_root?/1). Return 422 up
+        # front instead of 200 "scanning" followed by a silent cast
+        # rejection.
+        send_json(conn, 422, %{
+          error: "No project root marker found",
+          path: resolved_path,
+          expected_markers: Giulia.Context.Indexer.project_markers()
+        })
+
+      true ->
+        Giulia.Context.Indexer.scan(resolved_path)
+        send_json(conn, 200, %{status: "scanning", path: resolved_path})
+    end
   end
 
   # -------------------------------------------------------------------

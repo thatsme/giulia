@@ -175,8 +175,11 @@ defmodule Giulia.Integration.ApiAdversarialTest do
 
     test "POST /api/index/scan with nil path" do
       conn = post("/api/index/scan", %{path: nil})
-      # PathMapper.resolve_path(nil) returns nil — should not crash
-      assert conn.status in [200, 400]
+      # PathMapper.resolve_path(nil) returns nil; the scan handler
+      # rejects with 422 (Unprocessable Entity) so the caller sees
+      # the bad input immediately instead of a 200 "scanning" that
+      # silently no-ops.
+      assert conn.status == 422
     end
   end
 

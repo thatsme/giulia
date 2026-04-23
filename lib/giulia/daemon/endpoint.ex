@@ -188,12 +188,31 @@ defmodule Giulia.Daemon.Endpoint do
 
     resolved_path = Giulia.Core.PathMapper.resolve_path(path)
 
-    case Giulia.Core.ContextManager.init_project(resolved_path, opts) do
-      {:ok, _} ->
-        send_json(conn, 200, %{status: "initialized", path: resolved_path})
+    cond do
+      not is_binary(resolved_path) or resolved_path == "" ->
+        send_json(conn, 422, %{
+          error: "Missing or invalid :path",
+          received: path
+        })
 
-      {:error, reason} ->
-        send_json(conn, 400, %{error: inspect(reason)})
+      not File.dir?(resolved_path) ->
+        # Fail loud and early — a path that doesn't resolve to a real
+        # directory will silently no-op at scan time and leave the
+        # caller wondering why nothing got indexed.
+        send_json(conn, 422, %{
+          error: "Path does not exist or is not a directory",
+          path: resolved_path,
+          received: path
+        })
+
+      true ->
+        case Giulia.Core.ContextManager.init_project(resolved_path, opts) do
+          {:ok, _} ->
+            send_json(conn, 200, %{status: "initialized", path: resolved_path})
+
+          {:error, reason} ->
+            send_json(conn, 400, %{error: inspect(reason)})
+        end
     end
   end
 
