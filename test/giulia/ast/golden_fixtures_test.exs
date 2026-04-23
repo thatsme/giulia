@@ -38,7 +38,10 @@ defmodule Giulia.AST.GoldenFixturesTest do
   @fixture_cases [
     "predicate_bang_default_args",
     "moduledoc_variants",
-    "framework_callbacks"
+    "framework_callbacks",
+    "protocols_defimpl",
+    "macros_guards",
+    "nested_modules"
   ]
 
   for name <- @fixture_cases do
