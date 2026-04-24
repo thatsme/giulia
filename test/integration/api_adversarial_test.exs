@@ -46,6 +46,76 @@ defmodule Giulia.Integration.ApiAdversarialTest do
   # Project path that exists inside Docker
   @project_path "/projects/Giulia"
 
+  # Fire a real scan once before the integration tests run. The endpoints
+  # under test require indexed data — prior to the scan-readiness gate
+  # (commit introducing resolve_and_check_ready), unindexed queries
+  # silently returned 200 with empty bodies which the old tests asserted
+  # on. With the new 409-for-not-ready contract, tests must actually
+  # populate the ETS + graph state they assert against.
+  # Per-test (not setup_all) because something in the full-suite context
+  # resets Indexer/Context.Store state between tests — async test modules
+  # running in parallel, WarmRestore re-firing on reconnect, or a peer
+  # test calling clear_asts on a shared path. Lazily scanning before each
+  # test that needs indexed data is cheap once warm (Merkle short-circuit)
+  # and defensive against whatever is wiping state.
+  setup do
+    unless ready?(@project_path) do
+      Giulia.Context.Indexer.scan(@project_path)
+      wait_for_scan_completion(@project_path, 60_000)
+    end
+
+    :ok
+  end
+
+  defp ready?(path) do
+    case Giulia.Context.Indexer.status(path) do
+      %{file_count: n} when n > 0 -> graph_ready?(path)
+      _ -> false
+    end
+  end
+
+  defp wait_for_scan_completion(path, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait(path, deadline)
+  end
+
+  defp do_wait(path, deadline) do
+    ready? =
+      try do
+        case Giulia.Context.Indexer.status(path) do
+          %{status: :scanning} -> false
+          %{file_count: n} when n > 0 -> graph_ready?(path)
+          _ -> false
+        end
+      catch
+        # The Indexer GenServer can be busy during scan_complete (compile +
+        # graph rebuild + metric warm runs inline). Status calls that time
+        # out mean "still working" — treat as not-ready and keep polling.
+        :exit, _ -> false
+      end
+
+    cond do
+      ready? ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        flunk("setup scan/graph-build timed out for #{path}")
+
+      true ->
+        Process.sleep(500)
+        do_wait(path, deadline)
+    end
+  end
+
+  defp graph_ready?(path) do
+    stats = Giulia.Knowledge.Store.stats(path)
+    is_integer(stats.vertices) and stats.vertices > 0
+  rescue
+    _ -> false
+  catch
+    :exit, _ -> false
+  end
+
   # ============================================================================
   # Helpers
   # ============================================================================
@@ -458,13 +528,14 @@ defmodule Giulia.Integration.ApiAdversarialTest do
     test "extremely long path parameter" do
       long_path = "/" <> String.duplicate("a", 10_000)
       conn = get("/api/index/modules", %{path: long_path})
-      # Should not crash — either 200 with empty results or 400
-      assert conn.status in [200, 400]
+      # Should not crash — 400 (bad path), 409 (project not indexed at that
+      # path), or 200 with empty results are all honest responses.
+      assert conn.status in [200, 400, 409]
     end
 
     test "path with special characters" do
       conn = get("/api/index/modules", %{path: "/projects/<script>alert(1)</script>"})
-      assert conn.status in [200, 400]
+      assert conn.status in [200, 400, 409]
       body = json_body(conn)
       # XSS should not be reflected — response is JSON, not HTML
       assert is_map(body)
@@ -472,7 +543,7 @@ defmodule Giulia.Integration.ApiAdversarialTest do
 
     test "null bytes in path parameter" do
       conn = get("/api/index/modules", %{path: "/projects/Giulia\0/evil"})
-      assert conn.status in [200, 400]
+      assert conn.status in [200, 400, 409]
     end
 
     test "POST with non-JSON content type" do

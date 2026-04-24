@@ -49,11 +49,11 @@ defmodule Giulia.Daemon.Routers.Search do
     concept = conn.query_params["concept"] || conn.query_params["q"]
 
     if concept do
-      case resolve_project_path(conn) do
-        nil ->
-          send_json(conn, 400, %{error: "Missing required query param: path"})
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} ->
+          conn
 
-        project_path ->
+        {:ok, conn, project_path} ->
           top_k = parse_int_param(conn.query_params["top_k"], 5)
 
           case Giulia.Intelligence.SemanticIndex.search(project_path, concept, top_k) do

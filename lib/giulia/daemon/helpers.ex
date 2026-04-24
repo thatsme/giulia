@@ -95,4 +95,124 @@ defmodule Giulia.Daemon.Helpers do
       :error -> default
     end
   end
+
+  # ============================================================================
+  # Scan-state contract
+  # ============================================================================
+
+  @doc """
+  Structured readiness signal for a project's scan state.
+
+  Returns one of:
+    * `:ready` — project has indexed AST data in L1 (file_count > 0, scan completed)
+    * `{:pending, reason}` — a scan is in progress; client should poll
+    * `{:not_indexed, reason}` — project has never been scanned, OR was scanned
+      but found zero indexable files (`status: :empty`)
+
+  Scan-dependent handlers use `require_scan_ready/2` to fail loud with
+  `409 Conflict` + an actionable hint instead of silently returning
+  `vertices=0 count=0 modules=[]` — the kind of ambiguous zero-result
+  that makes LLM consumers spin without knowing the project isn't
+  indexed.
+  """
+  @spec scan_state(String.t() | nil) ::
+          :ready | {:pending, String.t()} | {:not_indexed, String.t()}
+  def scan_state(nil), do: {:not_indexed, "missing :path param"}
+  def scan_state(""), do: {:not_indexed, "empty :path param"}
+
+  def scan_state(project_path) when is_binary(project_path) do
+    case Giulia.Context.Indexer.status(project_path) do
+      %{status: :scanning} ->
+        {:pending, "scan in progress — poll GET /api/index/status?path=..."}
+
+      %{status: :empty} ->
+        {:not_indexed, "project was scanned but contained zero indexable files"}
+
+      %{status: :idle, file_count: 0} ->
+        {:not_indexed, "project has never been scanned"}
+
+      %{status: :idle, file_count: n} when is_integer(n) and n > 0 ->
+        :ready
+
+      _ ->
+        {:not_indexed, "scan state unknown"}
+    end
+  end
+
+  @doc """
+  Scan-state gate for a Plug handler. If the project is ready, returns
+  `{:ok, conn}`. Otherwise returns `{:halt, conn}` with a `409 Conflict`
+  already written to `conn` including the failure reason, the path that
+  was checked, and a hint pointing the caller at the next action.
+
+  Use via `with`:
+
+      with {:ok, conn} <- require_scan_ready(conn, resolved_path) do
+        # ... handler logic that assumes indexed data ...
+      end
+
+  The halt branch returns the already-responded conn so the caller can
+  just fall through.
+  """
+  @doc """
+  Combined gate used by most scan-dependent read handlers. Resolves
+  `?path=` from the query string AND checks scan readiness in one pass.
+  Returns `{:ok, conn, resolved_path}` when ready, or `{:halt, conn}`
+  with an error response already written (400 for missing :path, 409
+  for not-ready scan state).
+
+  Idiomatic use:
+
+      get "/stats" do
+        case resolve_and_check_ready(conn) do
+          {:halt, conn} ->
+            conn
+
+          {:ok, conn, project_path} ->
+            # handler body using project_path; conn may be fresh
+            send_json(conn, 200, ...)
+        end
+      end
+  """
+  @spec resolve_and_check_ready(Plug.Conn.t()) ::
+          {:ok, Plug.Conn.t(), String.t()} | {:halt, Plug.Conn.t()}
+  def resolve_and_check_ready(conn) do
+    case resolve_project_path(conn) do
+      nil ->
+        {:halt, send_json(conn, 400, %{error: "Missing required query param: path"})}
+
+      project_path ->
+        case require_scan_ready(conn, project_path) do
+          {:ok, conn} -> {:ok, conn, project_path}
+          {:halt, conn} -> {:halt, conn}
+        end
+    end
+  end
+
+  @spec require_scan_ready(Plug.Conn.t(), String.t() | nil) ::
+          {:ok, Plug.Conn.t()} | {:halt, Plug.Conn.t()}
+  def require_scan_ready(conn, project_path) do
+    case scan_state(project_path) do
+      :ready ->
+        {:ok, conn}
+
+      {:pending, reason} ->
+        {:halt,
+         send_json(conn, 409, %{
+           error: reason,
+           path: project_path,
+           state: "scan_in_progress",
+           hint: "GET /api/index/status?path=... to poll until status=idle"
+         })}
+
+      {:not_indexed, reason} ->
+        {:halt,
+         send_json(conn, 409, %{
+           error: reason,
+           path: project_path,
+           state: "not_indexed",
+           hint: "POST /api/index/scan with this path first"
+         })}
+    end
+  end
 end

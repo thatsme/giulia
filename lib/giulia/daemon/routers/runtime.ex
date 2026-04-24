@@ -65,12 +65,17 @@ defmodule Giulia.Daemon.Routers.Runtime do
     category: "runtime"
   }
   get "/hot_spots" do
-    node_ref = parse_node_param(conn)
-    project_path = resolve_project_path(conn)
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} ->
+        conn
 
-    case Giulia.Runtime.Inspector.hot_spots(node_ref, project_path) do
-      {:ok, spots} -> send_json(conn, 200, %{hot_spots: spots, count: length(spots)})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      {:ok, conn, project_path} ->
+        node_ref = parse_node_param(conn)
+
+        case Giulia.Runtime.Inspector.hot_spots(node_ref, project_path) do
+          {:ok, spots} -> send_json(conn, 200, %{hot_spots: spots, count: length(spots)})
+          {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+        end
     end
   end
 

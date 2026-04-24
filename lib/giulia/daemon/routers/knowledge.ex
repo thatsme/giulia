@@ -19,9 +19,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/stats" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         stats = Giulia.Knowledge.Store.stats(project_path)
         hubs = Enum.map(stats.hubs || [], fn {name, degree} -> %{module: name, degree: degree} end)
         send_json(conn, 200, %{stats | hubs: hubs})
@@ -39,9 +39,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/dependents" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
         if module do
@@ -69,9 +69,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/dependencies" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
         if module do
@@ -99,9 +99,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/centrality" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
         if module do
@@ -129,9 +129,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/impact" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module = conn.query_params["module"]
         depth = parse_int_param(conn.query_params["depth"], 2)
 
@@ -170,9 +170,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/integrity" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         case Giulia.Knowledge.Store.check_all_behaviours(project_path) do
           {:ok, :consistent} ->
             send_json(conn, 200, %{status: "consistent", fractures: []})
@@ -205,9 +205,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/dead_code" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_dead_code(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "dead_code failed", detail: inspect(reason)})
@@ -230,9 +230,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/cycles" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_cycles(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "cycles failed", detail: inspect(reason)})
@@ -255,9 +255,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/god_modules" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_god_modules(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "god_modules failed", detail: inspect(reason)})
@@ -280,9 +280,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/orphan_specs" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_orphan_specs(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "orphan_specs failed", detail: inspect(reason)})
@@ -305,9 +305,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/fan_in_out" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_fan_in_out(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "fan_in_out failed", detail: inspect(reason)})
@@ -330,9 +330,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/coupling" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_coupling(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "coupling failed", detail: inspect(reason)})
@@ -354,9 +354,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/api_surface" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         case Giulia.Knowledge.Store.find_api_surface(project_path) do
           {:ok, result} -> send_json(conn, 200, result)
         end
@@ -375,9 +375,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/change_risk" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.change_risk_score(project_path) do
             {:ok, result} -> send_json(conn, 200, result)
             {:error, reason} -> send_json(conn, 500, %{error: "change_risk failed", detail: inspect(reason)})
@@ -399,9 +399,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/path" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         from = conn.query_params["from"]
         to = conn.query_params["to"]
 
@@ -433,9 +433,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/logic_flow" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         from = conn.query_params["from"]
         to = conn.query_params["to"]
 
@@ -467,9 +467,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/style_oracle" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         query = conn.query_params["q"]
 
         if query do
@@ -555,9 +555,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/heatmap" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         case Giulia.Knowledge.Store.heatmap(project_path) do
           {:ok, result} ->
             send_json(conn, 200, result)
@@ -579,9 +579,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/unprotected_hubs" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         hub_threshold = parse_int_param(conn.query_params["hub_threshold"], 3)
         spec_threshold = parse_float_param(conn.query_params["spec_threshold"], 0.5)
 
@@ -604,9 +604,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/struct_lifecycle" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         struct_filter = conn.query_params["struct"]
 
         case Giulia.Knowledge.Store.struct_lifecycle(project_path, struct_filter) do
@@ -627,9 +627,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/duplicates" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         threshold = parse_float_param(conn.query_params["threshold"], 0.85)
         max_clusters = parse_int_param(conn.query_params["max"], 20)
 
@@ -658,9 +658,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/audit" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         unprotected_hubs =
           case Giulia.Knowledge.Store.find_unprotected_hubs(project_path) do
             {:ok, result} -> result
@@ -722,9 +722,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/topology" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         # Get edges
         {:ok, edges} = Giulia.Knowledge.Store.all_dependencies(project_path)
 
@@ -786,9 +786,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/conventions" do
     try do
-      case resolve_project_path(conn) do
-        nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-        project_path ->
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} -> conn
+        {:ok, conn, project_path} ->
           module_filter = conn.query_params["module"]
           suppress = parse_suppress(conn.query_params["suppress"])
 

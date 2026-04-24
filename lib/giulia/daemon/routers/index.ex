@@ -18,9 +18,9 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/modules" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         modules = Giulia.Context.Store.Query.list_modules(project_path)
         send_json(conn, 200, %{modules: modules, count: length(modules)})
     end
@@ -37,9 +37,9 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/functions" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module_filter = conn.query_params["module"]
         functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
         send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
@@ -57,9 +57,9 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/module_details" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
         if module do
@@ -82,9 +82,9 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/summary" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         summary = Giulia.Context.Store.Formatter.project_summary(project_path)
         send_json(conn, 200, %{summary: summary})
     end
@@ -245,9 +245,9 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/complexity" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         module_filter = conn.query_params["module"]
         min_complexity = parse_int(conn.query_params["min"], 0)
         result_limit = parse_int(conn.query_params["limit"], 50)

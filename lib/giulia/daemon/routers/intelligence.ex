@@ -25,11 +25,11 @@ defmodule Giulia.Daemon.Routers.Intelligence do
     concept = conn.query_params["prompt"] || conn.query_params["q"]
 
     if concept do
-      case resolve_project_path(conn) do
-        nil ->
-          send_json(conn, 400, %{error: "Missing required query param: path"})
+      case resolve_and_check_ready(conn) do
+        {:halt, conn} ->
+          conn
 
-        project_path ->
+        {:ok, conn, project_path} ->
           case Giulia.Intelligence.SurgicalBriefing.build(concept, project_path) do
             {:ok, briefing} ->
               send_json(conn, 200, %{status: "ok", briefing: briefing})
@@ -86,9 +86,9 @@ defmodule Giulia.Daemon.Routers.Intelligence do
     category: "intelligence"
   }
   get "/architect" do
-    case resolve_project_path(conn) do
-      nil -> send_json(conn, 400, %{error: "Missing required query param: path"})
-      project_path ->
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} -> conn
+      {:ok, conn, project_path} ->
         case Giulia.Intelligence.ArchitectBrief.build(project_path) do
           {:ok, brief} -> send_json(conn, 200, brief)
           {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
