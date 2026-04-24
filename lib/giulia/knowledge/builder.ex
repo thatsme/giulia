@@ -91,7 +91,16 @@ defmodule Giulia.Knowledge.Builder do
     # behaviours map in `Knowledge.Behaviours` as the source of truth for
     # callback signatures; only emits edges for callbacks the implementer
     # actually defines.
-    add_behaviour_dispatch_edges(graph, ast_data)
+    graph = add_behaviour_dispatch_edges(graph, ast_data)
+
+    # Pass 9: Phoenix router-dispatch edges — parses route DSL calls
+    # (`get "/path", Controller, :action`, `resources "/path", Controller`,
+    # etc.) and synthesizes `{:calls, :router_dispatch}` edges from the
+    # router module to each controller action. Controller actions are
+    # runtime-dispatched by the Phoenix.Router; without this pass they
+    # appear as dead-end vertices in the static call graph. Action arity
+    # is assumed 2 (the Phoenix convention: `def action(conn, params)`).
+    add_router_dispatch_edges(graph, ast_data)
   end
 
   # ============================================================================
@@ -994,6 +1003,265 @@ defmodule Giulia.Knowledge.Builder do
     |> Graph.out_edges(from)
     |> Enum.any?(fn edge ->
       edge.v2 == to and match?({:calls, :behaviour_impl}, edge.label)
+    end)
+  end
+
+  # ============================================================================
+  # Pass 9: Phoenix router dispatch edges
+  # ============================================================================
+
+  @router_verbs [:get, :post, :put, :patch, :delete, :head, :options]
+
+  # Standard actions `resources/2,3` generates if no `:only`/`:except` opt.
+  # Arity 2 (Phoenix controller convention: `def action(conn, params)`).
+  @resources_default_actions [:index, :show, :new, :create, :edit, :update, :delete]
+
+  # Walk every file. If it contains router DSL calls, treat the file's
+  # first module as the router and synthesize edges from it to each
+  # declared controller action. Files with no route calls are a no-op.
+  # Detection-by-content (vs detection-via-`use Phoenix.Router`) avoids
+  # the common-in-Plausible case where `use PlausibleWeb, :router`
+  # expands the router-DSL macro via a project-internal `__using__/1`
+  # that the extractor can't follow.
+  defp add_router_dispatch_edges(graph, ast_data) do
+    Enum.reduce(ast_data, graph, fn {path, data}, g ->
+      router_module =
+        case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> nil
+        end
+
+      if router_module do
+        alias_map =
+          (data[:imports] || [])
+          |> Enum.filter(fn imp -> imp.type == :alias end)
+          |> Map.new(fn imp ->
+            short = imp.module |> String.split(".") |> List.last()
+            {short, imp.module}
+          end)
+
+        case File.read(path) do
+          {:ok, source} ->
+            case Sourceror.parse_string(source) do
+              {:ok, ast} ->
+                routes = extract_router_routes(ast, alias_map)
+
+                if routes == [] do
+                  g
+                else
+                  add_route_edges(g, router_module, routes)
+                end
+
+              _ ->
+                g
+            end
+
+          _ ->
+            g
+        end
+      else
+        g
+      end
+    end)
+  end
+
+  # Returns a list of `{controller_module, action_atom, arity}` tuples.
+  # Walks with `Macro.traverse/4` to maintain a scope stack so short
+  # controller names inside `scope "/path", Namespace do ... end` blocks
+  # resolve through the enclosing namespace (Phoenix's router DSL prepends
+  # the scope namespace to short-form controller references).
+  defp extract_router_routes(ast, alias_map) do
+    {_ast, {routes, _stack}} =
+      Macro.traverse(
+        ast,
+        {[], []},
+        fn node, {acc, stack} = state ->
+          case scope_namespace(node) do
+            {:ok, ns} ->
+              {node, {acc, [ns | stack]}}
+
+            :skip ->
+              case route_call(node, alias_map, List.first(stack)) do
+                {:ok, new_routes} -> {node, {new_routes ++ acc, stack}}
+                :skip -> {node, state}
+              end
+          end
+        end,
+        fn node, {acc, stack} ->
+          case scope_namespace(node) do
+            {:ok, _} ->
+              case stack do
+                [_ | rest] -> {node, {acc, rest}}
+                [] -> {node, {acc, []}}
+              end
+
+            :skip ->
+              {node, {acc, stack}}
+          end
+        end
+      )
+
+    routes
+  end
+
+  # Recognize Phoenix router `scope/2,3,4` calls and extract the namespace
+  # they introduce for short-form controller references inside. Returns
+  # `{:ok, namespace_binary}` when a namespace applies, or `:skip`
+  # (including for scopes that add no namespace, like `scope "/flags" do`).
+  defp scope_namespace({:scope, _meta, args}) when is_list(args) do
+    case namespace_from_scope_args(args) do
+      nil -> {:ok, nil}
+      ns -> {:ok, ns}
+    end
+  end
+
+  defp scope_namespace(_), do: :skip
+
+  # `scope path, Namespace, do: body` or
+  # `scope path, Namespace, opts, do: body` → Namespace wins.
+  # `scope path, opts, do: body` or `scope opts, do: body` → check opts[:alias].
+  defp namespace_from_scope_args(args) do
+    aliased_args = Enum.find(args, fn
+      {:__aliases__, _, _} -> true
+      _ -> false
+    end)
+
+    cond do
+      aliased_args != nil ->
+        {:__aliases__, _, parts} = aliased_args
+        join_parts(parts)
+
+      true ->
+        # Look for an :alias opt in any keyword-list arg.
+        args
+        |> Enum.find_value(fn
+          opts when is_list(opts) ->
+            case Keyword.get(opts, :alias) do
+              {:__aliases__, _, parts} -> join_parts(parts)
+              atom when is_atom(atom) and not is_nil(atom) -> Atom.to_string(atom)
+              _ -> nil
+            end
+
+          _ ->
+            nil
+        end)
+    end
+  end
+
+  # Standard HTTP-verb route: `get "/path", ControllerAlias, :action [, opts]`
+  defp route_call(
+         {verb, _meta,
+          [_path, {:__aliases__, _, parts}, action | _rest]},
+         alias_map,
+         current_scope_ns
+       )
+       when verb in @router_verbs and is_atom(action) do
+    controller = resolve_controller(parts, alias_map, current_scope_ns)
+    {:ok, [{controller, to_string(action), 2}]}
+  end
+
+  # Same shape but action wrapped in Sourceror's :__block__.
+  defp route_call(
+         {verb, _meta,
+          [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
+         alias_map,
+         current_scope_ns
+       )
+       when verb in @router_verbs and is_atom(action) do
+    controller = resolve_controller(parts, alias_map, current_scope_ns)
+    {:ok, [{controller, to_string(action), 2}]}
+  end
+
+  # `resources "/path", ControllerAlias` → 7 RESTful actions.
+  defp route_call(
+         {:resources, _meta, [_path, {:__aliases__, _, parts}]},
+         alias_map,
+         current_scope_ns
+       ) do
+    controller = resolve_controller(parts, alias_map, current_scope_ns)
+    {:ok, Enum.map(@resources_default_actions, fn a -> {controller, to_string(a), 2} end)}
+  end
+
+  # `resources "/path", ControllerAlias, opts` → filter by :only/:except.
+  defp route_call(
+         {:resources, _meta, [_path, {:__aliases__, _, parts}, opts]},
+         alias_map,
+         current_scope_ns
+       )
+       when is_list(opts) do
+    controller = resolve_controller(parts, alias_map, current_scope_ns)
+    actions = resources_actions_from_opts(opts)
+    {:ok, Enum.map(actions, fn a -> {controller, to_string(a), 2} end)}
+  end
+
+  defp route_call(_node, _alias_map, _scope_ns), do: :skip
+
+  # Controller-name resolution for router DSL:
+  # 1. Join the alias parts into a dotted name (e.g. "SSOController").
+  # 2. If a scope namespace is active, prepend it ("PlausibleWeb.SSOController").
+  # 3. Fall through to the file-level alias map (multi-segment-aware).
+  defp resolve_controller(parts, alias_map, current_scope_ns) do
+    raw = join_parts(parts)
+
+    with_scope =
+      if current_scope_ns in [nil, ""] do
+        raw
+      else
+        "#{current_scope_ns}.#{raw}"
+      end
+
+    resolve_alias_prefix(with_scope, alias_map)
+  end
+
+  defp resources_actions_from_opts(opts) do
+    cond do
+      Keyword.has_key?(opts, :only) ->
+        only = Keyword.get(opts, :only, [])
+        if is_list(only), do: only, else: @resources_default_actions
+
+      Keyword.has_key?(opts, :except) ->
+        except = Keyword.get(opts, :except, [])
+        if is_list(except), do: @resources_default_actions -- except, else: @resources_default_actions
+
+      true ->
+        @resources_default_actions
+    end
+  end
+
+  defp join_parts(parts) do
+    parts
+    |> Enum.map(&safe_part_to_string/1)
+    |> Enum.join(".")
+  end
+
+  defp add_route_edges(graph, router_module, routes) do
+    graph = ensure_router_vertex(graph, router_module)
+
+    Enum.reduce(routes, graph, fn {controller, action_name, arity}, g ->
+      impl_vertex = "#{controller}.#{action_name}/#{arity}"
+
+      if Graph.has_vertex?(g, impl_vertex) and
+           not has_router_dispatch_edge?(g, router_module, impl_vertex) do
+        Graph.add_edge(g, router_module, impl_vertex, label: {:calls, :router_dispatch})
+      else
+        g
+      end
+    end)
+  end
+
+  defp ensure_router_vertex(graph, router_name) do
+    if Graph.has_vertex?(graph, router_name) do
+      graph
+    else
+      Graph.add_vertex(graph, router_name, :module)
+    end
+  end
+
+  defp has_router_dispatch_edge?(graph, from, to) do
+    graph
+    |> Graph.out_edges(from)
+    |> Enum.any?(fn edge ->
+      edge.v2 == to and match?({:calls, :router_dispatch}, edge.label)
     end)
   end
 end

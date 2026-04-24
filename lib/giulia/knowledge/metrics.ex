@@ -352,6 +352,16 @@ defmodule Giulia.Knowledge.Metrics do
       end)
       |> MapSet.new()
 
+    # Step 4a: Router-declared controller actions. Any function appearing
+    # as `get/post/put/patch/delete "path", Controller, :action` or as a
+    # `resources` action in any router file is an entry point called by
+    # Phoenix at runtime — the static call graph never sees the dispatch.
+    # Extract {controller, action_name, arity=2} tuples across the project
+    # and exempt them. Same signal `Builder.add_router_dispatch_edges/2`
+    # uses for graph edges; exempting here short-circuits the dead_code
+    # check without requiring graph traversal.
+    router_actions = collect_router_actions(all_asts)
+
     # Step 4b: Build set of modules that are `defimpl` implementations.
     # Functions inside a defimpl are reached via protocol dispatch at
     # runtime — the static call graph never sees the call site, so
@@ -373,6 +383,7 @@ defmodule Giulia.Knowledge.Metrics do
 
         MapSet.member?(ignored_modules, func.module) or
           MapSet.member?(protocol_impl_modules, func.module) or
+          MapSet.member?(router_actions, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(@implicit_functions, name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
@@ -875,4 +886,200 @@ defmodule Giulia.Knowledge.Metrics do
   defp safe_part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
   defp safe_part_to_string({atom, _, _}) when is_atom(atom), do: Atom.to_string(atom)
   defp safe_part_to_string(other), do: inspect(other)
+
+  # ============================================================================
+  # Router action collection
+  # ============================================================================
+
+  @router_verbs [:get, :post, :put, :patch, :delete, :head, :options]
+  @resources_default_actions [:index, :show, :new, :create, :edit, :update, :delete]
+
+  @doc false
+  def collect_router_actions(all_asts) do
+    Enum.reduce(all_asts, MapSet.new(), fn {path, data}, acc ->
+      alias_map =
+        (data[:imports] || [])
+        |> Enum.filter(fn imp -> imp.type == :alias end)
+        |> Map.new(fn imp ->
+          short = imp.module |> String.split(".") |> List.last()
+          {short, imp.module}
+        end)
+
+      case File.read(path) do
+        {:ok, source} ->
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              routes = walk_routes_with_scope(ast, alias_map)
+
+              Enum.reduce(routes, acc, fn {mod, name, arity}, set ->
+                MapSet.put(set, {mod, name, arity})
+              end)
+
+            _ ->
+              acc
+          end
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  # Scope-aware router walk — matches Builder Pass 9's traversal so
+  # dead_code's exemption MapSet and the graph edges see exactly the
+  # same controller actions.
+  defp walk_routes_with_scope(ast, alias_map) do
+    {_ast, {routes, _stack}} =
+      Macro.traverse(
+        ast,
+        {[], []},
+        fn node, {acc, stack} = state ->
+          case scope_namespace_for_exemption(node) do
+            {:ok, ns} ->
+              {node, {acc, [ns | stack]}}
+
+            :skip ->
+              case route_call_for_exemption(node, alias_map, List.first(stack)) do
+                {:ok, rs} -> {node, {rs ++ acc, stack}}
+                :skip -> {node, state}
+              end
+          end
+        end,
+        fn node, {acc, stack} ->
+          case scope_namespace_for_exemption(node) do
+            {:ok, _} ->
+              case stack do
+                [_ | rest] -> {node, {acc, rest}}
+                [] -> {node, {acc, []}}
+              end
+
+            :skip ->
+              {node, {acc, stack}}
+          end
+        end
+      )
+
+    routes
+  end
+
+  defp scope_namespace_for_exemption({:scope, _meta, args}) when is_list(args) do
+    aliased = Enum.find(args, fn
+      {:__aliases__, _, _} -> true
+      _ -> false
+    end)
+
+    cond do
+      aliased != nil ->
+        {:__aliases__, _, parts} = aliased
+        {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+
+      true ->
+        found =
+          Enum.find_value(args, fn
+            opts when is_list(opts) ->
+              case Keyword.get(opts, :alias) do
+                {:__aliases__, _, parts} ->
+                  parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+
+                atom when is_atom(atom) and not is_nil(atom) ->
+                  Atom.to_string(atom)
+
+                _ ->
+                  nil
+              end
+
+            _ ->
+              nil
+          end)
+
+        {:ok, found}
+    end
+  end
+
+  defp scope_namespace_for_exemption(_), do: :skip
+
+  defp route_call_for_exemption(
+         {verb, _meta, [_path, {:__aliases__, _, parts}, action | _rest]},
+         alias_map,
+         scope_ns
+       )
+       when verb in @router_verbs and is_atom(action) do
+    controller = resolve_controller_name(parts, alias_map, scope_ns)
+    {:ok, [{controller, to_string(action), 2}]}
+  end
+
+  defp route_call_for_exemption(
+         {verb, _meta,
+          [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
+         alias_map,
+         scope_ns
+       )
+       when verb in @router_verbs and is_atom(action) do
+    controller = resolve_controller_name(parts, alias_map, scope_ns)
+    {:ok, [{controller, to_string(action), 2}]}
+  end
+
+  defp route_call_for_exemption(
+         {:resources, _meta, [_path, {:__aliases__, _, parts}]},
+         alias_map,
+         scope_ns
+       ) do
+    controller = resolve_controller_name(parts, alias_map, scope_ns)
+    {:ok, Enum.map(@resources_default_actions, fn a -> {controller, to_string(a), 2} end)}
+  end
+
+  defp route_call_for_exemption(
+         {:resources, _meta, [_path, {:__aliases__, _, parts}, opts]},
+         alias_map,
+         scope_ns
+       )
+       when is_list(opts) do
+    controller = resolve_controller_name(parts, alias_map, scope_ns)
+    actions = resources_actions_from_opts(opts)
+    {:ok, Enum.map(actions, fn a -> {controller, to_string(a), 2} end)}
+  end
+
+  defp route_call_for_exemption(_node, _alias_map, _scope_ns), do: :skip
+
+  defp resolve_controller_name(parts, alias_map, scope_ns) do
+    raw = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+
+    with_scope =
+      if scope_ns in [nil, ""] do
+        raw
+      else
+        "#{scope_ns}.#{raw}"
+      end
+
+    resolve_alias_prefix_for_parts(with_scope, alias_map)
+  end
+
+  defp resolve_alias_prefix_for_parts(raw, alias_map) do
+    case String.split(raw, ".", parts: 2) do
+      [first] ->
+        Map.get(alias_map, first, raw)
+
+      [first, rest] ->
+        case Map.get(alias_map, first) do
+          nil -> raw
+          full -> "#{full}.#{rest}"
+        end
+    end
+  end
+
+  defp resources_actions_from_opts(opts) do
+    cond do
+      Keyword.has_key?(opts, :only) ->
+        only = Keyword.get(opts, :only, [])
+        if is_list(only), do: only, else: @resources_default_actions
+
+      Keyword.has_key?(opts, :except) ->
+        except = Keyword.get(opts, :except, [])
+        if is_list(except), do: @resources_default_actions -- except, else: @resources_default_actions
+
+      true ->
+        @resources_default_actions
+    end
+  end
+
 end
