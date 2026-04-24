@@ -17,17 +17,26 @@ defmodule Giulia.Monitor.StoreTest do
 
   describe "push/1 and history/0" do
     test "pushed events appear in history" do
-      # Use a unique marker to avoid collision with other events in the buffer
+      # Monitor.Store is a globally-named GenServer with a bounded 50-event
+      # buffer. Under full-suite load the Telemetry handlers (HTTP + inference
+      # events) push many events per second, so a "did my specific marker
+      # survive in the buffer?" check is a race — other tests' events can
+      # evict our marker before we read it back. Instead, subscribe first:
+      # handle_cast({:push, ...}) synchronously fan-outs to subscribers via
+      # send/2, so the push→subscriber path is deterministic even under
+      # concurrent writer pressure. Buffer is still asserted list-shaped.
+      Store.subscribe()
+
       marker = "test_#{System.unique_integer([:positive])}"
       event = %{type: "test", timestamp: System.monotonic_time(), data: marker}
       Store.push(event)
 
-      # Give the cast time to process
-      Process.sleep(20)
+      assert_receive {:monitor_event, received}, 500
+      assert Map.get(received, :data) == marker
 
-      history = Store.history()
-      assert is_list(history)
-      assert Enum.any?(history, fn e -> Map.get(e, :data) == marker end)
+      assert is_list(Store.history())
+    after
+      Store.unsubscribe()
     end
 
     test "history respects the n parameter" do
