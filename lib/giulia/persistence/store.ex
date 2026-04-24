@@ -32,8 +32,9 @@ defmodule Giulia.Persistence.Store do
   #     Builder.add_function_call_edges) had the same "first-module-wins"
   #     bug for multi-defmodule files + single-segment-only alias
   #     resolution. Fixed with Macro.traverse + module-stack and
-  #     resolve_alias_prefix. Quantified impact on analytics-master
-  #     (Plausible, 466 files): +319 call edges (+5.6%), −176 components,
+  #     resolve_alias_prefix. Quantified impact on a real-world 466-file
+  #     Phoenix codebase used as the canonical measurement target:
+  #     +319 call edges (+5.6%), −176 components,
   #     −66 dead_code false positives. Top change_risk / heatmap / SCC
   #     findings unchanged (bug was in bridge edges, not hub-of-hubs
   #     edges), but pre_impact_check and tail-rank analyses were

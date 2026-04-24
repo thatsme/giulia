@@ -673,16 +673,17 @@ defmodule Giulia.Knowledge.Metrics do
   # class the Builder refactor closed elsewhere (commit 7792107):
   #
   # 1. Files with multiple top-level `defmodule` blocks attributed every
-  #    local call to the FIRST module. `Plausible.HTTPClient` (file has
-  #    three defmodules) saw its `defp call/5` callers tagged under the
-  #    first module (`Non200Error`) — dead_code then looked up
-  #    {HTTPClient, :local, call, 5} and missed, flagging the function
-  #    as dead despite obvious same-module callers.
-  # 2. Multi-segment aliases weren't resolved. `alias Plausible.Ingestion`
+  #    local call to the FIRST module. A file with `defmodule MyApp.Utils.
+  #    ErrorTag`, `defmodule MyApp.Utils.Interface`, and `defmodule
+  #    MyApp.Utils` in that order would tag every `defp call/5` caller
+  #    inside `MyApp.Utils` under the first module (`ErrorTag`) — dead_code
+  #    then looked up `{MyApp.Utils, :local, call, 5}` and missed, flagging
+  #    the function as dead despite obvious same-module callers.
+  # 2. Multi-segment aliases weren't resolved. `alias MyApp.Ingestion`
   #    in a caller lets it reference `Ingestion.Request.build(...)`; the
-  #    old code stored that as {"Ingestion.Request", "build", 1} because
+  #    old code stored that as `{"Ingestion.Request", "build", 1}` because
   #    the alias map only indexed single-segment short names. dead_code's
-  #    full-qualified lookup ({"Plausible.Ingestion.Request", ...}) missed.
+  #    full-qualified lookup (`{"MyApp.Ingestion.Request", ...}`) missed.
   #
   # Fix for (1): `Macro.traverse/4` with an enclosing-module stack, same
   # pattern as `Giulia.AST.Extraction.extract_functions/1`. Fix for (2):
@@ -850,8 +851,8 @@ defmodule Giulia.Knowledge.Metrics do
 
   defp classify_call(_node, _alias_map, _current_module), do: :skip
 
-  # Resolve a multi-segment alias reference. `alias Plausible.Ingestion`
-  # makes `Ingestion.Request` mean `Plausible.Ingestion.Request` — the
+  # Resolve a multi-segment alias reference. `alias MyApp.Ingestion`
+  # makes `Ingestion.Request` mean `MyApp.Ingestion.Request` — the
   # old code only indexed single-segment short names, so multi-segment
   # references fell through and landed in the call-set under the
   # unresolved short form.

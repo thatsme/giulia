@@ -219,8 +219,10 @@ defmodule Giulia.Knowledge.Behaviours do
   @spec collect_behaviour_callbacks(Graph.t(), String.t()) :: MapSet.t()
   def collect_behaviour_callbacks(graph, project_path) do
     # Source 1: in-tree behaviours — modules declaring @callback that
-    # have an :implements edge from an implementer. This has always
-    # worked; `Plausible.Imported.Importer`'s callbacks appear here.
+    # have an :implements edge from an implementer. Project-internal
+    # behaviours (e.g. `MyApp.SomeContract`) are captured here via the
+    # `@callback` declarations the extractor stores on the behaviour
+    # module's own `module_info`.
     in_tree =
       Graph.edges(graph)
       |> Enum.filter(fn edge -> edge.label == :implements end)

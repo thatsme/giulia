@@ -76,7 +76,7 @@ defmodule Giulia.Knowledge.Builder do
 
     # Pass 7: Protocol-dispatch edges — synthesizes {:calls, :protocol_impl}
     # edges from a protocol module to each function in its `defimpl` modules.
-    # `Jason.encode(%Plausible.Goal{})` would otherwise look like a dead-end
+    # `Jason.encode(%MyApp.Struct{})` would otherwise look like a dead-end
     # to the static call graph because the dispatcher is compile-time
     # generated. This pass produces the edge the static call graph couldn't
     # see, so downstream detectors (dead_code, change_risk, etc.) treat
@@ -413,8 +413,10 @@ defmodule Giulia.Knowledge.Builder do
   # first module. Previously all def nodes inherited `caller_module =
   # data[:modules] |> List.first().name`, which silently miscounted
   # call-edges in every file with multiple top-level defmodules
-  # (Plausible.HTTPClient had 3, so every private-helper call became
-  # a non-matching MFA and no edges landed in the graph).
+  # (e.g. a file declaring `MyApp.Utils`, `MyApp.Utils.Interface`, and
+  # `MyApp.Utils.Error` would miss every private-helper call inside
+  # any module after the first — MFAs didn't match and no edges landed
+  # in the graph).
   defp extract_calls_per_function(graph, ast, fallback_caller, alias_map, all_modules) do
     {_ast, {func_call_map, _stack}} =
       Macro.traverse(
@@ -562,7 +564,7 @@ defmodule Giulia.Knowledge.Builder do
     {_body, calls} =
       Macro.prewalk(body, %{}, fn
         # Remote call: Module.func(args) — resolve aliases, including
-        # multi-segment forms. `alias Plausible.Ingestion` lets a caller
+        # multi-segment forms. `alias MyApp.Ingestion` lets a caller
         # write `Ingestion.Request.build(conn)`; parts come through as
         # [:Ingestion, :Request] and the single-segment alias_map lookup
         # on the joined "Ingestion.Request" misses. Instead, resolve
@@ -1020,9 +1022,10 @@ defmodule Giulia.Knowledge.Builder do
   # first module as the router and synthesize edges from it to each
   # declared controller action. Files with no route calls are a no-op.
   # Detection-by-content (vs detection-via-`use Phoenix.Router`) avoids
-  # the common-in-Plausible case where `use PlausibleWeb, :router`
-  # expands the router-DSL macro via a project-internal `__using__/1`
-  # that the extractor can't follow.
+  # the common case where a project declares its router via a
+  # `use MyAppWeb, :router` shortcut that expands to `use Phoenix.Router`
+  # through a project-internal `__using__/1` macro — those expansions
+  # aren't visible to the static extractor.
   defp add_router_dispatch_edges(graph, ast_data) do
     Enum.reduce(ast_data, graph, fn {path, data}, g ->
       router_module =
@@ -1197,8 +1200,8 @@ defmodule Giulia.Knowledge.Builder do
   defp route_call(_node, _alias_map, _scope_ns), do: :skip
 
   # Controller-name resolution for router DSL:
-  # 1. Join the alias parts into a dotted name (e.g. "SSOController").
-  # 2. If a scope namespace is active, prepend it ("PlausibleWeb.SSOController").
+  # 1. Join the alias parts into a dotted name (e.g. "AuthController").
+  # 2. If a scope namespace is active, prepend it ("MyAppWeb.AuthController").
   # 3. Fall through to the file-level alias map (multi-segment-aware).
   defp resolve_controller(parts, alias_map, current_scope_ns) do
     raw = join_parts(parts)
