@@ -1,0 +1,32 @@
+{
+  "$schema_version": 2,
+  "$description": "Runtime-dispatch patterns that static AST analysis cannot see. Consumed by Giulia.Knowledge.DispatchPatterns at daemon startup. Two pattern types: `text_match` (file_glob + call_regex over content) and `use_based_function_regex` (find modules that `use` a behaviour and exempt their functions matching a name regex). Adding a new pattern is a JSON edit + daemon restart.",
+  "patterns": [
+    {
+      "id": "mix_release_overlays",
+      "type": "text_match",
+      "description": "Mix Release overlay shell scripts invoke Elixir functions via `<app> eval Module.function`. Callers live outside the AST graph (shell is not Elixir). Standard layout: rel/overlays/*.sh.",
+      "file_glob": "rel/overlays/*.sh",
+      "call_regex": "eval\\s+([A-Z][A-Za-z0-9_.]+)\\.([a-z_][A-Za-z0-9_?!]*)\\s*$",
+      "arity": 0,
+      "capture": {
+        "module": 1,
+        "function": 2
+      }
+    },
+    {
+      "id": "ex_machina_factories",
+      "type": "use_based_function_regex",
+      "description": "ExMachina testing factories — modules that `use ExMachina` or `use ExMachina.Ecto` expose `<name>_factory/0` functions invoked via runtime name-dispatch by `build(:<name>)` / `insert(:<name>)`. The dispatch is inside ExMachina's macro-injected code; static analysis can't see the call site without macro expansion.",
+      "behaviours": ["ExMachina", "ExMachina.Ecto"],
+      "function_regex": "^[a-z_][A-Za-z0-9_]*_factory$",
+      "arity": 0
+    },
+    {
+      "id": "elixir_meta_macro_using_apply",
+      "type": "meta_macro_using_apply",
+      "description": "The Phoenix-style `use MyAppWeb, :shape` idiom: a module defines `defmacro __using__(arg), do: apply(__MODULE__, arg, [])` which dispatches to `def <arg_value>/0` based on the atom passed at call site. Every `use Mod, :shape` caller invokes `Mod.shape/0` at compile time — but the call is inside the macro's quoted body so AST-level extraction never sees it. Detection: find modules where a `defmacro __using__` body contains `apply(__MODULE__, <its_arg>, [])`; then for every `use <detected_mod>, :atom` caller in the codebase, exempt `<detected_mod>.atom/0`. Universal across Phoenix apps (every `mix phx.new` generates this pattern in my_app_web.ex) and any codebase using the idiom.",
+      "enabled": true
+    }
+  ]
+}

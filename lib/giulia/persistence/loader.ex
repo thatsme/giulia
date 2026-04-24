@@ -216,17 +216,23 @@ defmodule Giulia.Persistence.Loader do
   defp discover_new_files(project_path, cached_entries) do
     cached_paths = MapSet.new(cached_entries, fn {{:ast, path}, _} -> path end)
 
-    lib_path = Path.join(project_path, "lib")
+    project_path
+    |> Giulia.Context.ScanConfig.absolute_roots()
+    |> Enum.flat_map(fn entry ->
+      cond do
+        File.dir?(entry) ->
+          entry |> Path.join("**/*.{ex,exs}") |> Path.wildcard()
 
-    if File.dir?(lib_path) do
-      lib_path
-      |> Path.join("**/*.{ex,exs}")
-      |> Path.wildcard()
-      |> Enum.reject(&Giulia.Context.Indexer.ignored?/1)
-      |> Enum.reject(&MapSet.member?(cached_paths, &1))
-    else
-      []
-    end
+        File.regular?(entry) and String.ends_with?(entry, [".ex", ".exs"]) ->
+          [entry]
+
+        true ->
+          []
+      end
+    end)
+    |> Enum.uniq()
+    |> Enum.reject(&Giulia.Context.Indexer.ignored?/1)
+    |> Enum.reject(&MapSet.member?(cached_paths, &1))
   end
 
   defp classify_entries(db, _project_path, cached_entries) do

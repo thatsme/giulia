@@ -1,0 +1,9 @@
+{
+  "$schema_version": 2,
+  "$description": "Paths within a target project scanned for Elixir source (.ex/.exs) files. Each entry may be a directory (walked recursively) or a single file. Universal defaults for Mix projects: lib/ always exists; test/support/ contains shared test helpers (ExUnit convention); test/test_helper.exs is the universal ExUnit bootstrap where test_utils / DB setup hooks are invoked. Missing paths are skipped silently.",
+  "source_roots": [
+    "lib",
+    "test/support",
+    "test/test_helper.exs"
+  ]
+}

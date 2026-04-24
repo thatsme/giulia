@@ -308,8 +308,8 @@ defmodule Giulia.Context.Indexer do
 
     # Update project files list (merge cached + stale)
     all_files =
-      Path.join(project_path, "lib")
-      |> find_elixir_files()
+      project_path
+      |> find_files_across_roots()
       |> maybe_include_mix_exs(project_path)
 
     Giulia.Context.Store.put_project_files(project_path, all_files)
@@ -317,17 +317,17 @@ defmodule Giulia.Context.Indexer do
   end
 
   defp do_scan(project_path) do
-    lib_path = Path.join(project_path, "lib")
+    roots = Giulia.Context.ScanConfig.absolute_roots(project_path)
 
-    if File.dir?(lib_path) do
+    if roots != [] do
       Giulia.Context.Store.clear_asts(project_path)
 
       files =
-        lib_path
-        |> find_elixir_files()
+        project_path
+        |> find_files_across_roots()
         |> maybe_include_mix_exs(project_path)
 
-      Logger.info("Found #{length(files)} Elixir files to scan")
+      Logger.info("Found #{length(files)} Elixir files to scan across roots: #{inspect(roots)}")
 
       # Debug first file to understand AST structure
       case Enum.take(files, 1) do
@@ -359,7 +359,10 @@ defmodule Giulia.Context.Indexer do
       Giulia.Context.Store.put_project_files(project_path, files)
       Logger.info("Stored #{length(files)} project files in ETS file registry")
     else
-      Logger.warning("No lib directory found at #{lib_path}")
+      Logger.warning(
+        "No configured source roots exist under #{project_path} " <>
+          "(checked: #{inspect(Giulia.Context.ScanConfig.source_roots())})"
+      )
     end
   end
 
@@ -368,6 +371,30 @@ defmodule Giulia.Context.Indexer do
     |> Path.join("**/*.{ex,exs}")
     |> Path.wildcard()
     |> Enum.reject(&should_ignore?/1)
+  end
+
+  # Walk every configured source root under a project and return the
+  # flat, deduplicated list of Elixir source files. Entries that don't
+  # exist are dropped by ScanConfig.absolute_roots/1; remaining entries
+  # may be directories (walked recursively) or individual .ex/.exs files
+  # (included as-is).
+  defp find_files_across_roots(project_path) do
+    project_path
+    |> Giulia.Context.ScanConfig.absolute_roots()
+    |> Enum.flat_map(fn entry ->
+      cond do
+        File.dir?(entry) ->
+          find_elixir_files(entry)
+
+        File.regular?(entry) and String.ends_with?(entry, [".ex", ".exs"]) and
+            not should_ignore?(entry) ->
+          [entry]
+
+        true ->
+          []
+      end
+    end)
+    |> Enum.uniq()
   end
 
   # mix.exs lives at the project root (outside lib/) but defines the top-level

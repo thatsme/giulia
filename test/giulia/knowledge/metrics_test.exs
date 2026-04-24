@@ -341,4 +341,72 @@ defmodule Giulia.Knowledge.MetricsTest do
     multiplier = 1 + (centrality / 2)
     trunc(base * multiplier)
   end
+
+  describe "called_by_unresolved_alias?/2 — macro-injected alias fallback" do
+    # Regression for CustomProps.{request,response}_schema/0 on analytics-master:
+    # caller files use `use PlausibleWeb, :open_api_schema` which injects
+    # `alias PlausibleWeb.Plugins.API.Schemas` via the macro expansion. A
+    # subsequent user-written `alias Schemas.Goal.CustomProps` resolves
+    # only through the file's explicit imports, so the call-set records the
+    # truncated `Schemas.Goal.CustomProps` — which never exact-matches the
+    # real `PlausibleWeb.Plugins.API.Schemas.Goal.CustomProps`.
+    test "exempts when recorded caller is dot-bounded suffix of full module" do
+      called = MapSet.new([{"Schemas.Goal.CustomProps", "response_schema", 0}])
+
+      func = %{
+        module: "PlausibleWeb.Plugins.API.Schemas.Goal.CustomProps",
+        name: :response_schema,
+        arity: 0
+      }
+
+      assert Metrics.called_by_unresolved_alias?(called, func)
+    end
+
+    test "does not exempt when suffix is not dot-bounded" do
+      # "Foo" is NOT a suffix of "BarFoo" under dot-boundary semantics —
+      # guards against false exemption of unrelated modules that share a
+      # tail word.
+      called = MapSet.new([{"Foo", "bar", 0}])
+
+      func = %{module: "BarFoo", name: :bar, arity: 0}
+
+      refute Metrics.called_by_unresolved_alias?(called, func)
+    end
+
+    test "does not exempt on exact match — exact match is handled earlier" do
+      # The helper returns false when recorded_mod == func.module because
+      # that path is covered by the earlier `MapSet.member?` check and
+      # returning true here would mask arity-mismatch bugs.
+      called = MapSet.new([{"A.B.C", "fn", 0}])
+      func = %{module: "A.B.C", name: :fn, arity: 0}
+
+      refute Metrics.called_by_unresolved_alias?(called, func)
+    end
+
+    test "respects arity — different arity does not exempt" do
+      called = MapSet.new([{"Schemas.Goal.CustomProps", "response_schema", 1}])
+
+      func = %{
+        module: "PlausibleWeb.Plugins.API.Schemas.Goal.CustomProps",
+        name: :response_schema,
+        arity: 0
+      }
+
+      refute Metrics.called_by_unresolved_alias?(called, func)
+    end
+
+    test "ignores :local-tagged entries — they carry full caller module" do
+      # `{mod, :local, name, arity}` entries are 4-tuples; the head pattern
+      # in the helper only matches 3-tuples, so they don't participate.
+      called = MapSet.new([{"Schemas.Goal.CustomProps", :local, "response_schema", 0}])
+
+      func = %{
+        module: "PlausibleWeb.Plugins.API.Schemas.Goal.CustomProps",
+        name: :response_schema,
+        arity: 0
+      }
+
+      refute Metrics.called_by_unresolved_alias?(called, func)
+    end
+  end
 end

@@ -375,6 +375,19 @@ defmodule Giulia.Knowledge.Metrics do
       |> Enum.filter(fn mod -> is_binary(Map.get(mod, :impl_for)) end)
       |> MapSet.new(& &1.name)
 
+    # Step 4c: Configured dispatch-pattern entry points. Patterns are
+    # declared in priv/config/dispatch_patterns.json and cover runtime-
+    # dispatched calls the AST walker cannot see: shell-script release
+    # overlays (text_match over rel/overlays/*.sh), ExMachina `*_factory`
+    # naming-convention dispatch, and any future pattern added to the
+    # config. Universal defaults — no per-codebase opt-in.
+    dispatch_entries =
+      Giulia.Knowledge.DispatchPatterns.entry_points(
+        project_path,
+        all_asts,
+        all_functions
+      )
+
     # Step 5: Find dead functions
     dead =
       all_functions
@@ -384,11 +397,13 @@ defmodule Giulia.Knowledge.Metrics do
         MapSet.member?(ignored_modules, func.module) or
           MapSet.member?(protocol_impl_modules, func.module) or
           MapSet.member?(router_actions, {func.module, to_string(func.name), func.arity}) or
+          MapSet.member?(dispatch_entries, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(@implicit_functions, name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
-          called_with_any_arity?(called_functions, func)
+          called_with_any_arity?(called_functions, func) or
+          called_by_unresolved_alias?(called_functions, func)
       end)
       |> Enum.map(fn func ->
         %{
@@ -880,6 +895,37 @@ defmodule Giulia.Knowledge.Metrics do
       {^mod, ^name, _any_arity} -> true
       {^mod, :local, ^name, _any_arity} -> true
       _ -> false
+    end)
+  end
+
+  # Suffix-match fallback for calls made through macro-injected aliases.
+  # Why: When a file uses e.g. `use MyAppWeb, :view` whose __using__/1
+  # expands to inject `alias MyAppWeb.Schemas`, that injected alias is
+  # invisible to Giulia's static import extraction. A subsequent
+  # `alias Schemas.Goal.CustomProps` then resolves through the file's
+  # alias table to the short form `Schemas.Goal.CustomProps` — which
+  # never matches the real module `MyAppWeb.Schemas.Goal.CustomProps`.
+  # This helper counts a function as called when some recorded target
+  # is a dot-bounded suffix of its module — i.e., the caller used a
+  # short name that matches the tail of the full name. General across
+  # any Elixir codebase using the `use Foo, :shape` meta-macro idiom
+  # (Phoenix, Absinthe, user code). Trade-off: can over-exempt when
+  # two modules share a dot-bounded suffix and the same {name, arity};
+  # rare in practice and dead_code false negatives are less painful
+  # than false positives (users don't waste triage time on non-issues).
+  @doc false
+  def called_by_unresolved_alias?(called_functions, func) do
+    name_str = to_string(func.name)
+    arity = func.arity
+    full_mod = func.module
+
+    Enum.any?(called_functions, fn
+      {recorded_mod, ^name_str, ^arity} when is_binary(recorded_mod) ->
+        recorded_mod != full_mod and
+          String.ends_with?(full_mod, "." <> recorded_mod)
+
+      _ ->
+        false
     end)
   end
 
