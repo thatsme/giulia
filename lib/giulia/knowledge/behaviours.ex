@@ -38,10 +38,22 @@ defmodule Giulia.Knowledge.Behaviours do
     "Mix.Task" => [run: 1],
     "Mix.Task.Compiler" => [run: 1, manifests: 0, clean: 0],
     "Mix.Project" => [project: 0, application: 0, cli: 0, config: 0, aliases: 0],
-    "PromEx.Plugin" => [
-      event_metrics: 1, polling_metrics: 1, manual_metrics: 1,
-      execute_cache_metrics: 1, execute_write_buffer_metrics: 1
-    ],
+    # PromEx root module: `use PromEx, otp_app: :app` injects @behaviour PromEx
+    # and the project defines plugins/0 (required) + dashboards/0 +
+    # dashboard_assigns/0 (optional).
+    "PromEx" => [plugins: 0, dashboards: 0, dashboard_assigns: 0],
+    # PromEx plugins: `use PromEx.Plugin`. Prior entries for execute_*/1 were
+    # wrong — those are user-defined helpers registered via function captures
+    # (`&Module.fn/0`) inside polling_metrics/1 return values, not behaviour
+    # callbacks. That's a separate dispatch pattern (function-capture
+    # registration) which this map can't express cleanly.
+    "PromEx.Plugin" => [event_metrics: 1, polling_metrics: 1, manual_metrics: 1],
+    # OpenApiSpex top-level spec module: @behaviour OpenApiSpex.OpenApi,
+    # requires spec/0 returning the OpenAPI document.
+    "OpenApiSpex.OpenApi" => [spec: 0],
+    # SiteEncrypt (ACME / Let's Encrypt auto-cert library) — host app
+    # implements the behaviour on its Phoenix Endpoint module.
+    "SiteEncrypt" => [certification: 0, handle_new_cert: 0],
     "Ecto.Type" => [type: 0, cast: 1, load: 1, dump: 1, equal?: 2, embed_as: 1],
     "Ecto.ParameterizedType" => [
       type: 1, init: 1, cast: 2, load: 3, dump: 2, equal?: 3, embed_as: 1
@@ -274,11 +286,22 @@ defmodule Giulia.Knowledge.Behaviours do
   # injects @behaviour).
   @spec declared_known_behaviours([map()]) :: [String.t()]
   def declared_known_behaviours(imports) do
+    # Resolve single-segment aliases: `alias OpenApiSpex.{..., OpenApi}` +
+    # `@behaviour OpenApi` stores `imp.module = "OpenApi"` (short form).
+    # Build a short → full map from the file's alias entries, then treat
+    # each use/behaviour declaration under both its raw and resolved name.
+    alias_map =
+      imports
+      |> Enum.filter(fn imp -> imp.type == :alias end)
+      |> Map.new(fn imp ->
+        short = imp.module |> String.split(".") |> List.last()
+        {short, imp.module}
+      end)
+
     imports
-    |> Enum.filter(fn imp ->
-      imp.type in [:use, :behaviour] and Map.has_key?(@known_behaviour_callbacks, imp.module)
-    end)
-    |> Enum.map(& &1.module)
+    |> Enum.filter(fn imp -> imp.type in [:use, :behaviour] end)
+    |> Enum.map(fn imp -> Map.get(alias_map, imp.module, imp.module) end)
+    |> Enum.filter(fn mod -> Map.has_key?(@known_behaviour_callbacks, mod) end)
     |> Enum.uniq()
   end
 
