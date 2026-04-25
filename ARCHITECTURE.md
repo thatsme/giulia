@@ -208,6 +208,29 @@ On-disk key-value store for surviving restarts without re-scanning.
   corruption (if build version mismatches, the entire L2 cache is discarded and a
   cold start occurs).
 
+- **Code-digest envelope**: graph and metrics are persisted wrapped in a
+  `%{digest: <12-char hex>, payload: <data>}` envelope. The digest is
+  computed by `Knowledge.CodeDigest` from the BEAM md5 of four code-tier
+  modules (`Builder`, `Metrics`, `Behaviours`, `DispatchPatterns`) and the
+  content md5 of three config files (`scoring.json`, `dispatch_patterns.json`,
+  `scan_defaults.json`). On warm-restore, the loader compares the stored
+  digest against the current digest:
+
+  - Match → load cache as-is
+  - Mismatch → log `"Code digest changed (X -> Y) — invalidating … cache"`,
+    drop the cache, force a rebuild on next scan
+
+  This automates the "I edited the builder/scoring.json, restart, expect
+  fresh metrics" workflow without per-edit ceremony. The AST cache is
+  intentionally NOT in the digest — re-extracting 580+ files takes
+  seconds-to-tens-of-seconds, so AST invalidation stays under user control
+  via `?force=true` on `/api/index/scan`. Only the cheap downstream path
+  (graph rebuild + metric recompute from existing ASTs) is auto-invalidated.
+
+  See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full
+  invalidation contract and the operator workflow for tuning each config
+  surface.
+
 ### L3 -- ArcadeDB (history, consolidation)
 
 External multi-model graph database for cross-build analysis. Not on the hot path.
@@ -236,6 +259,24 @@ External multi-model graph database for cross-build analysis. Not on the hot pat
 - **Purpose**: ETS + libgraph stays L1 for real-time queries. ArcadeDB is for
   history -- trend analysis, regression detection, cross-build comparisons. Typical
   warm query latency is ~100ms, acceptable for L2/L3 but not the hot path.
+
+### Configuration surface
+
+Three JSON files in `priv/config/` control behaviour that should be tunable
+without recompilation:
+
+| File | Loader | Controls |
+|---|---|---|
+| `scoring.json` | `Knowledge.ScoringConfig` | Heatmap weights/normalization/zones, change_risk weights, god_modules weights, unprotected_hubs thresholds |
+| `dispatch_patterns.json` | `Knowledge.DispatchPatterns` | Runtime-dispatch patterns the AST walker can't see (Mix Release shell overlays, ExMachina factories, the Phoenix-style `__using__/apply` idiom) |
+| `scan_defaults.json` | `Context.ScanConfig` | Universal source-root list for Mix projects (`lib`, `test/support`, `test/test_helper.exs`) |
+
+All three are loaded once at daemon startup, cached in `:persistent_term`,
+and tracked by the CodeDigest envelope (see L2 section above). Edits
+propagate via daemon restart + automatic cache invalidation on warm-restore.
+
+See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the per-variable
+reference and operator workflow.
 
 
 ## 5. AST + Runtime Fusion
@@ -306,7 +347,7 @@ coordinator, but the actual logic is split across purpose-built modules:
 
 | Module | Responsibility |
 |--------|---------------|
-| `Knowledge.Builder` | Graph construction from AST data (4-pass pure functions) |
+| `Knowledge.Builder` | Graph construction from AST data (11-pass pure functions — see Builder Passes below) |
 | `Knowledge.Topology` | Pure graph traversal: stats, centrality, reachability, cycles, paths |
 | `Knowledge.Metrics` | Quantitative metrics: heatmap, change_risk, god_modules, dead_code, coupling |
 | `Knowledge.Behaviours` | Behaviour integrity checking (callback validation, macro-aware) |
@@ -315,7 +356,38 @@ coordinator, but the actual logic is split across purpose-built modules:
 | `Knowledge.Insights.Impact` | Pre-impact risk analysis for rename/remove/refactor operations |
 | `Knowledge.Analyzer` | Facade delegating to Topology, Metrics, Behaviours, Insights |
 | `Knowledge.MacroMap` | Static mapping of `use Module` to injected function signatures |
+| `Knowledge.DispatchPatterns` | Runtime-dispatch patterns loaded from `priv/config/dispatch_patterns.json` |
+| `Knowledge.ScoringConfig` | Heatmap/change_risk/god_modules/unprotected_hubs constants from `priv/config/scoring.json` |
+| `Knowledge.CodeDigest` | Identity hash of code-tier modules + config files for L2 cache invalidation |
 | `Knowledge.Store.Reader` | Direct ETS reads bypassing GenServer (concurrent bulk reads) |
+
+#### Builder Passes
+
+The graph is built in 11 sequential passes over the file-keyed AST data
+map. Each pass is a pure function that takes a graph and returns a graph;
+all intermediate state lives in the function arguments. Passes 7-11
+synthesize edges for runtime-dispatched call sites that the static AST
+walker cannot resolve directly.
+
+| Pass | What it does | Edge label |
+|---|---|---|
+| 1. Vertices | Adds module, function, struct, behaviour vertices | (none — vertices) |
+| 2. Dependency / implements edges | `import`/`alias`/`use`/`require` → `:depends_on`; `use`/`require` of a project module → `:implements` | `:depends_on`, `:implements` |
+| 3. xref call edges | Optional, requires compiled BEAMs in target project | `{:calls, :xref}` |
+| 4. Function-level call edges (AST) | Walks each function body for remote and local calls; module-stack-aware so def nodes attribute to their real enclosing `defmodule` | `{:calls, :direct \| :alias_resolved \| :erlang_atom \| :local}` |
+| 5. Module edge promotion | Collapses MFA → MFA `:calls` edges into module-level edges | `:calls` |
+| 6. Module-reference edges | Catches modules passed as atom args to framework macros (Phoenix router, plug, supervision children, struct literals) | `:references` |
+| 7. Protocol-dispatch edges | `defimpl` impl modules → protocol module: synthesizes function-level edges from the protocol to each impl's function vertices | `{:calls, :protocol_impl}` |
+| 8. Behaviour-dispatch edges | External-framework behaviours (GenServer, Ecto.Type, Phoenix.LiveView, etc.) → callback functions in implementer modules | `{:calls, :behaviour_impl}` |
+| 9. Phoenix router-dispatch edges | Parses `get/post/put/...`, `resources`, scoped routes; emits edges from router module to each controller action | `{:calls, :router_dispatch}` |
+| 10. Function-reference edges | Detects four runtime-reference forms: literal MFA tuples `{Mod, :fn, [args]}`, function captures `&Mod.fn/N`, `apply/3`, and any 3-arg call carrying MFA-shape args (`Task.start_link(M, F, A)`, supervisor child specs, etc.) | `{:calls, :mfa_ref \| :capture_ref \| :apply_ref \| :mfa_arg_ref}` |
+| 11. Use-injected import edges | Detects modules whose `defmacro __using__/1` injects `import N` directives, then resolves unqualified calls in consumer files against those imports | `{:calls, :use_import_ref}` |
+
+Edges from Passes 7-11 are consumed by `dead_code_with_asts/3` via a
+single `reference_targets` set (functions referenced via any of the
+synthesized edge labels are exempted from the dead-code report). They
+are also visible in `verify_l3`'s stratified sample-identity check —
+the bucket names match the edge sub-labels.
 
 `Knowledge.Store` orchestrates: it owns the `Graph` struct in its state, delegates
 computation to the pure modules above, and caches results in its state map. The
