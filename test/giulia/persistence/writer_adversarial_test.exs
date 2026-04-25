@@ -181,7 +181,7 @@ defmodule Giulia.Persistence.WriterAdversarialTest do
       binary = CubDB.get(db, {:graph, :serialized})
       assert is_binary(binary)
 
-      restored = :erlang.binary_to_term(binary)
+      assert %{digest: _, payload: restored} = :erlang.binary_to_term(binary)
       assert Graph.num_vertices(restored) == 100
       assert Graph.num_edges(restored) == 99
     end
@@ -193,7 +193,7 @@ defmodule Giulia.Persistence.WriterAdversarialTest do
       Process.sleep(200)
 
       binary = CubDB.get(db, {:graph, :serialized})
-      restored = :erlang.binary_to_term(binary)
+      assert %{digest: _, payload: restored} = :erlang.binary_to_term(binary)
       assert Graph.num_vertices(restored) == 0
     end
   end
@@ -262,7 +262,7 @@ defmodule Giulia.Persistence.WriterAdversarialTest do
       Writer.persist_metrics(dir, %{heatmap: nil, dead_code: nil, coupling: %{}})
       Process.sleep(150)
 
-      restored = CubDB.get(db, {:metrics, :cached})
+      assert %{digest: _, payload: restored} = CubDB.get(db, {:metrics, :cached})
       assert restored.heatmap == nil
       assert restored.coupling == %{}
     end
@@ -273,7 +273,7 @@ defmodule Giulia.Persistence.WriterAdversarialTest do
       Writer.persist_metrics(dir, %{})
       Process.sleep(150)
 
-      assert CubDB.get(db, {:metrics, :cached}) == %{}
+      assert %{digest: _, payload: %{}} = CubDB.get(db, {:metrics, :cached})
     end
   end
 end

@@ -52,7 +52,10 @@ defmodule Giulia.Persistence.WarmRestoreTest do
       |> Graph.add_edge("Alpha", "Beta", label: :depends_on)
 
     {:ok, db} = Store.get_db(project)
-    CubDB.put(db, {:graph, :serialized}, :erlang.term_to_binary(graph, [:compressed]))
+
+    envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: graph}
+    CubDB.put(db, {:graph, :serialized}, :erlang.term_to_binary(envelope, [:compressed]))
+
     graph
   end
 

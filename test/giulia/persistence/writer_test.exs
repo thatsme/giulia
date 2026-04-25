@@ -40,7 +40,7 @@ defmodule Giulia.Persistence.WriterTest do
   end
 
   describe "persist_graph/2" do
-    test "persists graph as compressed ETF" do
+    test "persists graph as compressed ETF wrapped in code-digest envelope" do
       {:ok, db} = Store.open(@test_dir)
       graph = Graph.new(type: :directed) |> Graph.add_vertex("A")
 
@@ -49,13 +49,14 @@ defmodule Giulia.Persistence.WriterTest do
 
       binary = CubDB.get(db, {:graph, :serialized})
       assert is_binary(binary)
-      restored = :erlang.binary_to_term(binary)
+      assert %{digest: digest, payload: restored} = :erlang.binary_to_term(binary)
+      assert is_binary(digest) and byte_size(digest) == 12
       assert Graph.num_vertices(restored) == 1
     end
   end
 
   describe "persist_metrics/2" do
-    test "persists metric map" do
+    test "persists metric map wrapped in code-digest envelope" do
       {:ok, _db} = Store.open(@test_dir)
       metrics = %{heatmap: %{}, dead_code: []}
 
@@ -64,7 +65,8 @@ defmodule Giulia.Persistence.WriterTest do
 
       # Re-fetch db pid to avoid stale reference after Task write
       {:ok, db} = Store.get_db(@test_dir)
-      assert CubDB.get(db, {:metrics, :cached}) == metrics
+      assert %{digest: digest, payload: ^metrics} = CubDB.get(db, {:metrics, :cached})
+      assert is_binary(digest) and byte_size(digest) == 12
     end
   end
 end

@@ -116,7 +116,8 @@ defmodule Giulia.Persistence.Writer do
     Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
-          binary = :erlang.term_to_binary(graph, [:compressed])
+          envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: graph}
+          binary = :erlang.term_to_binary(envelope, [:compressed])
           CubDB.put(db, {:graph, :serialized}, binary)
           Logger.debug("Persisted knowledge graph for #{project_path} (#{byte_size(binary)} bytes)")
 
@@ -133,7 +134,8 @@ defmodule Giulia.Persistence.Writer do
     Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
-          CubDB.put(db, {:metrics, :cached}, metrics)
+          envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: metrics}
+          CubDB.put(db, {:metrics, :cached}, envelope)
           Logger.debug("Persisted metrics cache for #{project_path}")
 
         {:error, reason} ->

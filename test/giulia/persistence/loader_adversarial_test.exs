@@ -205,10 +205,31 @@ defmodule Giulia.Persistence.LoaderAdversarialTest do
         |> Graph.add_vertex("B", :module)
         |> Graph.add_edge("A", "B")
 
-      binary = :erlang.term_to_binary(graph, [:compressed])
+      envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: graph}
+      binary = :erlang.term_to_binary(envelope, [:compressed])
       CubDB.put(db, {:graph, :serialized}, binary)
 
       assert :ok = Loader.restore_graph(dir)
+    end
+
+    test "stale digest invalidates cached graph", %{dir: dir} do
+      {:ok, db} = Store.open(dir)
+
+      graph = Graph.new(type: :directed) |> Graph.add_vertex("X", :module)
+      envelope = %{digest: "stale_digest1", payload: graph}
+      CubDB.put(db, {:graph, :serialized}, :erlang.term_to_binary(envelope, [:compressed]))
+
+      assert :not_cached = Loader.restore_graph(dir)
+    end
+
+    test "legacy un-versioned graph format degrades to :not_cached", %{dir: dir} do
+      {:ok, db} = Store.open(dir)
+
+      graph = Graph.new(type: :directed) |> Graph.add_vertex("A", :module)
+      # Old format: raw graph, no envelope
+      CubDB.put(db, {:graph, :serialized}, :erlang.term_to_binary(graph, [:compressed]))
+
+      assert :not_cached = Loader.restore_graph(dir)
     end
 
     test "corrupt ETF binary degrades to :not_cached", %{dir: dir} do
@@ -234,9 +255,27 @@ defmodule Giulia.Persistence.LoaderAdversarialTest do
 
     test "restores valid metrics", %{dir: dir} do
       {:ok, db} = Store.open(dir)
-      CubDB.put(db, {:metrics, :cached}, %{heatmap: %{}, dead_code: []})
+      metrics = %{heatmap: %{}, dead_code: []}
+      envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: metrics}
+      CubDB.put(db, {:metrics, :cached}, envelope)
 
       assert :ok = Loader.restore_metrics(dir)
+    end
+
+    test "stale digest invalidates cached metrics", %{dir: dir} do
+      {:ok, db} = Store.open(dir)
+      envelope = %{digest: "stale_digest1", payload: %{heatmap: %{}, dead_code: []}}
+      CubDB.put(db, {:metrics, :cached}, envelope)
+
+      assert :not_cached = Loader.restore_metrics(dir)
+    end
+
+    test "legacy un-versioned metrics format degrades to :not_cached", %{dir: dir} do
+      {:ok, db} = Store.open(dir)
+      # Old format: raw map without digest envelope
+      CubDB.put(db, {:metrics, :cached}, %{heatmap: %{}, dead_code: []})
+
+      assert :not_cached = Loader.restore_metrics(dir)
     end
 
     test "non-map value stored degrades to :not_cached", %{dir: dir} do

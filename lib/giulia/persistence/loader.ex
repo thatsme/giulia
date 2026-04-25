@@ -51,10 +51,29 @@ defmodule Giulia.Persistence.Loader do
 
           binary when is_binary(binary) ->
             try do
-              graph = :erlang.binary_to_term(binary)
-              Giulia.Knowledge.Store.restore_graph(project_path, graph)
-              Logger.info("Restored knowledge graph from cache for #{project_path}")
-              :ok
+              case :erlang.binary_to_term(binary) do
+                %{digest: stored, payload: graph} ->
+                  current = Giulia.Knowledge.CodeDigest.current()
+
+                  if stored == current do
+                    Giulia.Knowledge.Store.restore_graph(project_path, graph)
+                    Logger.info("Restored knowledge graph from cache for #{project_path}")
+                    :ok
+                  else
+                    Logger.info(
+                      "Code digest changed (#{stored} -> #{current}) — invalidating graph cache for #{project_path}"
+                    )
+
+                    :not_cached
+                  end
+
+                _legacy ->
+                  Logger.info(
+                    "Legacy graph cache format for #{project_path} — discarding (will rebuild on scan)"
+                  )
+
+                  :not_cached
+              end
             rescue
               e ->
                 Logger.warning("Corrupt graph cache for #{project_path}: #{Exception.message(e)}")
@@ -83,10 +102,29 @@ defmodule Giulia.Persistence.Loader do
           nil ->
             :not_cached
 
+          %{digest: stored, payload: metrics} ->
+            current = Giulia.Knowledge.CodeDigest.current()
+
+            if stored == current do
+              Giulia.Knowledge.Store.restore_metrics(project_path, metrics)
+              Logger.info("Restored metric cache from disk for #{project_path}")
+              :ok
+            else
+              Logger.info(
+                "Code digest changed (#{stored} -> #{current}) — invalidating metric cache for #{project_path}"
+              )
+
+              :not_cached
+            end
+
           metrics when is_map(metrics) ->
-            Giulia.Knowledge.Store.restore_metrics(project_path, metrics)
-            Logger.info("Restored metric cache from disk for #{project_path}")
-            :ok
+            # Legacy un-versioned metrics cache. Discard rather than load —
+            # safer than serving data that may not match the current code.
+            Logger.info(
+              "Legacy metric cache format for #{project_path} — discarding (will rebuild on scan)"
+            )
+
+            :not_cached
 
           _other ->
             Logger.warning("Unexpected metrics cache format for #{project_path}")
