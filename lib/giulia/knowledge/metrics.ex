@@ -51,6 +51,17 @@ defmodule Giulia.Knowledge.Metrics do
       end)
       |> Map.new()
 
+    # Reference-based test detection (slice E2): walk every *_test.exs file
+    # under <project>/test/ once and collect every project module mentioned
+    # via alias/use/import/@behaviour/qualified-call/struct/MFA/capture.
+    # `has_test` for a module is then a MapSet membership check — a module
+    # integration-tested under any test filename is correctly counted as
+    # tested, eliminating the file-naming false negative that inflated
+    # yellow zones on every library codebase tested. Fallback to the
+    # filename-based detector remains for projects with non-standard test
+    # directory layouts that this set wouldn't catch.
+    test_refs = Giulia.Tools.TestReferences.referenced_modules(project_path)
+
     # Get all module vertices
     module_vertices =
       Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
@@ -79,13 +90,13 @@ defmodule Giulia.Knowledge.Metrics do
             0
           end
 
-        # Factor 3: Test fragility (does a test file exist?)
+        # Factor 3: Test coverage. Reference-based check first; falls back
+        # to filename-based detector if the test-references set didn't
+        # surface this module (covers projects with non-mirroring test
+        # layouts where neither approach catches everything).
         has_test =
-          if path do
-            Giulia.Tools.RunTests.has_test_file?(path, project_path)
-          else
-            false
-          end
+          MapSet.member?(test_refs, mod) or
+            (path != nil and Giulia.Tools.RunTests.has_test_file?(path, project_path))
 
         # Factor 4: Max coupling
         max_coupling = Map.get(coupling_map, mod, 0)

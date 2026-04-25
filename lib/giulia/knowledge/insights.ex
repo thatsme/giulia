@@ -224,6 +224,10 @@ defmodule Giulia.Knowledge.Insights do
     spec_threshold = Keyword.get(opts, :spec_threshold, cfg.spec_thresholds.red_max)
     yellow_threshold = cfg.spec_thresholds.yellow_max
 
+    # Reference-based test detection (slice E2). See heatmap_with_coupling
+    # for rationale. The set is computed once for the whole hubs query.
+    test_refs = Giulia.Tools.TestReferences.referenced_modules(project_path)
+
     # Get module vertices with sufficient in-degree
     module_vertices =
       Enum.filter(Graph.vertices(graph), fn v -> :module in Graph.vertex_labels(graph, v) end)
@@ -250,15 +254,16 @@ defmodule Giulia.Knowledge.Insights do
         spec_ratio = if public_count > 0, do: Float.round(spec_count / public_count, 2), else: 1.0
         doc_ratio = if public_count > 0, do: Float.round(doc_count / public_count, 2), else: 1.0
 
-        # Check test file existence (broad detection: exact, variant, subdirectory)
+        # Test coverage: reference-first, filename-fallback (same as heatmap).
         has_test =
-          case Giulia.Context.Store.Query.find_module(project_path, mod) do
-            {:ok, %{file: file}} ->
-              Giulia.Tools.RunTests.has_test_file?(file, project_path)
+          MapSet.member?(test_refs, mod) or
+            case Giulia.Context.Store.Query.find_module(project_path, mod) do
+              {:ok, %{file: file}} ->
+                Giulia.Tools.RunTests.has_test_file?(file, project_path)
 
-            _ ->
-              false
-          end
+              _ ->
+                false
+            end
 
         # Severity classification
         severity =
