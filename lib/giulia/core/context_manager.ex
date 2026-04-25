@@ -31,7 +31,10 @@ defmodule Giulia.Core.ContextManager do
   Get or create a ProjectContext for the given path.
   Returns {:ok, pid} or {:needs_init, path} if no GIULIA.md exists.
   """
-  @spec get_context(String.t()) :: {:ok, pid()} | {:needs_init, String.t()}
+  @spec get_context(String.t()) ::
+          {:ok, pid()}
+          | {:needs_init, String.t()}
+          | {:error, :supervisor_unavailable | :supervisor_shutting_down | term()}
   def get_context(path) do
     GenServer.call(__MODULE__, {:get_context, path})
   end
@@ -40,7 +43,9 @@ defmodule Giulia.Core.ContextManager do
   Initialize a new project at the given path.
   Creates GIULIA.md and starts a ProjectContext.
   """
-  @spec init_project(String.t(), keyword()) :: {:ok, pid()} | {:error, term()}
+  @spec init_project(String.t(), keyword()) ::
+          {:ok, pid()}
+          | {:error, :supervisor_unavailable | :supervisor_shutting_down | term()}
   def init_project(path, opts \\ []) do
     GenServer.call(__MODULE__, {:init_project, path, opts}, :infinity)
   end
@@ -214,20 +219,38 @@ defmodule Giulia.Core.ContextManager do
     end
   end
 
-  defp start_context(path) do
+  # Public so tests can pass a non-running supervisor name and exercise
+  # the :exit catch clauses deterministically — production callers always
+  # use the default supervisor.
+  @doc false
+  @spec start_context(String.t(), atom()) ::
+          {:ok, pid()}
+          | {:error, :supervisor_unavailable | :supervisor_shutting_down | term()}
+  def start_context(path, supervisor \\ Giulia.Core.ProjectSupervisor) do
     spec = {ProjectContext, path: path}
 
-    case DynamicSupervisor.start_child(Giulia.Core.ProjectSupervisor, spec) do
-      {:ok, pid} ->
-        # Monitor the process for cleanup
-        Process.monitor(pid)
-        :ets.insert(@table, {path, pid, DateTime.utc_now()})
-        Logger.info("Started ProjectContext for #{path}")
-        {:ok, pid}
+    try do
+      case DynamicSupervisor.start_child(supervisor, spec) do
+        {:ok, pid} ->
+          Process.monitor(pid)
+          :ets.insert(@table, {path, pid, DateTime.utc_now()})
+          Logger.info("Started ProjectContext for #{path}")
+          {:ok, pid}
 
-      {:error, reason} ->
-        Logger.error("Failed to start ProjectContext for #{path}: #{inspect(reason)}")
-        {:error, reason}
+        {:error, {:already_started, pid}} ->
+          {:ok, pid}
+
+        {:error, reason} ->
+          Logger.error("Failed to start ProjectContext for #{path}: #{inspect(reason)}")
+          {:error, reason}
+      end
+    catch
+      :exit, {:noproc, _} ->
+        Logger.warning("ProjectSupervisor unavailable (likely restarting) for #{path}")
+        {:error, :supervisor_unavailable}
+
+      :exit, {reason, _} when reason in [:normal, :shutdown] ->
+        {:error, :supervisor_shutting_down}
     end
   end
 

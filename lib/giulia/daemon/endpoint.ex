@@ -92,8 +92,7 @@ defmodule Giulia.Daemon.Endpoint do
             # Send initial event
             {:ok, conn} = chunk(conn, "event: start\ndata: {\"request_id\": \"#{request_id}\"}\n\n")
 
-            # Execute inference async
-            spawn(fn ->
+            Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
               execute_inference_streaming(message, resolved_path, context_pid, request_id)
             end)
 

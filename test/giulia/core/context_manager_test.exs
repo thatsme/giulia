@@ -57,4 +57,23 @@ defmodule Giulia.Core.ContextManagerTest do
       assert {:error, :not_found} = result
     end
   end
+
+  describe "start_context/2 — supervisor unavailable" do
+    test "returns {:error, :supervisor_unavailable} when supervisor is :noproc" do
+      # Pass a registered name that is guaranteed not to exist — exercises
+      # the :exit, {:noproc, _} catch clause without touching the live
+      # ProjectSupervisor (which the rest of the suite depends on).
+      dead_supervisor = :"unregistered_#{System.unique_integer([:positive])}"
+      assert Process.whereis(dead_supervisor) == nil
+
+      tmp =
+        Path.join(System.tmp_dir!(), "giulia_test_supervisor_unavailable_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      on_exit(fn -> File.rm_rf!(tmp) end)
+
+      assert {:error, :supervisor_unavailable} =
+               ContextManager.start_context(tmp, dead_supervisor)
+    end
+  end
 end
