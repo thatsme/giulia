@@ -94,7 +94,12 @@ defmodule Giulia.Persistence.Verifier do
   end
 
   defp safe_deserialize(binary) do
-    :erlang.binary_to_term(binary)
+    case :erlang.binary_to_term(binary) do
+      # Slice B envelope: %{digest, payload}. Unwrap — the verifier compares
+      # the deserialized graph independent of the digest version.
+      %{digest: _, payload: graph} -> graph
+      legacy -> legacy
+    end
   rescue
     _ -> nil
   end
@@ -360,8 +365,17 @@ defmodule Giulia.Persistence.Verifier do
 
   defp read_l2_metrics(project_path) do
     case PStore.get_db(project_path) do
-      {:ok, db} -> CubDB.get(db, {:metrics, :cached})
-      {:error, _} -> nil
+      {:ok, db} ->
+        case CubDB.get(db, {:metrics, :cached}) do
+          # Slice B envelope: unwrap so the verifier compares the metrics
+          # map directly. Digest mismatch is the loader's concern, not
+          # the verifier's.
+          %{digest: _, payload: metrics} -> metrics
+          legacy -> legacy
+        end
+
+      {:error, _} ->
+        nil
     end
   end
 

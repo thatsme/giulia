@@ -689,4 +689,334 @@ defmodule Giulia.Knowledge.BuilderTest do
       )
     end
   end
+
+  # ============================================================================
+  # Pass 10: Function-reference edges (MFA tuples, captures, apply/3)
+  # ============================================================================
+
+  describe "build_graph/1 — function-reference edges (Pass 10)" do
+    defp ref_edges(graph, from, to) do
+      graph
+      |> Graph.out_edges(from)
+      |> Enum.filter(fn e -> e.v2 == to end)
+    end
+
+    test "MFA tuple with __MODULE__ produces a :mfa_ref edge" do
+      with_sources(
+        %{
+          "demo.ex" => """
+          defmodule Demo do
+            def kick do
+              _ = {__MODULE__, :execute_metrics, []}
+              :ok
+            end
+
+            def execute_metrics, do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          assert Graph.has_vertex?(graph, "Demo.execute_metrics/0")
+
+          edges = ref_edges(graph, "Demo.kick/0", "Demo.execute_metrics/0")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :mfa_ref} end),
+                 "expected :mfa_ref edge from Demo.kick/0 to Demo.execute_metrics/0; got: #{inspect(Enum.map(edges, & &1.label))}"
+        end
+      )
+    end
+
+    test "MFA tuple with fully-qualified module produces a :mfa_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def kick, do: poll({Demo.Worker, :tick, [42]})
+            defp poll(_), do: :ok
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Caller.kick/0", "Demo.Worker.tick/1")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :mfa_ref} end)
+        end
+      )
+    end
+
+    test "MFA tuple with variable args produces no edge (arity unknown)" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def kick(args), do: poll({Demo.Worker, :tick, args})
+            defp poll(_), do: :ok
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_a), do: :ok
+            def tick(_a, _b), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          # No :mfa_ref edge to either tick arity — variable arg list is conservative skip
+          assert ref_edges(graph, "Caller.kick/1", "Demo.Worker.tick/1")
+                 |> Enum.all?(fn e -> e.label != {:calls, :mfa_ref} end)
+
+          assert ref_edges(graph, "Caller.kick/1", "Demo.Worker.tick/2")
+                 |> Enum.all?(fn e -> e.label != {:calls, :mfa_ref} end)
+        end
+      )
+    end
+
+    test "MFA tuple with non-existent target produces no orphan edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def kick, do: poll({Demo.Worker, :phantom, []})
+            defp poll(_), do: :ok
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick, do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          # Worker.phantom/0 doesn't exist → no edge created
+          refute Graph.has_vertex?(graph, "Demo.Worker.phantom/0")
+        end
+      )
+    end
+
+    test "function capture &Mod.fn/N produces a :capture_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def fan_out, do: Enum.map([1, 2], &Demo.Worker.tick/1)
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Caller.fan_out/0", "Demo.Worker.tick/1")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :capture_ref} end)
+        end
+      )
+    end
+
+    test "apply/3 with literal module + atom + list produces an :apply_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def call_it, do: apply(Demo.Worker, :tick, [42])
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Caller.call_it/0", "Demo.Worker.tick/1")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :apply_ref} end)
+        end
+      )
+    end
+
+    test "Kernel.apply/3 fully-qualified produces an :apply_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def call_it, do: Kernel.apply(Demo.Worker, :tick, [])
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick, do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Caller.call_it/0", "Demo.Worker.tick/0")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :apply_ref} end)
+        end
+      )
+    end
+
+    test "apply/3 with variable args list produces no edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Caller do
+            def call_it(args), do: apply(Demo.Worker, :tick, args)
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          assert ref_edges(graph, "Caller.call_it/1", "Demo.Worker.tick/1")
+                 |> Enum.all?(fn e -> e.label != {:calls, :apply_ref} end)
+        end
+      )
+    end
+  end
+
+  # ============================================================================
+  # Pass 11: Use-injected import edges (defmacro __using__ + import M idiom)
+  # ============================================================================
+
+  describe "build_graph/1 — use-injected import edges (Pass 11)" do
+    test "use M with __using__ that imports M produces edge to M's defmacro" do
+      with_sources(
+        %{
+          "host.ex" => """
+          defmodule Host do
+            defmacro __using__(_) do
+              quote do
+                import Host
+              end
+            end
+
+            defmacro flag?, do: quote(do: false)
+          end
+          """,
+          "consumer.ex" => """
+          defmodule Consumer do
+            use Host
+
+            def check, do: flag?()
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          edges = ref_edges(graph, "Consumer.check/0", "Host.flag?/0")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :use_import_ref} end),
+                 "expected :use_import_ref edge from Consumer.check/0 to Host.flag?/0; got: #{inspect(Enum.map(edges, & &1.label))}"
+        end
+      )
+    end
+
+    test "use M where __using__ uses __MODULE__ as the imported module" do
+      with_sources(
+        %{
+          "host.ex" => """
+          defmodule HostB do
+            defmacro __using__(_) do
+              quote do
+                import __MODULE__
+              end
+            end
+
+            def helper, do: :ok
+          end
+          """,
+          "consumer.ex" => """
+          defmodule ConsumerB do
+            use HostB
+
+            def go, do: helper()
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          edges = ref_edges(graph, "ConsumerB.go/0", "HostB.helper/0")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :use_import_ref} end)
+        end
+      )
+    end
+
+    test "use M without import-injection in __using__ produces no edge" do
+      with_sources(
+        %{
+          "host.ex" => """
+          defmodule QuietHost do
+            defmacro __using__(_) do
+              quote do
+                require QuietHost
+              end
+            end
+
+            def helper, do: :ok
+          end
+          """,
+          "consumer.ex" => """
+          defmodule QuietConsumer do
+            use QuietHost
+
+            def go, do: helper()
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "QuietConsumer.go/0", "QuietHost.helper/0")
+          assert Enum.all?(edges, fn e -> e.label != {:calls, :use_import_ref} end),
+                 "no edge expected when __using__ does not inject `import`"
+        end
+      )
+    end
+
+    test "unqualified call without matching imported function produces no edge" do
+      with_sources(
+        %{
+          "host.ex" => """
+          defmodule HostC do
+            defmacro __using__(_) do
+              quote do
+                import HostC
+              end
+            end
+
+            def real_helper, do: :ok
+          end
+          """,
+          "consumer.ex" => """
+          defmodule ConsumerC do
+            use HostC
+
+            def go, do: phantom()
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          # HostC.phantom/0 doesn't exist — no edge
+          refute Graph.has_vertex?(graph, "HostC.phantom/0")
+        end
+      )
+    end
+  end
 end

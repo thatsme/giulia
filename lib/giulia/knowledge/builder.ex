@@ -100,7 +100,54 @@ defmodule Giulia.Knowledge.Builder do
     # runtime-dispatched by the Phoenix.Router; without this pass they
     # appear as dead-end vertices in the static call graph. Action arity
     # is assumed 2 (the Phoenix convention: `def action(conn, params)`).
-    add_router_dispatch_edges(graph, ast_data)
+    graph = add_router_dispatch_edges(graph, ast_data)
+
+    # Pass 10: Function-reference edges — synthesizes edges from any
+    # literal function-reference shape that the static call graph would
+    # otherwise miss. Universal across Elixir/OTP — three forms covered:
+    #
+    #   - `{Mod, :fn, [args]}` MFA tuples (`:telemetry_poller` measurements,
+    #     `Polling.build`, `Task.async/MFA`, supervisor child specs).
+    #   - `&Mod.fn/N` function captures passed to higher-order callees
+    #     (`Enum.map(&Mod.fn/1)`, telemetry handlers, hooks).
+    #   - `apply(Mod, :fn, [args])` and `Kernel.apply(...)` runtime apply
+    #     with literal module + function (release tasks, dynamic dispatch).
+    #
+    # Each form must have a static module reference (alias / __MODULE__ /
+    # bare atom), an atom-literal function name, and a determinable arity
+    # (literal arg list for MFA/apply, integer literal for capture). Any
+    # form with a variable arg list or computed module name is skipped —
+    # static analysis cannot reach a definite vertex without false
+    # positives. Edges are labeled `{:calls, :mfa_ref | :capture_ref |
+    # :apply_ref}` so downstream queries can filter by mechanism.
+    graph = add_function_reference_edges(graph, ast_data)
+
+    # Pass 11: Use-injected import edges. Universal across Elixir.
+    #
+    # `defmacro __using__(_) do quote do: import M end end` is the standard
+    # idiom for letting consumers import a module's macros without typing
+    # `import M` themselves. After `use M`, unqualified calls in the
+    # consumer that match M's public functions/macros resolve at compile
+    # time to `M.<name>/<arity>` — but the static AST shows only `name(...)`
+    # in the consumer's body, so the call graph attributes it to the
+    # consumer's module and the imported function looks dead.
+    #
+    # Detection (two-pass over ast_data):
+    #   1. For every project module M with `defmacro __using__/1`, scan
+    #      its `quote do ... end` body for top-level `import N` directives
+    #      (literal alias or `__MODULE__`). Record `M => [N, ...]` in a
+    #      use-injection map.
+    #   2. For each file with `use M` directives, accumulate the union of
+    #      M's injected imports as the file's effective extra imports.
+    #      Walk each function body for unqualified calls; for each such
+    #      call, if any effective import N defines `<name>/<arity>` as a
+    #      function vertex, emit edge `caller_mfa --{:calls,
+    #      :use_import_ref}--> N.<name>/<arity>`.
+    #
+    # Conservative: only literal alias references are followed (no
+    # alias-table resolution inside the `quote` body, no conditional
+    # imports). False negatives over false positives.
+    add_use_import_edges(graph, ast_data)
   end
 
   # ============================================================================
@@ -1267,4 +1314,464 @@ defmodule Giulia.Knowledge.Builder do
       edge.v2 == to and match?({:calls, :router_dispatch}, edge.label)
     end)
   end
+
+  # ============================================================================
+  # Pass 10: Function-reference edges
+  # ============================================================================
+
+  defp add_function_reference_edges(graph, ast_data) do
+    Enum.reduce(ast_data, graph, fn {path, data}, g ->
+      alias_map =
+        (data[:imports] || [])
+        |> Enum.filter(fn imp -> imp.type == :alias end)
+        |> Map.new(fn imp ->
+          short = imp.module |> String.split(".") |> List.last()
+          {short, imp.module}
+        end)
+
+      fallback_caller =
+        case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
+
+      case File.read(path) do
+        {:ok, source} ->
+          case Sourceror.parse_string(source) do
+            {:ok, ast} ->
+              extract_references_per_function(g, ast, fallback_caller, alias_map)
+
+            _ ->
+              g
+          end
+
+        _ ->
+          g
+      end
+    end)
+  end
+
+  # Walk the file's AST with a module stack. Every `def`/`defp` body is
+  # scanned for the three reference forms (MFA tuple, capture, apply) and
+  # the discovered references are accumulated as
+  # `caller_mfa => %{target_mfa => label}`.
+  defp extract_references_per_function(graph, ast, fallback_caller, alias_map) do
+    {_ast, {ref_map, _stack}} =
+      Macro.traverse(
+        ast,
+        {%{}, []},
+        fn node, {acc, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, local_name} ->
+              {node, {acc, [join_module_name(stack, local_name) | stack]}}
+
+            :skip ->
+              current_caller = List.first(stack) || fallback_caller
+
+              case def_node_signature(node) do
+                {:ok, func_name, arity, body} ->
+                  caller_mfa = "#{current_caller}.#{func_name}/#{arity}"
+                  refs = extract_references_from_body(body, current_caller, alias_map)
+                  {node, {merge_refs(acc, caller_mfa, refs), stack}}
+
+                :skip ->
+                  {node, state}
+              end
+          end
+        end,
+        fn node, {acc, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, _} ->
+              case stack do
+                [_ | rest] -> {node, {acc, rest}}
+                [] -> {node, {acc, []}}
+              end
+
+            :skip ->
+              {node, state}
+          end
+        end
+      )
+
+    Enum.reduce(ref_map, graph, fn {caller_mfa, refs}, g ->
+      if Graph.has_vertex?(g, caller_mfa) do
+        Enum.reduce(refs, g, fn {target_mfa, label}, g2 ->
+          if target_mfa != caller_mfa and Graph.has_vertex?(g2, target_mfa) and
+               not has_label_edge?(g2, caller_mfa, target_mfa, label) do
+            Graph.add_edge(g2, caller_mfa, target_mfa, label: label)
+          else
+            g2
+          end
+        end)
+      else
+        g
+      end
+    end)
+  end
+
+  # Walk a function body and collect every literal MFA / capture / apply
+  # reference. Returns a map of `target_mfa => edge_label`. First-writer
+  # wins on duplicates (multiple references to the same target collapse).
+  defp extract_references_from_body(body, caller_module, alias_map) do
+    {_body, refs} =
+      Macro.prewalk(body, %{}, fn node, acc ->
+        case classify_reference(node, caller_module, alias_map) do
+          {:ok, target, label} -> {node, Map.put_new(acc, target, label)}
+          :skip -> {node, acc}
+        end
+      end)
+
+    refs
+  end
+
+  # MFA tuple literal: `{Mod, :fn, [args]}`. Sourceror represents 3-tuples
+  # as `{:{}, meta, [a, b, c]}`.
+  defp classify_reference(
+         {:{}, _, [mod_term, fn_atom, args_term]},
+         caller_module,
+         alias_map
+       ) do
+    build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, :mfa_ref)
+  end
+
+  # Function capture: `&Mod.fn/N`.
+  defp classify_reference(
+         {:&, _, [{:/, _, [{{:., _, [mod_term, fn_atom]}, _, []}, arity_term]}]},
+         caller_module,
+         alias_map
+       )
+       when is_atom(fn_atom) do
+    case {resolve_module_term(mod_term, caller_module, alias_map), resolve_arity_int(arity_term)} do
+      {{:ok, mod}, {:ok, arity}} ->
+        target = "#{mod}.#{Atom.to_string(fn_atom)}/#{arity}"
+        {:ok, target, {:calls, :capture_ref}}
+
+      _ ->
+        :skip
+    end
+  end
+
+  # Bare `apply(Mod, :fn, [args])`.
+  defp classify_reference(
+         {:apply, _, [mod_term, fn_atom, args_term]},
+         caller_module,
+         alias_map
+       ) do
+    build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, :apply_ref)
+  end
+
+  # Fully-qualified `Kernel.apply(Mod, :fn, [args])`.
+  defp classify_reference(
+         {{:., _, [{:__aliases__, _, [:Kernel]}, :apply]}, _, [mod_term, fn_atom, args_term]},
+         caller_module,
+         alias_map
+       ) do
+    build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, :apply_ref)
+  end
+
+  defp classify_reference(_, _, _), do: :skip
+
+  defp build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, kind) do
+    with {:ok, mod} <- resolve_module_term(mod_term, caller_module, alias_map),
+         {:ok, fn_name} <- resolve_function_atom(fn_atom),
+         {:ok, arity} <- resolve_args_arity(args_term) do
+      target = "#{mod}.#{fn_name}/#{arity}"
+      {:ok, target, {:calls, kind}}
+    else
+      _ -> :skip
+    end
+  end
+
+  defp resolve_module_term({:__MODULE__, _, _}, current_module, _alias_map) do
+    {:ok, current_module}
+  end
+
+  defp resolve_module_term({:__aliases__, _, parts}, _current, alias_map) when is_list(parts) do
+    raw = parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
+    {:ok, resolve_alias_prefix(raw, alias_map)}
+  end
+
+  defp resolve_module_term(atom, _current, _alias_map)
+       when is_atom(atom) and atom not in [nil, true, false] do
+    {:ok, Atom.to_string(atom)}
+  end
+
+  defp resolve_module_term(_, _, _), do: :skip
+
+  defp resolve_function_atom(atom)
+       when is_atom(atom) and atom not in [nil, true, false],
+       do: {:ok, Atom.to_string(atom)}
+
+  defp resolve_function_atom({:__block__, _, [atom]})
+       when is_atom(atom) and atom not in [nil, true, false],
+       do: {:ok, Atom.to_string(atom)}
+
+  defp resolve_function_atom(_), do: :skip
+
+  defp resolve_args_arity(list) when is_list(list), do: {:ok, length(list)}
+  defp resolve_args_arity({:__block__, _, [list]}) when is_list(list), do: {:ok, length(list)}
+  defp resolve_args_arity(_), do: :skip
+
+  defp resolve_arity_int(n) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp resolve_arity_int({:__block__, _, [n]}) when is_integer(n) and n >= 0, do: {:ok, n}
+  defp resolve_arity_int(_), do: :skip
+
+  defp merge_refs(acc, caller_mfa, refs) do
+    Map.update(acc, caller_mfa, refs, fn existing ->
+      Map.merge(existing, refs, fn _k, v, _v -> v end)
+    end)
+  end
+
+  defp has_label_edge?(graph, from, to, label) do
+    graph
+    |> Graph.out_edges(from)
+    |> Enum.any?(fn edge -> edge.v2 == to and edge.label == label end)
+  end
+
+  # ============================================================================
+  # Pass 11: Use-injected import edges
+  # ============================================================================
+
+  defp add_use_import_edges(graph, ast_data) do
+    # Step 1: build %{module => [imported_module, ...]} from each module's
+    # `defmacro __using__/1` body.
+    use_injections = build_use_injection_map(ast_data)
+
+    if map_size(use_injections) == 0 do
+      graph
+    else
+      # Step 2: for each file, derive the effective extra-import set (union
+      # of injections from every `use X` whose X is in `use_injections`),
+      # then walk each function body looking for unqualified calls that
+      # resolve through those imports.
+      Enum.reduce(ast_data, graph, fn {path, data}, g ->
+        extra_imports = effective_use_imports(data, use_injections)
+
+        if extra_imports == [] do
+          g
+        else
+          fallback_caller =
+            case data[:modules] do
+              [%{name: name} | _] -> name
+              _ -> "Unknown"
+            end
+
+          case File.read(path) do
+            {:ok, source} ->
+              case Sourceror.parse_string(source) do
+                {:ok, ast} ->
+                  emit_use_import_edges(g, ast, fallback_caller, extra_imports)
+
+                _ ->
+                  g
+              end
+
+            _ ->
+              g
+          end
+        end
+      end)
+    end
+  end
+
+  # Walk every project module's `defmacro __using__/1` body for top-level
+  # `import N` directives. Returns `%{using_module => [imported, ...]}`.
+  defp build_use_injection_map(ast_data) do
+    Enum.reduce(ast_data, %{}, fn {path, data}, acc ->
+      primary_module =
+        case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> nil
+        end
+
+      if primary_module == nil do
+        acc
+      else
+        case File.read(path) do
+          {:ok, source} ->
+            case Sourceror.parse_string(source) do
+              {:ok, ast} ->
+                injected = scan_using_imports(ast, primary_module)
+
+                if injected == [],
+                  do: acc,
+                  else: Map.put(acc, primary_module, injected)
+
+              _ ->
+                acc
+            end
+
+          _ ->
+            acc
+        end
+      end
+    end)
+  end
+
+  # Extract import directives nested inside `defmacro __using__(_) do quote
+  # do ... end end`. Only literal aliases and `__MODULE__` are resolved;
+  # anything more elaborate (alias-table lookup, conditional imports,
+  # nested quotes) is skipped — false negatives over false positives.
+  defp scan_using_imports(ast, current_module) do
+    {_ast, imports} =
+      Macro.prewalk(ast, [], fn
+        {:defmacro, _, [{:__using__, _, _args}, body]} = node, acc ->
+          {node, acc ++ collect_imports_in_using_body(body, current_module)}
+
+        other, acc ->
+          {other, acc}
+      end)
+
+    Enum.uniq(imports)
+  end
+
+  defp collect_imports_in_using_body(body, current_module) do
+    {_body, imports} =
+      Macro.prewalk(body, [], fn
+        {:import, _, [mod_term | _opts]} = node, acc ->
+          case import_alias_name(mod_term, current_module) do
+            {:ok, name} -> {node, [name | acc]}
+            :skip -> {node, acc}
+          end
+
+        other, acc ->
+          {other, acc}
+      end)
+
+    imports
+  end
+
+  defp import_alias_name({:__MODULE__, _, _}, current_module), do: {:ok, current_module}
+
+  defp import_alias_name({:__aliases__, _, parts}, _current) when is_list(parts) do
+    {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
+  end
+
+  defp import_alias_name(_, _), do: :skip
+
+  # Union of injected imports across every `use X` directive in the file
+  # whose X is registered in `use_injections`.
+  defp effective_use_imports(data, use_injections) do
+    (data[:imports] || [])
+    |> Enum.filter(fn imp -> imp.type == :use end)
+    |> Enum.flat_map(fn imp -> Map.get(use_injections, imp.module, []) end)
+    |> Enum.uniq()
+  end
+
+  defp emit_use_import_edges(graph, ast, fallback_caller, extra_imports) do
+    {_ast, {edge_acc, _stack}} =
+      Macro.traverse(
+        ast,
+        {[], []},
+        fn node, {edges, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, local_name} ->
+              {node, {edges, [join_module_name(stack, local_name) | stack]}}
+
+            :skip ->
+              current_caller = List.first(stack) || fallback_caller
+
+              case def_node_signature(node) do
+                {:ok, func_name, arity, body} ->
+                  caller_mfa = "#{current_caller}.#{func_name}/#{arity}"
+
+                  new_edges =
+                    collect_unqualified_call_edges(body, caller_mfa, extra_imports, graph)
+
+                  {node, {new_edges ++ edges, stack}}
+
+                :skip ->
+                  {node, state}
+              end
+          end
+        end,
+        fn node, {edges, stack} = state ->
+          case def_module_local_name(node) do
+            {:ok, _} ->
+              case stack do
+                [_ | rest] -> {node, {edges, rest}}
+                [] -> {node, {edges, []}}
+              end
+
+            :skip ->
+              {node, state}
+          end
+        end
+      )
+
+    Enum.reduce(edge_acc, graph, fn {from, to, label}, g ->
+      if from != to and Graph.has_vertex?(g, from) and Graph.has_vertex?(g, to) and
+           not has_label_edge?(g, from, to, label) do
+        Graph.add_edge(g, from, to, label: label)
+      else
+        g
+      end
+    end)
+  end
+
+  # Walk a function body for unqualified call sites and resolve them
+  # against the file's effective use-injected imports. Each successful
+  # resolution emits one edge tuple `{caller_mfa, target_mfa, label}`.
+  defp collect_unqualified_call_edges(body, caller_mfa, extra_imports, graph) do
+    {_body, edges} =
+      Macro.prewalk(body, [], fn node, acc ->
+        case unqualified_call_signature(node) do
+          {:ok, name, arity} ->
+            new =
+              Enum.flat_map(extra_imports, fn imported_mod ->
+                target = "#{imported_mod}.#{name}/#{arity}"
+
+                if Graph.has_vertex?(graph, target) do
+                  [{caller_mfa, target, {:calls, :use_import_ref}}]
+                else
+                  []
+                end
+              end)
+
+            {node, new ++ acc}
+
+          :skip ->
+            {node, acc}
+        end
+      end)
+
+    edges
+  end
+
+  # An unqualified call is `{atom_name, _, args}` where args is a list and
+  # the head atom is not a control-flow keyword we'd want to ignore. The
+  # narrow set of "looks like a regular call" matches the shape with
+  # is_atom + is_list, then filters out a small denylist of node heads
+  # that would otherwise trigger false matches (do/quote/etc).
+  @reserved_call_heads [
+    :__aliases__,
+    :__block__,
+    :__MODULE__,
+    :__ENV__,
+    :__CALLER__,
+    :__DIR__,
+    :__FILE__,
+    :__LINE__,
+    :do,
+    :else,
+    :catch,
+    :rescue,
+    :after,
+    :->,
+    :"::",
+    :when,
+    :|,
+    :|>,
+    :=,
+    :alias,
+    :import,
+    :require,
+    :use
+  ]
+  defp unqualified_call_signature({name, _meta, args})
+       when is_atom(name) and is_list(args) and name not in @reserved_call_heads do
+    {:ok, Atom.to_string(name), length(args)}
+  end
+
+  defp unqualified_call_signature(_), do: :skip
 end

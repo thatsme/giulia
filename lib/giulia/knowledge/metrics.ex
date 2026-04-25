@@ -388,6 +388,27 @@ defmodule Giulia.Knowledge.Metrics do
         all_functions
       )
 
+    # Step 4d: Function-reference targets surfaced by Builder Pass 10 —
+    # any function vertex that has at least one incoming `{:calls,
+    # :mfa_ref | :capture_ref | :apply_ref}` edge from another function.
+    # These are runtime-dispatched references through MFA tuples, `&`
+    # captures, or `apply/3` calls; without this exemption every PromEx
+    # / telemetry / Task.async-MFA / supervisor-child-spec entry would
+    # appear dead even though the literal naming the function exists in
+    # source. Read directly off the graph; no per-codebase config.
+    reference_targets =
+      graph
+      |> Graph.edges()
+      |> Enum.filter(fn edge ->
+        match?(
+          {:calls, kind}
+          when kind in [:mfa_ref, :capture_ref, :apply_ref, :use_import_ref],
+          edge.label
+        )
+      end)
+      |> Enum.map(fn edge -> edge.v2 end)
+      |> MapSet.new()
+
     # Step 5: Find dead functions
     dead =
       all_functions
@@ -400,6 +421,7 @@ defmodule Giulia.Knowledge.Metrics do
           MapSet.member?(dispatch_entries, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(@implicit_functions, name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
+          MapSet.member?(reference_targets, "#{func.module}.#{func.name}/#{func.arity}") or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
           called_with_any_arity?(called_functions, func) or
