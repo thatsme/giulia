@@ -104,22 +104,29 @@ defmodule Giulia.Knowledge.Builder do
 
     # Pass 10: Function-reference edges — synthesizes edges from any
     # literal function-reference shape that the static call graph would
-    # otherwise miss. Universal across Elixir/OTP — three forms covered:
+    # otherwise miss. Universal across Elixir/OTP — four forms covered:
     #
     #   - `{Mod, :fn, [args]}` MFA tuples (`:telemetry_poller` measurements,
-    #     `Polling.build`, `Task.async/MFA`, supervisor child specs).
+    #     `Polling.build`, supervisor child specs as 3-tuples).
     #   - `&Mod.fn/N` function captures passed to higher-order callees
     #     (`Enum.map(&Mod.fn/1)`, telemetry handlers, hooks).
     #   - `apply(Mod, :fn, [args])` and `Kernel.apply(...)` runtime apply
     #     with literal module + function (release tasks, dynamic dispatch).
+    #   - **Generic 3-arg call carrying MFA-shape args** —
+    #     `Task.start_link(__MODULE__, :init, [])`, `Task.async(Mod, :run,
+    #     [arg])`, `Process.spawn_link(Mod, :go, [])`, etc. Catches
+    #     library APIs that accept (module, function, args) without going
+    #     through `apply/3`. Filter requires arg1 to be `__MODULE__` or
+    #     `__aliases__` so common 3-arg calls like `Map.put(map, :k, v)`
+    #     don't over-match.
     #
-    # Each form must have a static module reference (alias / __MODULE__ /
-    # bare atom), an atom-literal function name, and a determinable arity
-    # (literal arg list for MFA/apply, integer literal for capture). Any
-    # form with a variable arg list or computed module name is skipped —
-    # static analysis cannot reach a definite vertex without false
-    # positives. Edges are labeled `{:calls, :mfa_ref | :capture_ref |
-    # :apply_ref}` so downstream queries can filter by mechanism.
+    # Each form must have a static module reference, an atom-literal
+    # function name, and a determinable arity (literal arg list for
+    # MFA/apply/MFA-arg, integer literal for capture). Any form with a
+    # variable arg list or computed module name is skipped — static
+    # analysis cannot reach a definite vertex without false positives.
+    # Edges are labeled `{:calls, :mfa_ref | :capture_ref | :apply_ref |
+    # :mfa_arg_ref}` so downstream queries can filter by mechanism.
     graph = add_function_reference_edges(graph, ast_data)
 
     # Pass 11: Use-injected import edges. Universal across Elixir.
@@ -825,9 +832,9 @@ defmodule Giulia.Knowledge.Builder do
   end
 
   # Parent-namespace prefixes of a module, deepest first.
-  # "AlexClawWeb.Router" → ["AlexClawWeb"]
-  # "AlexClaw.Web.Api.Router" → ["AlexClaw.Web.Api", "AlexClaw.Web", "AlexClaw"]
-  # "AlexClaw" → []
+  # "MyAppWeb.Router" → ["MyAppWeb"]
+  # "MyApp.Web.Api.Router" → ["MyApp.Web.Api", "MyApp.Web", "MyApp"]
+  # "MyApp" → []
   defp caller_namespace_prefixes(caller_module) do
     parts = String.split(caller_module, ".")
 
@@ -1467,6 +1474,31 @@ defmodule Giulia.Knowledge.Builder do
          alias_map
        ) do
     build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, :apply_ref)
+  end
+
+  # Generic 3-arg call carrying MFA-shape positional arguments. Catches the
+  # MFA-form invocation through ANY library function whose signature accepts
+  # `(module, function, args)` — `Task.start_link/3`, `Task.async/3`,
+  # `Process.spawn_link/3`, supervisor child specs, and any callback-based
+  # API where the user passes the trio explicitly. The arg-shape filter
+  # (static module + atom literal + list literal) is the same conservative
+  # filter the apply/3 detector uses; arg1 must be `__MODULE__` or
+  # `__aliases__` (NOT a bare variable, NOT an atom literal — those would
+  # over-match common 3-arg calls like `Map.put(map, :key, value)`).
+  # Universal — no library allowlist; the AST shape alone is the signal.
+  defp classify_reference(
+         {_call_head, _meta, [mod_term, fn_atom, args_term]},
+         caller_module,
+         alias_map
+       )
+       when is_tuple(mod_term) and is_tuple(args_term) do
+    case mod_term do
+      {head, _, _} when head in [:__MODULE__, :__aliases__] ->
+        build_reference(mod_term, fn_atom, args_term, caller_module, alias_map, :mfa_arg_ref)
+
+      _ ->
+        :skip
+    end
   end
 
   defp classify_reference(_, _, _), do: :skip

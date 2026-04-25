@@ -402,7 +402,13 @@ defmodule Giulia.Knowledge.Metrics do
       |> Enum.filter(fn edge ->
         match?(
           {:calls, kind}
-          when kind in [:mfa_ref, :capture_ref, :apply_ref, :use_import_ref],
+          when kind in [
+                 :mfa_ref,
+                 :capture_ref,
+                 :apply_ref,
+                 :mfa_arg_ref,
+                 :use_import_ref
+               ],
           edge.label
         )
       end)

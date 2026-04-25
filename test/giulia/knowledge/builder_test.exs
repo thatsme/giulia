@@ -888,6 +888,103 @@ defmodule Giulia.Knowledge.BuilderTest do
         end
       )
     end
+
+    test "MFA-shape args inside a generic 3-arg call (Task.start_link form) produce :mfa_arg_ref edge" do
+      with_sources(
+        %{
+          "clock.ex" => """
+          defmodule Demo.Clock do
+            def start_link(_opts) do
+              Task.start_link(__MODULE__, :init, [])
+            end
+
+            def init, do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Demo.Clock.start_link/1", "Demo.Clock.init/0")
+
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :mfa_arg_ref} end),
+                 "expected :mfa_arg_ref edge for Task.start_link(__MODULE__, :init, []); got: #{inspect(Enum.map(edges, & &1.label))}"
+        end
+      )
+    end
+
+    test "MFA-shape args via fully-qualified module reference (Task.async form) produce :mfa_arg_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Demo.Caller do
+            def fan_out(arg), do: Task.async(Demo.Worker, :tick, [arg])
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Demo.Caller.fan_out/1", "Demo.Worker.tick/1")
+          assert Enum.any?(edges, fn e -> e.label == {:calls, :mfa_arg_ref} end)
+        end
+      )
+    end
+
+    test "3-arg call with non-module first arg does NOT produce a false-positive edge" do
+      # Map.put(map, :key, value) shape — arg1 is a variable, not a module.
+      # Must NOT emit a phantom edge to `:key.value/?` (which doesn't even
+      # parse — no vertex exists).
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Demo.Caller do
+            def update_state(state) do
+              Map.put(state, :flag, true)
+            end
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          # No vertices were created for any "state.flag/?" or similar
+          # accidental match. The graph just has the caller's own vertex.
+          assert Graph.has_vertex?(graph, "Demo.Caller.update_state/1")
+
+          edges =
+            graph
+            |> Graph.out_edges("Demo.Caller.update_state/1")
+            |> Enum.filter(fn e -> e.label == {:calls, :mfa_arg_ref} end)
+
+          assert edges == [], "expected no :mfa_arg_ref edges from Map.put"
+        end
+      )
+    end
+
+    test "3-arg call with variable arity list does NOT produce a :mfa_arg_ref edge" do
+      with_sources(
+        %{
+          "caller.ex" => """
+          defmodule Demo.Caller do
+            def fan_out(args), do: Task.start_link(Demo.Worker, :tick, args)
+          end
+          """,
+          "worker.ex" => """
+          defmodule Demo.Worker do
+            def tick(_n), do: :ok
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+          edges = ref_edges(graph, "Demo.Caller.fan_out/1", "Demo.Worker.tick/1")
+          assert Enum.all?(edges, fn e -> e.label != {:calls, :mfa_arg_ref} end)
+        end
+      )
+    end
   end
 
   # ============================================================================
