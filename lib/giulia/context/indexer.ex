@@ -71,10 +71,17 @@ defmodule Giulia.Context.Indexer do
 
   @doc """
   Trigger a full project scan.
+
+  ## Options
+
+    * `:force` (boolean, default false) — when true, bypass the L2 warm-cache
+      short-circuit and always cold-extract from disk. Use this after editing
+      the extractor or graph builder to make sure the next scan reflects the
+      new code; otherwise stale cached ASTs / graphs / metrics would survive.
   """
-  @spec scan(String.t()) :: :ok
-  def scan(project_path) do
-    GenServer.cast(__MODULE__, {:scan, project_path})
+  @spec scan(String.t(), keyword()) :: :ok
+  def scan(project_path, opts \\ []) do
+    GenServer.cast(__MODULE__, {:scan, project_path, opts})
   end
 
   @doc """
@@ -129,49 +136,78 @@ defmodule Giulia.Context.Indexer do
 
   @impl true
   @spec handle_cast(term(), map()) :: {:noreply, map()}
-  def handle_cast({:scan, project_path}, state) do
+  def handle_cast({:scan, project_path, opts}, state) do
+    force? = Keyword.get(opts, :force, false)
+
     if valid_project_root?(project_path) do
-      Logger.info("Starting project scan: #{project_path}")
-      new_state = put_project_status(state, project_path, %{status: :scanning, last_scan: nil, file_count: 0})
+      Logger.info(
+        "Starting project scan: #{project_path}#{if force?, do: " (force=true)", else: ""}"
+      )
 
-      case Giulia.Persistence.Loader.load_project(project_path) do
-        {:ok, []} ->
-          # All cached, skip scan entirely
-          Logger.info("Warm start: all files cached, skipping scan for #{project_path}")
+      new_state =
+        put_project_status(state, project_path, %{status: :scanning, last_scan: nil, file_count: 0})
 
-          # Restore graph + metrics + embeddings from cache
-          Giulia.Persistence.Loader.restore_graph(project_path)
-          Giulia.Persistence.Loader.restore_metrics(project_path)
-          Giulia.Persistence.Loader.restore_embeddings(project_path)
-
-          GenServer.cast(__MODULE__, {:scan_complete, project_path})
-          {:noreply, new_state}
-
-        {:ok, stale_files} ->
-          # Incremental scan of stale files only
-          Logger.info("Warm start: #{length(stale_files)} stale files to re-scan for #{project_path}")
-
-          Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
-            do_incremental_scan(project_path, stale_files)
-            GenServer.cast(__MODULE__, {:scan_complete, project_path})
-          end)
-
-          {:noreply, new_state}
-
-        {:cold_start, :no_cache} ->
-          # Full scan (original behavior)
+      cond do
+        force? ->
+          # Bypass warm-cache entirely. Cold-extract from disk so any
+          # extractor/builder code change is reflected in the next scan.
           Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
             do_scan(project_path)
             GenServer.cast(__MODULE__, {:scan_complete, project_path})
           end)
 
           {:noreply, new_state}
+
+        true ->
+          case Giulia.Persistence.Loader.load_project(project_path) do
+            {:ok, []} ->
+              # All cached, skip scan entirely
+              Logger.info("Warm start: all files cached, skipping scan for #{project_path}")
+
+              # Restore graph + metrics + embeddings from cache
+              Giulia.Persistence.Loader.restore_graph(project_path)
+              Giulia.Persistence.Loader.restore_metrics(project_path)
+              Giulia.Persistence.Loader.restore_embeddings(project_path)
+
+              GenServer.cast(__MODULE__, {:scan_complete, project_path})
+              {:noreply, new_state}
+
+            {:ok, stale_files} ->
+              # Incremental scan of stale files only
+              Logger.info(
+                "Warm start: #{length(stale_files)} stale files to re-scan for #{project_path}"
+              )
+
+              Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
+                do_incremental_scan(project_path, stale_files)
+                GenServer.cast(__MODULE__, {:scan_complete, project_path})
+              end)
+
+              {:noreply, new_state}
+
+            {:cold_start, :no_cache} ->
+              # Full scan (original behavior)
+              Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
+                do_scan(project_path)
+                GenServer.cast(__MODULE__, {:scan_complete, project_path})
+              end)
+
+              {:noreply, new_state}
+          end
       end
     else
-      Logger.error("SCAN REFUSED: No project root marker found at #{project_path}. " <>
-        "Expected one of: #{Enum.join(@project_markers, ", ")}")
+      Logger.error(
+        "SCAN REFUSED: No project root marker found at #{project_path}. " <>
+          "Expected one of: #{Enum.join(@project_markers, ", ")}"
+      )
+
       {:noreply, state}
     end
+  end
+
+  # Backward compat: callers using the old 2-tuple cast pattern.
+  def handle_cast({:scan, project_path}, state) do
+    handle_cast({:scan, project_path, []}, state)
   end
 
   @impl true

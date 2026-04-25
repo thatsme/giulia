@@ -135,12 +135,16 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Trigger a re-index scan for a project path",
     endpoint: "POST /api/index/scan",
-    params: %{path: :required},
-    returns: "JSON confirmation that scanning started",
+    params: %{path: :required, force: :optional},
+    returns:
+      "JSON confirmation that scanning started. Pass `force: true` to bypass " <>
+        "the L2 warm-cache and cold-extract from disk — needed after editing " <>
+        "the extractor or graph builder.",
     category: "index"
   }
   post "/scan" do
     path = conn.body_params["path"]
+    force? = truthy?(conn.body_params["force"])
     resolved_path = Giulia.Core.PathMapper.resolve_path(path)
 
     cond do
@@ -169,10 +173,16 @@ defmodule Giulia.Daemon.Routers.Index do
         })
 
       true ->
-        Giulia.Context.Indexer.scan(resolved_path)
-        send_json(conn, 200, %{status: "scanning", path: resolved_path})
+        Giulia.Context.Indexer.scan(resolved_path, force: force?)
+        send_json(conn, 200, %{status: "scanning", path: resolved_path, force: force?})
     end
   end
+
+  defp truthy?(true), do: true
+  defp truthy?("true"), do: true
+  defp truthy?(1), do: true
+  defp truthy?("1"), do: true
+  defp truthy?(_), do: false
 
   # -------------------------------------------------------------------
   # POST /api/index/verify — Full Merkle verification
