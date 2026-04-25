@@ -43,8 +43,8 @@ giulia-*.tar
 # Windows artifacts
 nul
 
-# Claude Code local settings
-.claude/
+# Claude Code config (symlinked to private claude-files repo, never committed here)
+.claude
 
 # Personal launch scripts — copy start-local.bat.example for your own
 start-local.bat
