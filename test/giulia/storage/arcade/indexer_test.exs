@@ -56,4 +56,38 @@ defmodule Giulia.Storage.Arcade.IndexerTest do
       assert {:ok, _} = Indexer.snapshot("", 1)
     end
   end
+
+  describe "reconcile_now/0 — closes the silent-loss gap" do
+    test "snapshots a project whose current build is missing from ArcadeDB" do
+      # Inject a graph with one module vertex so the snapshot actually
+      # writes a row to ArcadeDB (an empty graph would write zero modules
+      # and Client.list_builds would never return our build_id, defeating
+      # the second-pass idempotency check).
+      project = "/test/reconcile_#{System.unique_integer([:positive])}"
+
+      graph =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("Reconcile.TestModule", [:module])
+
+      :ets.insert(:giulia_knowledge_graphs, {{:graph, project}, graph})
+
+      on_exit(fn ->
+        :ets.delete(:giulia_knowledge_graphs, {{:graph, project}})
+      end)
+
+      # Pre-condition: ArcadeDB has no record of this project for any build.
+      current_build = Giulia.Version.build()
+      {:ok, builds_before} = Client.list_builds(project)
+      refute Enum.any?(builds_before, &(&1["build_id"] == current_build))
+
+      reconciled = Indexer.reconcile_now()
+
+      assert {^project, ^current_build} =
+               Enum.find(reconciled, fn {p, _} -> p == project end)
+
+      # Second pass is a no-op because the snapshot is now present.
+      assert Indexer.reconcile_now()
+             |> Enum.find(fn {p, _} -> p == project end) == nil
+    end
+  end
 end

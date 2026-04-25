@@ -86,6 +86,19 @@ defmodule Giulia.Core.ProjectContext do
   end
 
   @doc """
+  Get the wall-clock time at which this ProjectContext started.
+
+  Used by ContextManager during restart-time rebuild from the Registry,
+  so the rebuilt ETS row reflects the project's actual start time
+  rather than "approximately now". See GIULIA.md "Restart-time state
+  recovery".
+  """
+  @spec started_at(GenServer.server()) :: DateTime.t() | nil
+  def started_at(pid) do
+    GenServer.call(pid, :started_at)
+  end
+
+  @doc """
   Validate a path against this project's sandbox.
   Returns {:ok, expanded_path} or {:error, :sandbox_violation}.
   """
@@ -264,6 +277,11 @@ defmodule Giulia.Core.ProjectContext do
     new_state = %{state | constitution: constitution}
     Logger.info("Reloaded constitution for #{state.path}")
     {:reply, :ok, new_state}
+  end
+
+  @impl true
+  def handle_call(:started_at, _from, state) do
+    {:reply, state.started_at, state}
   end
 
   @impl true

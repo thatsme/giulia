@@ -20,6 +20,15 @@ defmodule Giulia.Storage.Arcade.Indexer do
   alias Giulia.Storage.Arcade.Client
   alias Giulia.Knowledge.Store
 
+  # Periodic reconciliation interval. The Indexer cannot trust that
+  # every {:graph_ready} message it was sent actually resulted in a
+  # snapshot — Knowledge.Store sends via bare send/2 to a whereis
+  # lookup, which silently drops on crashes (see GIULIA.md
+  # "Restart-time state recovery" — fire-and-forget unack'd delivery
+  # branch). The reconciler walks every active project on a timer and
+  # snapshots any whose current build is missing from ArcadeDB.
+  @reconcile_interval_ms :timer.minutes(5)
+
   # ============================================================================
   # Public API
   # ============================================================================
@@ -27,6 +36,18 @@ defmodule Giulia.Storage.Arcade.Indexer do
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc """
+  Trigger a reconcile pass synchronously. Returns the list of
+  `{project_path, build_id}` tuples that were re-snapshotted because
+  ArcadeDB lacked the current build.
+
+  Mostly for tests; production calls happen on the periodic timer.
+  """
+  @spec reconcile_now() :: [{String.t(), integer()}]
+  def reconcile_now do
+    GenServer.call(__MODULE__, :reconcile_now, 60_000)
   end
 
   @doc """
@@ -71,6 +92,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
 
   @impl true
   def init(_opts) do
+    schedule_reconcile()
     {:ok, %{}}
   end
 
@@ -81,7 +103,60 @@ defmodule Giulia.Storage.Arcade.Indexer do
     {:noreply, state}
   end
 
+  def handle_info(:reconcile, state) do
+    spawn_reconcile()
+    schedule_reconcile()
+    {:noreply, state}
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def handle_call(:reconcile_now, _from, state) do
+    {:reply, run_reconcile(), state}
+  end
+
+  defp schedule_reconcile do
+    Process.send_after(self(), :reconcile, @reconcile_interval_ms)
+  end
+
+  defp spawn_reconcile do
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn -> run_reconcile() end)
+  end
+
+  # For each project that Knowledge.Store has in memory, check whether
+  # ArcadeDB already has the current build snapshotted. If not, snapshot
+  # it. Returns the list of `{project, build_id}` actually re-snapshotted.
+  defp run_reconcile do
+    current_build = Giulia.Version.build()
+
+    Store.list_projects()
+    |> Enum.filter(fn project -> needs_snapshot?(project, current_build) end)
+    |> Enum.map(fn project ->
+      Logger.info(
+        "[Arcade.Indexer] Reconcile: #{project} missing build #{current_build}, snapshotting"
+      )
+
+      _ = snapshot(project, current_build)
+      {project, current_build}
+    end)
+  end
+
+  defp needs_snapshot?(project, current_build) do
+    case Client.list_builds(project) do
+      {:ok, builds} ->
+        not Enum.any?(builds, fn row ->
+          row["build_id"] == current_build or row[:build_id] == current_build
+        end)
+
+      {:error, reason} ->
+        Logger.debug(
+          "[Arcade.Indexer] Reconcile skipped for #{project}: #{inspect(reason)}"
+        )
+
+        false
+    end
+  end
 
   # ============================================================================
   # Writers

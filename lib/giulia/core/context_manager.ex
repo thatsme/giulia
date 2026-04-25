@@ -84,8 +84,45 @@ defmodule Giulia.Core.ContextManager do
     # ETS table: {normalized_path, pid, started_at}
     :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
 
-    Logger.info("ContextManager started - ready for multi-project awareness")
+    rebuilt = rebuild_from_registry(@table)
+
+    if rebuilt > 0 do
+      Logger.info(
+        "ContextManager started - rebuilt #{rebuilt} project contexts from registry"
+      )
+    else
+      Logger.info("ContextManager started - ready for multi-project awareness")
+    end
+
     {:ok, %{}}
+  end
+
+  # On (re)start, walk Giulia.Registry for live ProjectContext entries,
+  # repopulate the ETS mapping, and re-attach Process.monitor for each.
+  # The Registry is the authoritative source of which projects are live —
+  # ContextManager's ETS is a derivable index over it. See GIULIA.md
+  # "Restart-time state recovery": this is the (a) self-recovering
+  # branch of the invariant.
+  @doc false
+  @spec rebuild_from_registry(:ets.tab()) :: non_neg_integer()
+  def rebuild_from_registry(table) do
+    Giulia.Registry
+    |> Registry.select([{{{:project, :"$1"}, :"$2", :_}, [], [{{:"$1", :"$2"}}]}])
+    |> Enum.filter(fn {_path, pid} -> Process.alive?(pid) end)
+    |> Enum.reduce(0, fn {path, pid}, acc ->
+      started_at = safe_started_at(pid)
+      :ets.insert(table, {path, pid, started_at})
+      Process.monitor(pid)
+      acc + 1
+    end)
+  end
+
+  defp safe_started_at(pid) do
+    ProjectContext.started_at(pid)
+  catch
+    # Process died between alive? check and the call — treat as "now".
+    # Cleanup will follow when the late :DOWN arrives.
+    :exit, _ -> DateTime.utc_now()
   end
 
   @impl true

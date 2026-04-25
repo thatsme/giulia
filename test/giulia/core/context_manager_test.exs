@@ -58,6 +58,45 @@ defmodule Giulia.Core.ContextManagerTest do
     end
   end
 
+  describe "rebuild_from_registry/1 — restart-time recovery" do
+    test "rebuilds ETS rows from live Registry entries with real started_at" do
+      tmp =
+        Path.join(System.tmp_dir!(), "giulia_test_rebuild_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp)
+      File.write!(Path.join(tmp, "GIULIA.md"), "# Test")
+
+      on_exit(fn ->
+        ContextManager.shutdown_project(tmp)
+        File.rm_rf!(tmp)
+      end)
+
+      # Trigger ProjectContext start via the public API (registers in Giulia.Registry).
+      assert {:ok, project_pid} = ContextManager.get_context(tmp)
+      assert is_pid(project_pid) and Process.alive?(project_pid)
+
+      original_started_at =
+        Giulia.Core.ProjectContext.started_at(project_pid)
+
+      assert %DateTime{} = original_started_at
+
+      # Simulate a ContextManager restart: rebuild a private ETS table from
+      # the Registry. Production code calls this from init/1; doing it
+      # against a fresh table here lets us verify the rebuild is correct
+      # without killing the live ContextManager mid-suite.
+      table_name = :"rebuild_test_#{System.unique_integer([:positive])}"
+      table = :ets.new(table_name, [:named_table, :public, :set])
+      on_exit(fn -> if :ets.info(table_name) != :undefined, do: :ets.delete(table) end)
+
+      rebuilt = ContextManager.rebuild_from_registry(table)
+      assert rebuilt >= 1
+
+      normalized = String.trim_trailing(tmp, "/")
+      assert [{^normalized, ^project_pid, ^original_started_at}] =
+               :ets.lookup(table, normalized)
+    end
+  end
+
   describe "start_context/2 — supervisor unavailable" do
     test "returns {:error, :supervisor_unavailable} when supervisor is :noproc" do
       # Pass a registered name that is guaranteed not to exist — exercises

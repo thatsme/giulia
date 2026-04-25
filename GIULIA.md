@@ -31,6 +31,31 @@ Giulia will read this file on every interaction and enforce these guidelines.
 - Never add dependencies without explicit approval
 -->
 
+## Invariants
+
+### Restart-time state recovery
+
+Every long-lived state owner (GenServer, Agent, anything holding ETS,
+in-memory caches, or registered subscriptions) must be either:
+
+  (a) **self-recovering on restart from an authoritative source** —
+      filesystem, a registry, a CubDB cache, ArcadeDB, or another
+      process's state — such that `init/1` reconstructs whatever the
+      previous incarnation held; OR
+
+  (b) **using `:heir` on its ETS table** so the data survives the
+      owner's death and the next incarnation reclaims it.
+
+**Silent state loss after restart is forbidden.** A supervisor's
+restart must restore correctness, not just keep the API responding.
+If `list_X/0` returns a wrong answer between a crash and the next
+write, the design is wrong — not the operator's tolerance for it.
+
+The same rule applies to fire-and-forget messages between supervised
+processes (`send/2` to a `whereis` lookup): unacknowledged delivery
+without a reconciliation path is silent state loss. Either log every
+miss *and* reconcile periodically, or use a durable queue.
+
 ## Preferred Patterns
 
 <!-- Examples:

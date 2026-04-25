@@ -71,6 +71,11 @@ defmodule Giulia.Application do
       # Task supervisor for supervised async tasks
       {Task.Supervisor, name: Giulia.TaskSupervisor},
 
+      # ETS heir for tables whose owners can crash. Must start before
+      # Context.Store / Knowledge.Store so they can register it as :heir
+      # at creation time. See GIULIA.md "Restart-time state recovery".
+      Giulia.EtsKeeper,
+
       # ETS-backed context store for project state
       Giulia.Context.Store,
 

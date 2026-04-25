@@ -220,7 +220,7 @@ defmodule Giulia.Knowledge.Store do
 
   @impl true
   def init(_) do
-    :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    Giulia.EtsKeeper.claim_or_new(@table)
     {:ok, %{}}
   end
 
@@ -259,12 +259,23 @@ defmodule Giulia.Knowledge.Store do
     # Persist graph to CubDB (Build 102-104)
     Giulia.Persistence.Writer.persist_graph(project_path, graph)
 
-    # Notify ArcadeDB Indexer that the graph is ready (async, best-effort).
+    # Notify ArcadeDB Indexer that the graph is ready. Async send/2 — if
+    # Indexer is down or crashes mid-handle, the message vanishes
+    # silently. The Indexer reconciles missed snapshots periodically
+    # (see storage/arcade/indexer.ex), but we log misses here too so
+    # they surface in operator logs without waiting for the next
+    # reconcile tick.
     build_id = Giulia.Version.build()
 
     case GenServer.whereis(Giulia.Storage.Arcade.Indexer) do
-      nil -> :ok
-      pid -> send(pid, {:graph_ready, project_path, build_id})
+      nil ->
+        Logger.warning(
+          "[Knowledge.Store] Arcade.Indexer not registered — snapshot for " <>
+            "#{project_path}@#{build_id} deferred to next reconcile"
+        )
+
+      pid ->
+        send(pid, {:graph_ready, project_path, build_id})
     end
 
     # Eagerly compute heavy metrics in background

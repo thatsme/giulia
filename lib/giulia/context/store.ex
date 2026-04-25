@@ -34,7 +34,7 @@ defmodule Giulia.Context.Store do
 
   @impl true
   def init(_) do
-    table = :ets.new(@table, [:named_table, :public, :set, read_concurrency: true])
+    table = Giulia.EtsKeeper.claim_or_new(@table)
     {:ok, %{table: table}}
   end
 
