@@ -52,8 +52,14 @@ defmodule Giulia.Inference.Events do
   @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:unsubscribe, request_id, pid}, state) do
     subs = Map.get(state.subscriptions, request_id, [])
-    new_subs = Map.put(state.subscriptions, request_id, List.delete(subs, pid))
-    {:noreply, %{state | subscriptions: new_subs}}
+
+    new_subscriptions =
+      case List.delete(subs, pid) do
+        [] -> Map.delete(state.subscriptions, request_id)
+        remaining -> Map.put(state.subscriptions, request_id, remaining)
+      end
+
+    {:noreply, %{state | subscriptions: new_subscriptions}}
   end
 
   @impl true

@@ -90,4 +90,24 @@ defmodule Giulia.Inference.EventsTest do
       assert Process.alive?(Process.whereis(Events))
     end
   end
+
+  describe "unsubscribe drops empty request_id keys" do
+    test "request_id is removed from state when its last subscriber leaves" do
+      request_id = "test-leak-#{System.unique_integer([:positive])}"
+
+      Events.subscribe(request_id)
+      assert request_id_present?(request_id)
+
+      Events.unsubscribe(request_id)
+      Process.sleep(50)
+
+      refute request_id_present?(request_id),
+             "request_id remained in subscriptions after the last unsubscribe — slow leak"
+    end
+  end
+
+  defp request_id_present?(request_id) do
+    state = :sys.get_state(Process.whereis(Giulia.Inference.Events))
+    Map.has_key?(state.subscriptions, request_id)
+  end
 end

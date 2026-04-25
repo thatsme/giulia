@@ -56,6 +56,24 @@ processes (`send/2` to a `whereis` lookup): unacknowledged delivery
 without a reconciliation path is silent state loss. Either log every
 miss *and* reconcile periodically, or use a durable queue.
 
+### Agent-driven architectural review
+
+Every flagged finding from an agent-produced architectural audit
+(supervision tree, restart semantics, concurrency, etc.) must be
+verified against the actual code before acting on it. Across three
+audit rounds on this codebase, roughly **one third of agent findings
+turned out to be misreads on inspection** — citing functions that
+existed differently than described, severities scaled up from
+plausible to alarming, or "leaks" that were already bounded.
+
+Agents are good at pattern-matching architectural smells, but the
+smell-to-bug ratio is around 60–70%. Skipping verification to "just
+ship the fix" produces real regressions and wastes review cycles
+on imaginary problems. The audit is the cheap part; verification is
+the part that earns the audit.
+
+When in doubt: open the file, read the function, then act.
+
 ## Preferred Patterns
 
 <!-- Examples:
