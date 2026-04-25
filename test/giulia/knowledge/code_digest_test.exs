@@ -26,4 +26,28 @@ defmodule Giulia.Knowledge.CodeDigestTest do
 
     assert current == recomputed
   end
+
+  test "digest changes when a tracked config file content changes" do
+    # Capture the baseline.
+    baseline = CodeDigest.recompute()
+
+    # Mutate scoring.json briefly, recompute, then restore. The digest
+    # should differ during the mutation and match after restoration.
+    path = Path.join(:code.priv_dir(:giulia), "config/scoring.json")
+    {:ok, original} = File.read(path)
+
+    try do
+      mutated = original <> "\n"
+      File.write!(path, mutated)
+      mutated_digest = CodeDigest.recompute()
+      assert mutated_digest != baseline,
+             "digest should differ when scoring.json content changes"
+    after
+      File.write!(path, original)
+      restored = CodeDigest.recompute()
+
+      assert restored == baseline,
+             "digest should return to baseline after scoring.json is restored"
+    end
+  end
 end

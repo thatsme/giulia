@@ -1,0 +1,51 @@
+{
+  "$schema_version": 1,
+  "$description": "Scoring constants for heatmap, change_risk, god_modules, and unprotected_hubs. Loaded once at daemon startup by Giulia.Knowledge.ScoringConfig and cached in :persistent_term. Defaults match the previously hardcoded values; tune by editing this file and restarting the daemon (no recompile).",
+
+  "heatmap": {
+    "weights": {
+      "centrality": 0.30,
+      "complexity": 0.25,
+      "test_coverage": 0.25,
+      "coupling": 0.20
+    },
+    "normalization": {
+      "centrality_cap": 15,
+      "complexity_cap": 200,
+      "coupling_cap": 50,
+      "missing_test_factor": 100
+    },
+    "zones": {
+      "red_min": 60,
+      "yellow_min": 30
+    }
+  },
+
+  "change_risk": {
+    "weights": {
+      "complexity": 2,
+      "fan_out": 2,
+      "max_coupling": 2,
+      "total_funcs": 1
+    },
+    "centrality_divisor": 2,
+    "top_n": 20
+  },
+
+  "god_modules": {
+    "weights": {
+      "func_count": 1,
+      "complexity": 2,
+      "centrality": 3
+    },
+    "top_n": 20
+  },
+
+  "unprotected_hubs": {
+    "default_hub_threshold": 3,
+    "spec_thresholds": {
+      "red_max": 0.5,
+      "yellow_max": 0.8
+    }
+  }
+}

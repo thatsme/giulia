@@ -90,24 +90,29 @@ defmodule Giulia.Knowledge.Metrics do
         # Factor 4: Max coupling
         max_coupling = Map.get(coupling_map, mod, 0)
 
-        # Normalize each factor to 0-100
-        norm_centrality = trunc(min(centrality_val / 15 * 100, 100))
-        norm_complexity = trunc(min(complexity / 200 * 100, 100))
-        norm_test = if has_test, do: 0, else: 100
-        norm_coupling = trunc(min(max_coupling / 50 * 100, 100))
+        # Normalize each factor to 0-100. Caps + missing-test factor are
+        # config-driven; see priv/config/scoring.json and ScoringConfig.
+        norm = Giulia.Knowledge.ScoringConfig.heatmap_normalization()
+        weights = Giulia.Knowledge.ScoringConfig.heatmap_weights()
+        zones_cfg = Giulia.Knowledge.ScoringConfig.heatmap_zones()
+
+        norm_centrality = trunc(min(centrality_val / norm.centrality_cap * 100, 100))
+        norm_complexity = trunc(min(complexity / norm.complexity_cap * 100, 100))
+        norm_test = if has_test, do: 0, else: norm.missing_test_factor
+        norm_coupling = trunc(min(max_coupling / norm.coupling_cap * 100, 100))
 
         # Weighted composite
         score =
           trunc(
-            norm_centrality * 0.30 +
-            norm_complexity * 0.25 +
-            norm_test * 0.25 +
-            norm_coupling * 0.20
+            norm_centrality * weights.centrality +
+            norm_complexity * weights.complexity +
+            norm_test * weights.test_coverage +
+            norm_coupling * weights.coupling
           )
 
         zone = cond do
-          score >= 60 -> "red"
-          score >= 30 -> "yellow"
+          score >= zones_cfg.red_min -> "red"
+          score >= zones_cfg.yellow_min -> "yellow"
           true -> "green"
         end
 
@@ -210,16 +215,19 @@ defmodule Giulia.Knowledge.Metrics do
         max_coupling = Map.get(coupling_map, mod, 0)
 
         # ===== COMPOSITE SCORE =====
+        # Component weights + centrality divisor are config-driven; see
+        # priv/config/scoring.json and ScoringConfig.change_risk/0.
+        cr = Giulia.Knowledge.ScoringConfig.change_risk()
         api_penalty = trunc(Float.round(api_ratio * total_funcs, 0))
 
         base =
-          (complexity * 2) +
-          (fan_out * 2) +
-          (max_coupling * 2) +
+          (complexity * cr.weights.complexity) +
+          (fan_out * cr.weights.fan_out) +
+          (max_coupling * cr.weights.max_coupling) +
           api_penalty +
-          total_funcs
+          (total_funcs * cr.weights.total_funcs)
 
-        multiplier = 1 + (centrality_val / 2)
+        multiplier = 1 + (centrality_val / cr.centrality_divisor)
 
         score = trunc(base * multiplier)
 
@@ -240,7 +248,7 @@ defmodule Giulia.Knowledge.Metrics do
         }
       end)
       |> Enum.sort_by(fn m -> -m.score end)
-      |> Enum.take(20)
+      |> Enum.take(Giulia.Knowledge.ScoringConfig.change_risk().top_n)
 
     {:ok, %{modules: modules, count: length(modules)}}
   end
@@ -287,8 +295,14 @@ defmodule Giulia.Knowledge.Metrics do
                 _ -> 0
               end
 
-            # God module score: weighted combination
-            score = func_count + (complexity * 2) + (centrality_val * 3)
+            # God module score: weighted combination. Weights are config-
+            # driven; see priv/config/scoring.json and ScoringConfig.
+            gm = Giulia.Knowledge.ScoringConfig.god_modules()
+
+            score =
+              (func_count * gm.weights.func_count) +
+                (complexity * gm.weights.complexity) +
+                (centrality_val * gm.weights.centrality)
 
             [%{
               module: module_name,
@@ -304,7 +318,7 @@ defmodule Giulia.Knowledge.Metrics do
         end
       end)
       |> Enum.sort_by(fn m -> -m.score end)
-      |> Enum.take(20)
+      |> Enum.take(Giulia.Knowledge.ScoringConfig.god_modules().top_n)
 
     {:ok, %{modules: modules, count: length(modules)}}
   end

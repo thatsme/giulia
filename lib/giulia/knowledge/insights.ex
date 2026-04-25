@@ -219,8 +219,10 @@ defmodule Giulia.Knowledge.Insights do
   @spec find_unprotected_hubs(Graph.t(), String.t(), keyword()) ::
           {:ok, %{modules: [map()], count: non_neg_integer(), severity_counts: map()}}
   def find_unprotected_hubs(graph, project_path, opts \\ []) do
-    hub_threshold = Keyword.get(opts, :hub_threshold, 3)
-    spec_threshold = Keyword.get(opts, :spec_threshold, 0.5)
+    cfg = Giulia.Knowledge.ScoringConfig.unprotected_hubs()
+    hub_threshold = Keyword.get(opts, :hub_threshold, cfg.default_hub_threshold)
+    spec_threshold = Keyword.get(opts, :spec_threshold, cfg.spec_thresholds.red_max)
+    yellow_threshold = cfg.spec_thresholds.yellow_max
 
     # Get module vertices with sufficient in-degree
     module_vertices =
@@ -262,7 +264,7 @@ defmodule Giulia.Knowledge.Insights do
         severity =
           cond do
             spec_ratio < spec_threshold -> "red"
-            spec_ratio < 0.8 -> "yellow"
+            spec_ratio < yellow_threshold -> "yellow"
             true -> "green"
           end
 
