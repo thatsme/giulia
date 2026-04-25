@@ -42,7 +42,8 @@ defmodule Giulia.AST.GoldenFixturesTest do
     "protocols_defimpl",
     "protocols_defimpl_multi",
     "macros_guards",
-    "nested_modules"
+    "nested_modules",
+    "macro_injected_templates"
   ]
 
   for name <- @fixture_cases do

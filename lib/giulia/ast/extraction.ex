@@ -282,16 +282,33 @@ defmodule Giulia.AST.Extraction do
   When a function is declared outside any module (unusual but
   possible at the top level of a script), the module name is
   `"Unknown"`.
+
+  ## Quote-block templates
+
+  `def`/`defmacro`/`defp` declarations that appear inside `quote do ... end`
+  blocks (typically the body of `defmacro __using__/1`) are **templates**
+  injected into consumers of `use Mod`, not owned functions of the
+  surrounding module. Attributing them to the surrounding module
+  overstates that module's surface area, inflates change_risk and
+  god_modules scores, and (most visibly) flags the templates as dead
+  code because nothing calls them on the defining module.
+
+  This walker tracks `quote_depth` alongside the module stack: while
+  `quote_depth > 0`, def/defmacro nodes are skipped from extraction.
+  This is the universal "skip" half of the macro-injected-template fix
+  (slice E3). The complementary "synthesize templates as members of
+  every `use Mod` consumer" half is filed for a follow-up slice — it
+  needs the use-graph the Pass 11 work produced.
   """
   @spec extract_functions(Macro.t()) :: [Giulia.AST.Processor.function_info()]
   def extract_functions(ast) do
     require Logger
 
     try do
-      {_ast, {functions, _stack}} =
+      {_ast, {functions, _stack, _quote_depth}} =
         Macro.traverse(
           ast,
-          {[], []},
+          {[], [], 0},
           &function_traverse_pre/2,
           &function_traverse_post/2
         )
@@ -310,44 +327,62 @@ defmodule Giulia.AST.Extraction do
     end
   end
 
-  defp function_traverse_pre(node, {funcs, stack} = acc) do
+  defp function_traverse_pre({:quote, _meta, _args} = node, {funcs, stack, quote_depth}) do
+    # Entering a quote block — every def/defmacro/defp inside is a template,
+    # not an owned function of the surrounding module. Bump quote_depth.
+    {node, {funcs, stack, quote_depth + 1}}
+  end
+
+  defp function_traverse_pre(node, {funcs, stack, quote_depth} = acc) do
     case safe_module_node_info(node) do
       {:ok, local_name, _line, _body, _impl_for} ->
         full_name = qualify(stack, local_name)
-        {node, {funcs, [full_name | stack]}}
+        {node, {funcs, [full_name | stack], quote_depth}}
 
       {:ok_multi, local_names, _line, _body, _impl_for} ->
         first_full_name = qualify(stack, List.first(local_names))
-        {node, {funcs, [first_full_name | stack]}}
+        {node, {funcs, [first_full_name | stack], quote_depth}}
 
       :skip ->
-        case safe_extract_function_info(node) do
-          {:ok, func_info} ->
-            module = List.first(stack) || "Unknown"
-            {node, {[Map.put(func_info, :module, module) | funcs], stack}}
+        if quote_depth > 0 do
+          # Inside a quote block: def/defmacro nodes are templates that
+          # will be injected into consumers, not owned functions of the
+          # surrounding module. Skip extraction (the "skip" half of the
+          # macro-injected-template fix).
+          {node, acc}
+        else
+          case safe_extract_function_info(node) do
+            {:ok, func_info} ->
+              module = List.first(stack) || "Unknown"
+              {node, {[Map.put(func_info, :module, module) | funcs], stack, quote_depth}}
 
-          :skip ->
-            {node, acc}
+            :skip ->
+              {node, acc}
+          end
         end
     end
   end
 
-  defp function_traverse_post(node, {funcs, stack}) do
+  defp function_traverse_post({:quote, _meta, _args} = node, {funcs, stack, quote_depth}) do
+    {node, {funcs, stack, max(quote_depth - 1, 0)}}
+  end
+
+  defp function_traverse_post(node, {funcs, stack, quote_depth}) do
     case safe_module_node_info(node) do
       {:ok, _, _, _, _} ->
         case stack do
-          [_top | rest] -> {node, {funcs, rest}}
-          [] -> {node, {funcs, []}}
+          [_top | rest] -> {node, {funcs, rest, quote_depth}}
+          [] -> {node, {funcs, [], quote_depth}}
         end
 
       {:ok_multi, _, _, _, _} ->
         case stack do
-          [_top | rest] -> {node, {funcs, rest}}
-          [] -> {node, {funcs, []}}
+          [_top | rest] -> {node, {funcs, rest, quote_depth}}
+          [] -> {node, {funcs, [], quote_depth}}
         end
 
       :skip ->
-        {node, {funcs, stack}}
+        {node, {funcs, stack, quote_depth}}
     end
   end
 
