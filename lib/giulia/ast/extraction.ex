@@ -71,6 +71,29 @@ defmodule Giulia.AST.Extraction do
 
         {node, {[mod_info | mods], [full_name | stack]}}
 
+      {:ok_multi, local_names, line, body, impl_for} ->
+        # Multi-type defimpl: emit N module entries (Elixir compiles
+        # `defimpl X, for: [T1, T2, T3]` to three modules `X.T1`, `X.T2`,
+        # `X.T3`). Push only the first onto the stack — functions inside
+        # are attributed to it. Phase 2 work (out of scope here) would
+        # duplicate the function set across siblings; for dead_code the
+        # Pass 7 protocol-dispatch edge from the protocol to the first
+        # sibling's functions is sufficient exemption.
+        moduledoc = extract_moduledoc_from_body(body)
+
+        new_mods =
+          Enum.map(local_names, fn local_name ->
+            %{
+              name: qualify(stack, local_name),
+              line: line,
+              moduledoc: moduledoc,
+              impl_for: impl_for
+            }
+          end)
+
+        first_full_name = qualify(stack, List.first(local_names))
+        {node, {Enum.reverse(new_mods) ++ mods, [first_full_name | stack]}}
+
       :skip ->
         {node, {mods, stack}}
     end
@@ -80,6 +103,13 @@ defmodule Giulia.AST.Extraction do
     case safe_module_node_info(node) do
       {:ok, _, _, _, _} ->
         # Pop the module we pushed in pre
+        case stack do
+          [_top | rest] -> {node, {mods, rest}}
+          [] -> {node, {mods, []}}
+        end
+
+      {:ok_multi, _, _, _, _} ->
+        # Pre pushed only the first sibling; pop one.
         case stack do
           [_top | rest] -> {node, {mods, rest}}
           [] -> {node, {mods, []}}
@@ -132,6 +162,8 @@ defmodule Giulia.AST.Extraction do
   # Name is constructed as "Proto.Type". `impl_for` is the protocol
   # module so the Builder can synthesize dispatch edges. Handle both
   # plain-kw ([for: Type]) and Sourceror's __block__-wrapped form.
+  # Multi-type form `for: [T1, T2, T3]` returns `{:ok_multi, names, ...}`
+  # — Elixir compiles it to N independent impl modules.
   defp module_node_info(
          {:defimpl, meta, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | rest]}
        )
@@ -142,6 +174,10 @@ defmodule Giulia.AST.Extraction do
       case type_ast_to_string(type_ast) do
         {:ok, type_name} ->
           {:ok, "#{proto_name}.#{type_name}", Keyword.get(meta, :line, 0), rest, proto_name}
+
+        {:ok_multi, type_names} ->
+          full_names = Enum.map(type_names, fn t -> "#{proto_name}.#{t}" end)
+          {:ok_multi, full_names, Keyword.get(meta, :line, 0), rest, proto_name}
 
         :skip ->
           :skip
@@ -168,7 +204,25 @@ defmodule Giulia.AST.Extraction do
 
   defp type_ast_to_string(atom) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
   defp type_ast_to_string({:__block__, _, [atom]}) when is_atom(atom), do: {:ok, Atom.to_string(atom)}
+
+  # Multi-type defimpl: `for: [T1, T2, T3]`. Resolve each element via the
+  # single-type clauses; if any element fails, skip the whole defimpl
+  # (conservative — partial recognition would create misleading half-graphs).
+  defp type_ast_to_string(list) when is_list(list) and list != [], do: type_ast_list(list)
+  defp type_ast_to_string({:__block__, _, [list]}) when is_list(list) and list != [],
+    do: type_ast_list(list)
+
   defp type_ast_to_string(_), do: :skip
+
+  defp type_ast_list(list) do
+    results = Enum.map(list, &type_ast_to_string/1)
+
+    if Enum.all?(results, &match?({:ok, _}, &1)) do
+      {:ok_multi, Enum.map(results, fn {:ok, n} -> n end)}
+    else
+      :skip
+    end
+  end
 
   # Extract @moduledoc from module body
   # Handle standard Code.string_to_quoted format
@@ -262,6 +316,10 @@ defmodule Giulia.AST.Extraction do
         full_name = qualify(stack, local_name)
         {node, {funcs, [full_name | stack]}}
 
+      {:ok_multi, local_names, _line, _body, _impl_for} ->
+        first_full_name = qualify(stack, List.first(local_names))
+        {node, {funcs, [first_full_name | stack]}}
+
       :skip ->
         case safe_extract_function_info(node) do
           {:ok, func_info} ->
@@ -277,6 +335,12 @@ defmodule Giulia.AST.Extraction do
   defp function_traverse_post(node, {funcs, stack}) do
     case safe_module_node_info(node) do
       {:ok, _, _, _, _} ->
+        case stack do
+          [_top | rest] -> {node, {funcs, rest}}
+          [] -> {node, {funcs, []}}
+        end
+
+      {:ok_multi, _, _, _, _} ->
         case stack do
           [_top | rest] -> {node, {funcs, rest}}
           [] -> {node, {funcs, []}}

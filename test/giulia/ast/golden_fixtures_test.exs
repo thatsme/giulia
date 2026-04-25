@@ -40,6 +40,7 @@ defmodule Giulia.AST.GoldenFixturesTest do
     "moduledoc_variants",
     "framework_callbacks",
     "protocols_defimpl",
+    "protocols_defimpl_multi",
     "macros_guards",
     "nested_modules"
   ]
