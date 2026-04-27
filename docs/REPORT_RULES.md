@@ -138,6 +138,47 @@ the action is relevant (e.g., god module split recommendations).
 | `GET /api/runtime/observations` | fused observation sessions (static + runtime) | Fused Observations |
 | `GET /api/runtime/observation/:session_id` | full fused profile with correlation data | Fused Observations |
 
+### Stage 7: External Tool Findings (Build 156+, conditional)
+
+Run only when external-tool enrichments have been ingested for the project.
+A simple existence check before this stage: if `dead_code.dead[*].enrichments`
+is uniformly `%{}` across the response, no tool has been ingested for this
+project — skip Stage 7 entirely.
+
+The findings are not fetched via a dedicated bulk endpoint. They flow
+through two paths Stage 4 / Stage 5 already collect:
+
+- **Inline on `dead_code` entries** — every `dead[i].enrichments` is a
+  `%{tool => [findings]}` map. Already in the response from Stage 4.
+- **Inline on `pre_impact_check.affected_callers`** — every caller carries
+  `:enrichments` for any pre-impact-check run during Stage 5 (Blast
+  Radius Enrichment).
+
+The dedicated endpoint is `GET /api/intelligence/enrichments?path=P&mfa=...`
+(or `&module=...`) — uncapped per-vertex drill-down. **Use this when**:
+
+- A `pre_impact_check` response contains an `:enrichments_summary` (the
+  per-response cap fired and per-caller `:enrichments` were cleared in
+  favor of a project-wide deduplicated summary). Drill down to recover
+  the full set for a specific MFA.
+- The report writer needs every finding for a single high-severity hub
+  rather than the capped subset surfaced inline elsewhere.
+
+| Endpoint | Key Fields | Report Section |
+|---|---|---|
+| `GET /api/intelligence/enrichments?path=P&mfa=Mod.fn/N` | `findings: %{tool => [%{severity, check, message, line, ...}]}` | External Tool Findings |
+| `GET /api/intelligence/enrichments?path=P&module=Mod` | same shape, module-scoped findings | External Tool Findings |
+
+**Distinguish the two empty shapes** in commentary:
+
+- `findings: %{}` — no tool has ever been ingested for this project. Tell
+  the reader "external-tool enrichments are not configured for this
+  project; CI does not run Credo/Dialyzer or has not pushed results to
+  `POST /api/index/enrichment`."
+- `findings: %{credo: []}` — Credo ran, no findings on this target. The
+  presence of the `credo` key is a positive signal (the project IS
+  enriched), the empty list means clean per Credo for this MFA.
+
 ---
 
 ## Report Structure
@@ -300,17 +341,87 @@ Function-level edges: <count> MFA→MFA call edges
 
 ### Section 9: Dead Code
 
-**Table columns:** Module | Function | Line
+**Table columns:** Module | Function | Line | Category
 
 **Rules:**
-- Use `dead_code` endpoint
-- Flag known false positives:
-  - `__skills__/0` in SkillRouter base module (overridden by `@before_compile`)
-  - Callback implementations that appear unused at the source level
-  - Functions called only via `apply/3` or dynamic dispatch
-- State the ratio: N functions out of M total (X%)
+- Use `dead_code` endpoint. Each entry now carries `:category` (`genuine`,
+  `test_only`, `library_public_api`, `template_pending`, `uncategorized`) and
+  the response carries a top-level `:summary` with `by_category`,
+  `irreducible`, and `actionable` counts.
+- **Lead the section with the summary line**:
+  > "N total flagged dead — `actionable` (genuine + uncategorized), `irreducible`
+  > (library_public_api + test_only + template_pending). Of M total functions
+  > (X%)."
+- **Sort entries by category**: actionable first (`genuine`,
+  `uncategorized`), then irreducible (`library_public_api`, `test_only`,
+  `template_pending`). The reader cares most about actionable items.
+- **Don't manually re-litigate categories.** The classifier already encodes
+  "Functions called only via `apply/3` or dynamic dispatch" through the Pass
+  10/11 `reference_targets` exemption (entries reaching the dead_code list
+  have already been filtered against MFA-tuple, capture, apply, and
+  Task.start_link forms). If a finding still lists, the absence is real
+  within the static-analysis surface.
+- Per-codebase residuals to acknowledge in commentary (not as table rows):
+  - `__skills__/0` in SkillRouter — overridden by `@before_compile`. Should
+    be exempted via the `@dead_code_ignore` module attribute, not flagged.
+  - `template_pending` entries — blocked on slice-a (heex template scanner);
+    they remain as honest signal until that ships.
+- **External-tool cross-reference**: when entries carry `:enrichments`, name
+  the strongest signal in commentary. A function listed here AND with
+  Dialyzer `:no_return` or `unused_function` in its enrichments is the
+  highest-confidence "delete this" recommendation in the report.
 
-### Section 10: Struct Lifecycle
+### Section 10: External Tool Findings (Build 156+)
+
+**Conditional section** — include only if `tools_ingested(project) != []`. If
+the project has never been enriched (no `POST /api/index/enrichment` calls
+landed for it), skip this section entirely.
+
+**Two sub-tables.**
+
+**10a. Errors (severity = `:error`)** — real bugs. Columns: Tool | Check |
+Module | Function/Arity (or "module-scope" if `scope: :module`) | Line |
+Message.
+
+- Source: walk `dead_code.dead[*].enrichments` AND
+  `pre_impact_check.affected_callers[*].enrichments` from any
+  pre-impact-checks run during data collection. Deduplicate by
+  `{tool, check, module, function, arity}`.
+- For uncapped lookups on a specific MFA, use
+  `GET /api/intelligence/enrichments?path=P&mfa=Mod.fn/N`.
+- **Sort by Tool then Check** so all `Credo.Check.Warning.IExPry` rows
+  cluster together — patterns are easier to act on than scattered entries.
+- If `:resolution_ambiguous: true`, append `(ambiguous attribution)` to the
+  Function column. The finding is real but its function-level attribution
+  may be imprecise — most often this means the line resolution surfaced
+  multiple candidates with different names.
+
+**10b. Warnings (severity = `:warning`)** — same columns, same source,
+sorted the same way. Cap the table at 30 rows; if exceeded, list the
+remaining as "+ N more" and reference the per-tool count in commentary.
+
+**Counts header (always)**:
+
+> "Tools ingested: `<list>`. Findings persisted: errors=N, warnings=M,
+> info=K (info entries are dropped from this report; for explicit
+> drill-down, use `/api/intelligence/enrichments`)."
+
+**Provenance footnote** — ONE LINE per ingested tool:
+> "Credo run at `<run_at>` against `<tool_version>`."
+
+If any finding's `provenance.source_digest_at_run` differs from the current
+file digest, flag it: "M findings on stale source — re-run the tool and
+re-ingest."
+
+**Cross-references**: don't repeat anything from Section 6 (Blast Radius)
+or Section 9 (Dead Code) here — those sections already inline enrichments.
+This section is the project-wide flat view, complementary to per-module
+detail elsewhere. Useful sentence to land:
+
+> "X errors here that also appear in high-blast-radius callers (Section 6)
+> are top fix candidates."
+
+### Section 11: Struct Lifecycle
 
 **Table columns:** Struct | Defining Module | User Count | Logic Leaks | Leak Count
 
@@ -329,7 +440,7 @@ Function-level edges: <count> MFA→MFA call edges
 - Commentary: not all logic leaks are bugs — shared data structures (e.g., `%User{}` across
   contexts) will naturally appear. Flag the pattern, let the reader judge intent.
 
-### Section 11: Semantic Duplicates
+### Section 12: Semantic Duplicates
 
 **Rules:**
 - Use `duplicates` endpoint (or extract from `audit` response)
@@ -351,7 +462,7 @@ Function-level edges: <count> MFA→MFA call edges
   expansion. If you see a cluster with avg_similarity < threshold, discard it — it's
   a chain artifact, not real duplication.
 
-### Section 12: Architecture Health
+### Section 13: Architecture Health
 
 A pass/fail checklist table:
 
@@ -368,7 +479,7 @@ A pass/fail checklist table:
 - Orphan specs indicate refactoring debris — list them for cleanup
 - Behaviour integrity can be extracted from `audit` response instead of a separate call
 
-### Section 13: Runtime Health (if available)
+### Section 14: Runtime Health (if available)
 
 **Table 1:** Processes | Memory | Schedulers | Run Queue | Uptime | ETS Tables
 
@@ -400,7 +511,7 @@ include a sub-section listing available observation sessions with:
 
 Skip the fused observations sub-section if no sessions exist (monitor hasn't observed any nodes).
 
-### Section 14: Recommended Actions (Priority Order)
+### Section 15: Recommended Actions (Priority Order)
 
 Synthesize findings into concrete, prioritized recommendations.
 
