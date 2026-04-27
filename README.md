@@ -1,6 +1,6 @@
 # Giulia
 
-> **Build 155** · v0.2.2 · 2026-04-25
+> **Build 156** · v0.3.0 · 2026-04-27
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
