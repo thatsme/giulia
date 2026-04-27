@@ -36,7 +36,7 @@ Connect to any running BEAM node via distributed Erlang. Inspect memory, top pro
 
 ### External Tool Enrichment
 
-Giulia ingests output from existing Elixir tools (Credo today; Dialyzer, ExUnit coverage, ExDoc, Sobelow next) and attaches each finding to the corresponding function or module vertex in the knowledge graph. `pre_impact_check` then returns "47 callers, blast radius wide, AND this function has 2 outstanding warnings" instead of either signal in isolation. Pluggable behaviour (`Giulia.Enrichment.Source`) + JSON registry (`priv/config/enrichment_sources.json`) — adding a new tool is one parser module + one JSON line. Tool findings live in their own CubDB keyspace and are preserved across source rescans.
+Giulia ingests output from existing Elixir tools — **Credo and Dialyzer ship today**; ExUnit coverage / ExDoc / Sobelow share the same scaffolding — and attaches each finding to the corresponding function or module vertex in the knowledge graph. `pre_impact_check` and `dead_code` then surface "47 callers, blast radius wide, AND this function has 2 outstanding type warnings" instead of either signal in isolation. Pluggable behaviour (`Giulia.Enrichment.Source`) + JSON registry (`priv/config/enrichment_sources.json`) with per-tool severity maps — adding a new tool is one parser module + one JSON entry. Tool findings live in their own CubDB keyspace and are preserved across source rescans (CI cadence is decoupled from extractor cadence).
 
 ## Quick Start
 
@@ -154,16 +154,18 @@ Highlights from the self-analysis:
 
 ## Project Status
 
-- **Build**: 155
-- **Tests**: ~950 unit/integration tests in the focused subsets (ast/ + knowledge/ + persistence/ + context/ + tools/) + 13 StreamData property tests + 7 golden-fixture tests for extraction output
+- **Version**: v0.3.0 (Build 156)
+- **Tests**: ~1030 unit/integration tests in the focused subsets (ast/ + knowledge/ + persistence/ + context/ + tools/ + enrichment/) + 13 StreamData property tests + 7 golden-fixture tests for extraction output
 - **Cross-store invariants**: `GET /api/knowledge/verify_l2` and `verify_l3` endpoints run on every mix-test invocation, with drift-detection tests that tamper L2/L3 state and assert the verifier catches the mismatch
-- **API**: 83 self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
-- **MCP**: Native Model Context Protocol server — 74 tools + 5 resource templates, bearer token auth
+- **API**: 85+ self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
+- **MCP**: Native Model Context Protocol server — 71+ tools + 5 resource templates, bearer token auth
 - **Storage**: Three-tier (ETS L1 + CubDB L2 + ArcadeDB L3) with startup warm-restore from L2 so `/api/projects` stays populated across `docker compose restart`. L2 cache auto-invalidates on code-tier or config-file edits via the CodeDigest envelope
 - **Containers**: Dual-container architecture (worker + monitor)
 - **Visualization**: Logic Monitor (SSE) + Graph Explorer (Cytoscape.js)
 - **Graph synthesis**: 11 builder passes from AST to graph. Passes 7-11 synthesize edges for runtime-dispatched call sites the static walker can't resolve directly (defprotocol/defimpl, behaviour callbacks, Phoenix router actions, MFA tuples, `&` captures, `apply/3`, `Task.start_link(M, F, A)` form, and unqualified calls resolved through `use M`-injected imports). Universal mechanisms — no project-specific allowlists
-- **Tunability**: Heatmap and change_risk scoring constants live in [`priv/config/scoring.json`](priv/config/scoring.json); runtime-dispatch patterns in [`priv/config/dispatch_patterns.json`](priv/config/dispatch_patterns.json); source-roots in [`priv/config/scan_defaults.json`](priv/config/scan_defaults.json). All three trigger automatic L2 metric-cache invalidation when edited (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
+- **Dead-code categorization**: every `dead_code` entry classified (`genuine | test_only | library_public_api | template_pending | uncategorized`) so consumers see actionable vs irreducible residuals at a glance
+- **External tool enrichment**: pluggable ingestion of Credo and Dialyzer output (47-warning catalogue covered) attached to graph vertices and surfaced inline in `pre_impact_check` and `dead_code`. Decoupled from source-extraction lifecycle
+- **Tunability**: Heatmap and change_risk scoring constants live in [`priv/config/scoring.json`](priv/config/scoring.json); runtime-dispatch patterns in [`priv/config/dispatch_patterns.json`](priv/config/dispatch_patterns.json); source-roots in [`priv/config/scan_defaults.json`](priv/config/scan_defaults.json); enrichment sources + per-tool severity maps in [`priv/config/enrichment_sources.json`](priv/config/enrichment_sources.json). All four trigger automatic L2 metric-cache invalidation when edited (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
 
 ## License
 

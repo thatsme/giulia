@@ -330,10 +330,17 @@ Performance profiling           function-level trace during burst window
 
 ### External Tool Enrichment Pipeline
 
+Two sources ship today: **Credo** (JSON, 5-entry severity map) and
+**Dialyzer** (text, 47-entry severity map covering dialyxir's full warning
+catalogue). Adding a new source = parser module + JSON entry; no core
+changes.
+
 ```
 External tool (Credo, Dialyzer, ...)
     |
     | mix credo --format json > /tmp/credo.json
+    | ~/.mix/escripts/credo --format json --working-dir . > ...    (escript form)
+    | mix dialyzer --format short > /tmp/dialyzer.out
     v
 POST /api/index/enrichment        validates payload_path against allowlist
     |                              (priv/config/scan_defaults.json
@@ -342,14 +349,21 @@ POST /api/index/enrichment        validates payload_path against allowlist
 Giulia.Enrichment.Ingest          dispatches to source module via Registry
     |
     v
-Giulia.Enrichment.Sources.Credo   parse JSON; three-path arity-resolution
-    |                              waterfall:
+Giulia.Enrichment.Sources.{Credo,Dialyzer,...}
+    |                              parse tool output into normalized
+    |                              finding/0 records. Three-path arity-
+    |                              resolution waterfall (same shape across
+    |                              sources):
     |                              1. line-range against function vertices
     |                                 (single match, multi-arity, ambiguous)
     |                              2. all-arities fallback for the named fn
-    |                              3. module-only attach
-    |                              severity-mapped from Credo `category`;
-    |                              column data preserved
+    |                              3. module-only attach (with
+    |                                 :resolution_ambiguous flag when
+    |                                 multiple different-name candidates
+    |                                 cover the line)
+    |                              severity_map per source lives in
+    |                              priv/config/enrichment_sources.json;
+    |                              parser asks Registry.severity_for/2.
     v
 Giulia.Enrichment.Writer          replace-on-ingest inside CubDB.transaction:
     |                              delete prior {:enrichment, tool, project, *}
@@ -380,21 +394,34 @@ Giulia.Enrichment.Reader          fetch_for_mfa / fetch_for_module:
 POST /api/knowledge/pre_impact_check
     |
     v
-Knowledge.Insights.Impact         attaches :enrichments per affected_caller;
-                                   applies caps from priv/config/scoring.json
-                                   (errors uncapped, top-3 warnings/caller,
+Knowledge.Insights.Impact         attaches :enrichments per affected_caller
+                                   via Giulia.Enrichment.Consumer.attach/2
+
+GET /api/knowledge/dead_code
+    |
+    v
+Knowledge.Metrics.dead_code       attaches :enrichments per dead entry via
+                                   the same Consumer.attach/2
+
+(both call) Giulia.Enrichment.Consumer.apply_response_cap/1
+                                   shared cap logic from priv/config/scoring.json
+                                   (errors uncapped, top-3 warnings/entry,
                                    drop info, per-response cap of 30
-                                   dedup'd by {check, severity})
+                                   dedup'd by {check, severity}; capped
+                                   responses get a project-wide
+                                   :enrichments_summary on the first entry)
 ```
 
 | Module | Responsibility |
 |--------|---------------|
 | `Enrichment.Source` | Behaviour contract — `tool_name/0`, `target_granularity/0`, `parse/2` |
-| `Enrichment.Registry` | Loads `priv/config/enrichment_sources.json`, caches in `:persistent_term` |
-| `Enrichment.Sources.Credo` | First implementation — JSON parser, severity table, three-path arity resolution |
+| `Enrichment.Registry` | Loads `priv/config/enrichment_sources.json`, caches in `:persistent_term`. Exposes `sources/0`, `fetch_source/1`, `config_for/1`, `severity_for/2` (translates tool-emitted category/check string into canonical severity using per-source `severity_map`) |
+| `Enrichment.Sources.Credo` | JSON parser; 5-entry severity map; three-path arity resolution |
+| `Enrichment.Sources.Dialyzer` | Text parser for `--format short`; 47-entry severity map covering dialyxir's full catalogue; same three-path resolution |
 | `Enrichment.Writer` | Replace-on-ingest CubDB writes, provenance stamping, sentinel marker |
 | `Enrichment.Reader` | Per-MFA / per-module lookups with never-ingested vs no-findings distinction |
 | `Enrichment.Ingest` | Orchestrator; emits `[:giulia, :enrichment, :ingest \| :parse_error \| :read]` telemetry |
+| `Enrichment.Consumer` | Shared helper used by `pre_impact_check` and `dead_code` to attach `:enrichments` per entry and apply per-entry / per-response caps |
 
 Architectural commitment: tool ingest cadence is **decoupled** from source-extraction cadence. CI may push Credo findings on every PR; the daemon scans source on a different schedule. Findings persist independently — `Persistence.Writer.clear_project/1` filters out enrichment keys precisely so re-extraction doesn't force re-ingestion.
 

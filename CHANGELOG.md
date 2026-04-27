@@ -4,6 +4,163 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
+## [0.3.0 – Build 156] — 2026-04-27 — Categorized signals + external tool enrichment
+
+The minor bump (v0.2.x → v0.3.0) is justified by new public API surface:
+two new endpoints, additive fields on three existing endpoints, a new
+plugin behaviour, and a new persistence keyspace. Everything is
+backward-compatible — old consumers reading existing fields keep working.
+
+### Added — dead-code categorization
+
+`/api/knowledge/dead_code` entries now carry a `:category` field and the
+response gains a `:summary` map. Categorization turns the irreducible
+residual into honest signal: most entries on real codebases aren't bugs,
+they're library public API, test-only entry points, or template-only
+references blocked on the deferred `.heex` slice.
+
+```
+%{
+  dead: [
+    %{module, name, arity, type, file, line,
+      category: :genuine | :test_only | :library_public_api |
+                :template_pending | :uncategorized}
+  ],
+  count, total,
+  summary: %{
+    by_category: %{...counts...},
+    irreducible: integer,   # test_only + library_public_api + template_pending
+    actionable:  integer    # genuine + uncategorized
+  }
+}
+```
+
+Precedence: `:test_only` > `:library_public_api` > `:template_pending` >
+`:genuine`. Empirical results on canonical codebases:
+
+| Codebase | Dead | After categorization |
+|---|---|---|
+| AlexClaw | 1 | 1 genuine |
+| Plug | 1 | 1 library_public_api |
+| Bandit (post-Pass-10-ext) | 2 | 2 library_public_api |
+
+Driven by reused infrastructure: `Giulia.Tools.TestReferences.referenced_functions/1`
+(extends slice-E2's module-level walker to function-level), and a new
+`Giulia.Context.ScanConfig.application_mod?/1` reading `mix.exs`
+`application/0` for the library/app distinction.
+
+### Added — external tool enrichment ingestion
+
+Pluggable behaviour `Giulia.Enrichment.Source` plus a JSON-driven
+registry (`priv/config/enrichment_sources.json`). **Two sources ship:
+Credo and Dialyzer.** Adding Sobelow / ExDoc / Coverage is one parser
+module + one JSON line.
+
+**New endpoints:**
+
+- `POST /api/index/enrichment` — ingest tool output. Body:
+  `{tool, project, payload_path}`. The daemon dispatches to the
+  registered source module via the registry, parses, and persists
+  findings in a separate CubDB keyspace. Validates `payload_path`
+  against an allowlist (`scan_defaults.json :enrichment_payload_roots`)
+  to prevent the endpoint from becoming an arbitrary-file-read
+  primitive. Returns `{tool, ingested, targets, replaced}`.
+
+- `GET /api/intelligence/enrichments?path=X&mfa=Y` (or `&module=Y`) —
+  uncapped drill-down for explicit per-vertex queries. Returns
+  `{findings: %{tool => [findings]}, target}`. Distinguishes `%{}`
+  (never ingested for project) from `%{credo: []}` (ingested, no
+  findings on this target) via a sentinel marker — different signals
+  for consumer agents.
+
+**Two consumer endpoints surface findings inline:**
+
+- `pre_impact_check` — `affected_callers[*].enrichments` carries per-
+  caller findings so refactor decisions consider type warnings + style
+  issues alongside blast radius.
+- `dead_code` — entries gain `:enrichments` so type-warning + dead-code
+  residual surface together.
+
+Both apply caps (`priv/config/scoring.json :enrichments`): errors
+uncapped, top-3 warnings per entry, drop info, per-response cap of 30
+deduplicated by `{check, severity}`. Caps are defensive defaults —
+on real codebases (Plausible: 98 Credo findings on 3867 functions)
+they rarely fire. Capping logic is shared across consumers via
+`Giulia.Enrichment.Consumer`.
+
+**Replace-on-ingest semantics, decoupled lifecycle.**
+`Giulia.Enrichment.Writer.replace_for/3` deletes prior findings for
+`{tool, project}` and writes the new set inside `CubDB.transaction/2`
+so concurrent reads never see half-deleted state. Enrichment keys
+under `{:enrichment, tool, project, target}` are **preserved by
+`Persistence.Writer.clear_project/1`** — tool ingest cadence (CI on
+every PR) is decoupled from source rescan cadence (daemon scans on
+its own schedule).
+
+**Provenance per finding:** `tool_version`, `run_at`, per-file
+`source_digest_at_run`. Consumers can compare against the current
+file digest to flag stale findings on changed files.
+
+**Severity is config-driven.** Each registered source carries a
+`severity_map` in `enrichment_sources.json`. Credo: 5 entries
+(`"warning" => "error"` covers Credo's misleadingly-named real-bug
+category). Dialyzer: 47 entries covering dialyxir's full warning
+catalogue. Tunable without recompile.
+
+**Telemetry from day one:** `[:giulia, :enrichment, :ingest]`,
+`[:giulia, :enrichment, :parse_error]`, `[:giulia, :enrichment, :read]`.
+
+### Known limitation — function line-range precision
+
+Per-function line ranges are derived as `next_function.line - 1`
+after stable per-file sort. This loses precision against multi-clause
+definitions, `defmacro` bodies with `quote do`, multi-arity
+definitions interleaved with other functions, and `@doc` heredoc gaps.
+Empirical impact: most Credo findings on Plausible currently resolve
+to module-scope rather than function-scope. The three-path
+arity-resolution waterfall in each parser surfaces this honestly via
+`scope: :module` and a `:resolution_ambiguous` flag rather than
+guessing wrong arity. Roadmap item 2g — capture true `:line_end`
+during AST extraction — predicted to sharpen attribution.
+
+### Also since v0.2.2 — what shipped incrementally to users
+
+Listed compactly; see git log for full detail.
+
+- **Dispatch-edge synthesis (Pass 7-11)** — protocol_impl, behaviour_impl,
+  router_dispatch, mfa_ref / capture_ref / apply_ref / mfa_arg_ref,
+  use_import_ref. Net effect across canonical codebases: −97 false-
+  positive `dead_code` reports.
+- **Reference-based test detection (slice E2)** — replaces filename-
+  matching `has_test`; 38 modules correctly reclassified yellow→green
+  on Plausible.
+- **Config externalization** — `scoring.json`, `dispatch_patterns.json`,
+  `scan_defaults.json`, `enrichment_sources.json`, all auto-invalidated
+  via `CodeDigest` envelope (commit `b1efd08`).
+- **MCP server (Build 155)** — 71 tools auto-generated from `@skill`
+  annotations on sub-routers. Bearer-auth gated by `GIULIA_MCP_KEY`.
+- **OTP cleanup tier 1 + 2** — supervised SSE inference, ContextManager
+  `:exit` handling, state-recovery invariant, ETS heir, reconcile paths.
+- **Correctness invariants** — `verify_l2`, `verify_l3` endpoints with
+  stratified sample-identity checks; 15 mix-test drift detectors.
+- **Filter-accountability tests** — 11 distinct silent-over-match bugs
+  caught across `Indexer.ignored?`, `ToolSchema.mcp_compatible?`,
+  `Conventions.check_try_rescue_flow_control`, `Topology.fuzzy_score`.
+- **Force-rescan + path validation** — `?force=true` on
+  `/api/index/scan`; 422 on missing/invalid paths or missing project
+  marker.
+- **Multi-type defimpl** — `defimpl X, for: [T1, T2, T3]` now extracts
+  as N proper impl modules instead of `Unknown`.
+
+### Migration
+
+- L2 caches auto-invalidate via `CodeDigest`. First daemon restart on
+  v0.3.0 rebuilds graph + metrics from existing ASTs (cheap; AST cache
+  unaffected).
+- All field additions are backward-compatible. Consumers reading
+  existing keys (`dead`, `count`, `total`, `affected_callers`, etc.)
+  continue to work without changes.
+
 ## [0.2.2 – Build 155+] — 2026-04-23 — Graph-completeness correctness fix
 
 ### Changed — observable analysis output (BREAKING for cached results)
