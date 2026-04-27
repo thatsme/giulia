@@ -119,6 +119,30 @@ slice had been filed as "future dispatch slices" without a sanity
 check. See `memory:feedback_slice_methodology` in `.claude/` for the
 full retrospective.
 
+## Feature-level pre-flight discipline
+
+Every plan with non-trivial assumptions about external data —
+third-party tool output formats, API shapes, scale estimates,
+upstream behavior — requires a pre-flight verification step against
+real data **before** implementation. Plan revision after pre-flight
+is normal and expected, not a planning failure.
+
+Originated 2026-04-26 during the enrichment-ingestion-layer slice.
+The plan estimated 1000-3000 Credo findings per large codebase;
+pre-flight on Plausible measured 98. The plan also assumed Credo's
+`scope` field carried arity (it doesn't — only `Module.Function`),
+forcing a three-path arity-resolution waterfall in the parser. Both
+errors were caught at design time. Implementing against the
+unverified plan would have shipped a per-tool override matrix and
+provenance scheme sized for data that doesn't exist, plus a parser
+that crashes on the first `scope` lookup.
+
+Same predict→measure→categorize loop as the per-slice methodology
+above, applied at feature scope rather than detector slice. Skip
+this step only when external data assumptions are zero (pure
+internal refactor) — even then, a rationale-stating sentence in
+the plan is cheaper than the assumption being wrong.
+
 ---
 *This constitution is loaded by Giulia on every interaction.*
 *Edit this file to change how Giulia behaves in this project.*

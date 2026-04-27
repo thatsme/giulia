@@ -111,6 +111,66 @@ defmodule Giulia.Context.ScanConfig do
     end
   end
 
+  @doc """
+  Returns the configured list of directories from which
+  `POST /api/index/enrichment` will accept a `payload_path`. Entries
+  may be absolute (`/tmp`) or project-relative (`tmp`, `_build`).
+  Project-relative entries are resolved against the caller's project
+  path before validation.
+
+  Defaults from `priv/config/scan_defaults.json` `enrichment_payload_roots`;
+  falls back to `["/tmp", "/var/tmp"]` if the key is missing or
+  malformed (avoids accepting arbitrary paths if the config is
+  damaged).
+  """
+  @spec enrichment_payload_roots() :: [String.t()]
+  def enrichment_payload_roots do
+    case read_config() do
+      %{"enrichment_payload_roots" => roots} when is_list(roots) and roots != [] ->
+        Enum.filter(roots, &is_binary/1)
+
+      _ ->
+        ["/tmp", "/var/tmp"]
+    end
+  end
+
+  @doc """
+  Validates that `payload_path` falls under one of the allowed roots
+  for the given project. Returns `:ok` or `{:error, :path_not_allowed}`.
+
+  Allowed roots are the absolute entries plus each project-relative
+  entry resolved against `project_path`. Symlink resolution is
+  intentionally NOT performed — the allowlist applies to the raw
+  caller-supplied path so a malicious symlink in `/tmp` cannot
+  smuggle in `/etc/passwd`.
+  """
+  @spec validate_enrichment_payload_path(String.t(), String.t()) ::
+          :ok | {:error, :path_not_allowed}
+  def validate_enrichment_payload_path(payload_path, project_path)
+      when is_binary(payload_path) and is_binary(project_path) do
+    expanded = Path.expand(payload_path)
+
+    allowed_roots =
+      enrichment_payload_roots()
+      |> Enum.map(fn root ->
+        if Path.type(root) == :absolute do
+          Path.expand(root)
+        else
+          Path.expand(Path.join(project_path, root))
+        end
+      end)
+
+    if Enum.any?(allowed_roots, fn root -> path_under?(expanded, root) end) do
+      :ok
+    else
+      {:error, :path_not_allowed}
+    end
+  end
+
+  defp path_under?(path, root) do
+    path == root or String.starts_with?(path, root <> "/")
+  end
+
   # Walk the mix.exs AST for every `def`/`defp elixirc_paths(_)` clause
   # and collect string literals appearing in its body. Union them across
   # all clauses. Tolerates the Sourceror wrapping of string literals in

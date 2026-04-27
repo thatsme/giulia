@@ -25,7 +25,11 @@ defmodule Giulia.Persistence.Writer do
   @spec persist_ast(String.t(), String.t(), map()) :: :ok
   def persist_ast(project_path, file_path, ast_data) do
     {content_hash, mtime} = file_content_hash_and_mtime(file_path)
-    GenServer.cast(__MODULE__, {:persist_ast, project_path, file_path, ast_data, content_hash, mtime})
+
+    GenServer.cast(
+      __MODULE__,
+      {:persist_ast, project_path, file_path, ast_data, content_hash, mtime}
+    )
   end
 
   @doc "Delete all cached data for a project."
@@ -92,13 +96,19 @@ defmodule Giulia.Persistence.Writer do
     # Remove pending writes for this project
     pending = Map.delete(state.pending, project_path)
 
-    # Clear CubDB
+    # Clear CubDB — but preserve enrichment keys. Enrichments are
+    # ingested independently of source scans (CI runs Credo/Dialyzer
+    # on a different cadence than full re-extraction); wiping them
+    # along with the AST cache breaks the "ingest persists across
+    # rescans" mental model.
     Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
-          # Select all keys and delete them
           keys =
-            Enum.map(CubDB.select(db), fn {key, _val} -> key end)
+            db
+            |> CubDB.select()
+            |> Enum.map(fn {key, _val} -> key end)
+            |> Enum.reject(&enrichment_key?/1)
 
           Enum.each(keys, fn key -> CubDB.delete(db, key) end)
           Logger.info("Cleared CubDB cache for #{project_path}")
@@ -119,7 +129,10 @@ defmodule Giulia.Persistence.Writer do
           envelope = %{digest: Giulia.Knowledge.CodeDigest.current(), payload: graph}
           binary = :erlang.term_to_binary(envelope, [:compressed])
           CubDB.put(db, {:graph, :serialized}, binary)
-          Logger.debug("Persisted knowledge graph for #{project_path} (#{byte_size(binary)} bytes)")
+
+          Logger.debug(
+            "Persisted knowledge graph for #{project_path} (#{byte_size(binary)} bytes)"
+          )
 
         {:error, reason} ->
           Logger.warning("Failed to persist graph: #{inspect(reason)}")
@@ -152,7 +165,10 @@ defmodule Giulia.Persistence.Writer do
       case Giulia.Persistence.Store.get_db(project_path) do
         {:ok, db} ->
           CubDB.put(db, {:embedding, type}, entries)
-          Logger.debug("Persisted #{type} embeddings for #{project_path} (#{length(entries)} entries)")
+
+          Logger.debug(
+            "Persisted #{type} embeddings for #{project_path} (#{length(entries)} entries)"
+          )
 
         {:error, reason} ->
           Logger.warning("Failed to persist embeddings: #{inspect(reason)}")
@@ -265,7 +281,11 @@ defmodule Giulia.Persistence.Writer do
       else
         # Build fresh from all cached ASTs
         all_asts =
-          Enum.map(CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>}), fn {{:ast, path}, data} -> {path, data} end)
+          Enum.map(CubDB.select(db, min_key: {:ast, ""}, max_key: {:ast, <<255>>}), fn {{:ast,
+                                                                                         path},
+                                                                                        data} ->
+            {path, data}
+          end)
 
         Giulia.Persistence.Merkle.build(all_asts)
       end
@@ -292,4 +312,11 @@ defmodule Giulia.Persistence.Writer do
 
     {hash, mtime}
   end
+
+  # Enrichment keys live under {:enrichment, tool, project, target}. They
+  # belong to a separate ingest lifecycle (CI tools push findings on a
+  # different cadence than full source rescans) and must survive
+  # clear_project so re-ingestion isn't required after every scan.
+  defp enrichment_key?({:enrichment, _tool, _project, _target}), do: true
+  defp enrichment_key?(_), do: false
 end

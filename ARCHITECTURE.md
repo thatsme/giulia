@@ -328,6 +328,76 @@ Burst detection                 spike in reductions/memory triggers
 Performance profiling           function-level trace during burst window
 ```
 
+### External Tool Enrichment Pipeline
+
+```
+External tool (Credo, Dialyzer, ...)
+    |
+    | mix credo --format json > /tmp/credo.json
+    v
+POST /api/index/enrichment        validates payload_path against allowlist
+    |                              (priv/config/scan_defaults.json
+    |                              :enrichment_payload_roots)
+    v
+Giulia.Enrichment.Ingest          dispatches to source module via Registry
+    |
+    v
+Giulia.Enrichment.Sources.Credo   parse JSON; three-path arity-resolution
+    |                              waterfall:
+    |                              1. line-range against function vertices
+    |                                 (single match, multi-arity, ambiguous)
+    |                              2. all-arities fallback for the named fn
+    |                              3. module-only attach
+    |                              severity-mapped from Credo `category`;
+    |                              column data preserved
+    v
+Giulia.Enrichment.Writer          replace-on-ingest inside CubDB.transaction:
+    |                              delete prior {:enrichment, tool, project, *}
+    |                              keys, write new ones, stamp per-finding
+    |                              provenance (tool_version, run_at,
+    |                              source_digest_at_run), write sentinel
+    v
+CubDB                              {:enrichment, tool, project_path, target}
+                                   target = "Mod.fn/N" | "Mod" | :__ingested__
+                                   preserved across clear_project (source
+                                   rescans don't wipe enrichments)
+```
+
+Read side:
+
+```
+GET /api/intelligence/enrichments?mfa=...
+    |                                          (uncapped drill-down for agents
+    |                                           wanting full per-MFA findings)
+    v
+Giulia.Enrichment.Reader          fetch_for_mfa / fetch_for_module:
+                                   distinguishes %{} (never ingested for
+                                   project) from %{credo: []} (ingested,
+                                   no findings on this MFA) via sentinel
+                                   key probe — different signals, agent
+                                   reasons differently about each.
+
+POST /api/knowledge/pre_impact_check
+    |
+    v
+Knowledge.Insights.Impact         attaches :enrichments per affected_caller;
+                                   applies caps from priv/config/scoring.json
+                                   (errors uncapped, top-3 warnings/caller,
+                                   drop info, per-response cap of 30
+                                   dedup'd by {check, severity})
+```
+
+| Module | Responsibility |
+|--------|---------------|
+| `Enrichment.Source` | Behaviour contract — `tool_name/0`, `target_granularity/0`, `parse/2` |
+| `Enrichment.Registry` | Loads `priv/config/enrichment_sources.json`, caches in `:persistent_term` |
+| `Enrichment.Sources.Credo` | First implementation — JSON parser, severity table, three-path arity resolution |
+| `Enrichment.Writer` | Replace-on-ingest CubDB writes, provenance stamping, sentinel marker |
+| `Enrichment.Reader` | Per-MFA / per-module lookups with never-ingested vs no-findings distinction |
+| `Enrichment.Ingest` | Orchestrator; emits `[:giulia, :enrichment, :ingest \| :parse_error \| :read]` telemetry |
+
+Architectural commitment: tool ingest cadence is **decoupled** from source-extraction cadence. CI may push Credo findings on every PR; the daemon scans source on a different schedule. Findings persist independently — `Persistence.Writer.clear_project/1` filters out enrichment keys precisely so re-extraction doesn't force re-ingestion.
+
 ### Fusion Point
 
 The `/api/runtime/hot_spots` endpoint is the fusion point. It:

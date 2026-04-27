@@ -19,7 +19,9 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/modules" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         modules = Giulia.Context.Store.Query.list_modules(project_path)
         send_json(conn, 200, %{modules: modules, count: length(modules)})
@@ -38,11 +40,18 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/functions" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module_filter = conn.query_params["module"]
         functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
-        send_json(conn, 200, %{functions: functions, count: length(functions), module: module_filter})
+
+        send_json(conn, 200, %{
+          functions: functions,
+          count: length(functions),
+          module: module_filter
+        })
     end
   end
 
@@ -50,7 +59,8 @@ defmodule Giulia.Daemon.Routers.Index do
   # GET /api/index/module_details — Full module metadata
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Get full module details (file, moduledoc, functions, types, specs, callbacks, struct)",
+    intent:
+      "Get full module details (file, moduledoc, functions, types, specs, callbacks, struct)",
     endpoint: "GET /api/index/module_details",
     params: %{path: :required, module: :required},
     returns: "JSON with module metadata including all API surface",
@@ -58,7 +68,9 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/module_details" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
@@ -83,7 +95,9 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/summary" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         summary = Giulia.Context.Store.Formatter.project_summary(project_path)
         send_json(conn, 200, %{summary: summary})
@@ -185,6 +199,67 @@ defmodule Giulia.Daemon.Routers.Index do
   defp truthy?(_), do: false
 
   # -------------------------------------------------------------------
+  # POST /api/index/enrichment — Ingest external-tool findings
+  # -------------------------------------------------------------------
+  @skill %{
+    intent:
+      "Ingest output from external Elixir tools (Credo, Dialyzer, ...) and " <>
+        "attach findings to graph vertices for consumption by intelligence " <>
+        "endpoints",
+    endpoint: "POST /api/index/enrichment",
+    params: %{tool: :required, project: :required, payload_path: :required},
+    returns:
+      "JSON {tool, ingested, written, replaced} — replaces all prior findings " <>
+        "for this {tool, project}",
+    category: "index"
+  }
+  post "/enrichment" do
+    tool = conn.body_params["tool"]
+    project = conn.body_params["project"]
+    payload_path = conn.body_params["payload_path"]
+    resolved_project = Giulia.Core.PathMapper.resolve_path(project)
+
+    cond do
+      not is_binary(tool) or tool == "" ->
+        send_json(conn, 422, %{error: "Missing or invalid :tool"})
+
+      not is_binary(resolved_project) or resolved_project == "" ->
+        send_json(conn, 422, %{error: "Missing or invalid :project", received: project})
+
+      not File.dir?(resolved_project) ->
+        send_json(conn, 422, %{
+          error: "Project path does not exist or is not a directory",
+          path: resolved_project
+        })
+
+      not is_binary(payload_path) or payload_path == "" ->
+        send_json(conn, 422, %{error: "Missing or invalid :payload_path"})
+
+      Giulia.Context.ScanConfig.validate_enrichment_payload_path(
+        payload_path,
+        resolved_project
+      ) != :ok ->
+        send_json(conn, 422, %{
+          error: "payload_path not under any allowed root",
+          allowed_roots: Giulia.Context.ScanConfig.enrichment_payload_roots(),
+          received: payload_path
+        })
+
+      not File.regular?(payload_path) ->
+        send_json(conn, 422, %{
+          error: "payload_path is not a regular file",
+          received: payload_path
+        })
+
+      true ->
+        case Giulia.Enrichment.Ingest.run(tool, resolved_project, payload_path) do
+          {:ok, summary} -> send_json(conn, 200, summary)
+          {:error, reason} -> send_json(conn, 422, %{error: inspect(reason)})
+        end
+    end
+  end
+
+  # -------------------------------------------------------------------
   # POST /api/index/verify — Full Merkle verification
   # -------------------------------------------------------------------
   @skill %{
@@ -210,12 +285,21 @@ defmodule Giulia.Daemon.Routers.Index do
                 send_json(conn, 200, %{
                   status: "ok",
                   verified: true,
-                  root: String.slice(Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower), 0, 12),
+                  root:
+                    String.slice(
+                      Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower),
+                      0,
+                      12
+                    ),
                   leaf_count: tree.leaf_count
                 })
 
               {:error, :corrupted} ->
-                send_json(conn, 200, %{status: "corrupted", verified: false, leaf_count: tree.leaf_count})
+                send_json(conn, 200, %{
+                  status: "corrupted",
+                  verified: false,
+                  leaf_count: tree.leaf_count
+                })
             end
         end
 
@@ -256,7 +340,9 @@ defmodule Giulia.Daemon.Routers.Index do
   }
   get "/complexity" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module_filter = conn.query_params["module"]
         min_complexity = parse_int(conn.query_params["min"], 0)
@@ -282,6 +368,7 @@ defmodule Giulia.Daemon.Routers.Index do
   end
 
   defp parse_int(nil, default), do: default
+
   defp parse_int(str, default) do
     case Integer.parse(str) do
       {n, _} -> n

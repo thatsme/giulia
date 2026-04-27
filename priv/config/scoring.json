@@ -47,5 +47,12 @@
       "red_max": 0.5,
       "yellow_max": 0.8
     }
+  },
+
+  "enrichments": {
+    "$description": "Caps applied to enrichment annotations attached to pre_impact_check responses. Errors are uncapped (real bugs always surface). Per-caller cap and per-response cap are defensive against pathological volumes; on real codebases (Plausible: 98 findings on 3867 functions) they rarely fire. The dedicated /api/intelligence/enrichments endpoint is uncapped.",
+    "per_caller_warning_cap": 3,
+    "per_response_cap": 30,
+    "drop_severities": ["info"]
   }
 }

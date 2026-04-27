@@ -1,9 +1,15 @@
 {
-  "$schema_version": 2,
-  "$description": "Paths within a target project scanned for Elixir source (.ex/.exs) files. Each entry may be a directory (walked recursively) or a single file. Universal defaults for Mix projects: lib/ always exists; test/support/ contains shared test helpers (ExUnit convention); test/test_helper.exs is the universal ExUnit bootstrap where test_utils / DB setup hooks are invoked. Missing paths are skipped silently.",
+  "$schema_version": 3,
+  "$description": "Paths within a target project scanned for Elixir source (.ex/.exs) files. Each entry may be a directory (walked recursively) or a single file. Universal defaults for Mix projects: lib/ always exists; test/support/ contains shared test helpers (ExUnit convention); test/test_helper.exs is the universal ExUnit bootstrap where test_utils / DB setup hooks are invoked. Missing paths are skipped silently. enrichment_payload_roots lists absolute-or-project-relative directories from which POST /api/index/enrichment will accept a payload_path; anything outside is rejected with 422 (prevents arbitrary file read).",
   "source_roots": [
     "lib",
     "test/support",
     "test/test_helper.exs"
+  ],
+  "enrichment_payload_roots": [
+    "/tmp",
+    "/var/tmp",
+    "tmp",
+    "_build"
   ]
 }

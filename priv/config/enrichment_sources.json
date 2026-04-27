@@ -1,0 +1,5 @@
+{
+  "sources": [
+    { "tool": "credo", "module": "Giulia.Enrichment.Sources.Credo" }
+  ]
+}

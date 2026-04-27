@@ -38,7 +38,8 @@ defmodule Giulia.Daemon.Routers.Intelligence do
               send_json(conn, 200, %{
                 status: "skipped",
                 briefing: nil,
-                message: "Briefing skipped (unavailable, no embeddings, or below relevance threshold)"
+                message:
+                  "Briefing skipped (unavailable, no embeddings, or below relevance threshold)"
               })
           end
       end
@@ -87,7 +88,9 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   }
   get "/architect" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         case Giulia.Intelligence.ArchitectBrief.build(project_path) do
           {:ok, brief} -> send_json(conn, 200, brief)
@@ -124,10 +127,12 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   # GET /api/intelligence/report_rules — Report generation rules
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Get canonical report generation rules (section order, scoring formulas, idiom rules)",
+    intent:
+      "Get canonical report generation rules (section order, scoring formulas, idiom rules)",
     endpoint: "GET /api/intelligence/report_rules",
     params: %{},
-    returns: "Markdown text of REPORT_RULES.md — the mandatory procedure for generating analysis reports",
+    returns:
+      "Markdown text of REPORT_RULES.md — the mandatory procedure for generating analysis reports",
     category: "intelligence"
   }
   get "/report_rules" do
@@ -144,6 +149,46 @@ defmodule Giulia.Daemon.Routers.Intelligence do
         case File.read(fallback) do
           {:ok, content} -> send_json(conn, 200, %{rules: content, format: "markdown"})
           {:error, _} -> send_json(conn, 404, %{error: "REPORT_RULES.md not found"})
+        end
+    end
+  end
+
+  # -------------------------------------------------------------------
+  # GET /api/intelligence/enrichments — External-tool findings for an MFA
+  # -------------------------------------------------------------------
+  @skill %{
+    intent:
+      "Return all external-tool enrichment findings (Credo, Dialyzer, ...) " <>
+        "attached to a specific function MFA or module — uncapped drill-down " <>
+        "for explicit agent queries",
+    endpoint: "GET /api/intelligence/enrichments",
+    params: %{path: :required, mfa: :optional, module: :optional},
+    returns:
+      "JSON %{findings: %{tool => [findings]}, target: \"Mod.fn/N\" | \"Mod\"} — " <>
+        "empty map when no tool ingested for project; tool key with empty list " <>
+        "when ingested but no findings on this target",
+    category: "intelligence"
+  }
+  get "/enrichments" do
+    case resolve_and_check_ready(conn) do
+      {:halt, conn} ->
+        conn
+
+      {:ok, conn, project_path} ->
+        mfa = conn.query_params["mfa"]
+        module = conn.query_params["module"]
+
+        cond do
+          is_binary(mfa) and mfa != "" ->
+            findings = Giulia.Enrichment.Reader.fetch_for_mfa(project_path, mfa)
+            send_json(conn, 200, %{findings: findings, target: mfa})
+
+          is_binary(module) and module != "" ->
+            findings = Giulia.Enrichment.Reader.fetch_for_module(project_path, module)
+            send_json(conn, 200, %{findings: findings, target: module})
+
+          true ->
+            send_json(conn, 400, %{error: "Provide either :mfa or :module query param"})
         end
     end
   end

@@ -80,4 +80,17 @@ defmodule Giulia.Knowledge.ScoringConfig do
   @doc "Unprotected-hubs default thresholds."
   @spec unprotected_hubs() :: map()
   def unprotected_hubs, do: current().unprotected_hubs
+
+  @doc """
+  Enrichment caps for `pre_impact_check` responses.
+  `%{per_caller_warning_cap, per_response_cap, drop_severities}`.
+  """
+  @spec enrichments() :: map()
+  def enrichments,
+    do:
+      Map.get(current(), :enrichments, %{
+        per_caller_warning_cap: 3,
+        per_response_cap: 30,
+        drop_severities: [:info]
+      })
 end

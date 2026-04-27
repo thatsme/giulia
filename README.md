@@ -34,6 +34,10 @@ Connect to any running BEAM node via distributed Erlang. Inspect memory, top pro
 - **CubDB warm starts**: AST entries, property graph, metric caches, and embeddings survive restarts. Merkle tree integrity verification detects stale files for incremental re-scanning.
 - **ArcadeDB L2**: Multi-model graph database for cross-build history, consolidation queries, complexity drift detection, and coupling trend analysis.
 
+### External Tool Enrichment
+
+Giulia ingests output from existing Elixir tools (Credo today; Dialyzer, ExUnit coverage, ExDoc, Sobelow next) and attaches each finding to the corresponding function or module vertex in the knowledge graph. `pre_impact_check` then returns "47 callers, blast radius wide, AND this function has 2 outstanding warnings" instead of either signal in isolation. Pluggable behaviour (`Giulia.Enrichment.Source`) + JSON registry (`priv/config/enrichment_sources.json`) — adding a new tool is one parser module + one JSON line. Tool findings live in their own CubDB keyspace and are preserved across source rescans.
+
 ## Quick Start
 
 ### Prerequisites

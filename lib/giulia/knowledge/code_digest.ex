@@ -32,14 +32,18 @@ defmodule Giulia.Knowledge.CodeDigest do
     Giulia.Knowledge.Metrics,
     Giulia.Knowledge.Behaviours,
     Giulia.Knowledge.DispatchPatterns,
-    Giulia.Knowledge.DeadCodeClassifier
+    Giulia.Knowledge.DeadCodeClassifier,
+    Giulia.Enrichment.Registry,
+    Giulia.Enrichment.Sources.Credo,
+    Giulia.Enrichment.Ingest
   ]
 
   # Paths relative to :code.priv_dir(:giulia).
   @tier_config_files [
     "config/scoring.json",
     "config/dispatch_patterns.json",
-    "config/scan_defaults.json"
+    "config/scan_defaults.json",
+    "config/enrichment_sources.json"
   ]
 
   @persistent_term_key {__MODULE__, :digest}
