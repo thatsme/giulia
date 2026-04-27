@@ -88,8 +88,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
           affected =
             callers
             |> Enum.map(fn caller_mfa -> enrich_mfa_vertex(caller_mfa, project_path) end)
-            |> attach_enrichments(project_path)
-            |> apply_response_cap()
+            |> Giulia.Enrichment.Consumer.attach(project_path)
+            |> Giulia.Enrichment.Consumer.apply_response_cap()
 
           affected_modules =
             affected
@@ -140,8 +140,8 @@ defmodule Giulia.Knowledge.Insights.Impact do
           affected =
             callers
             |> Enum.map(fn caller_mfa -> enrich_mfa_vertex(caller_mfa, project_path) end)
-            |> attach_enrichments(project_path)
-            |> apply_response_cap()
+            |> Giulia.Enrichment.Consumer.attach(project_path)
+            |> Giulia.Enrichment.Consumer.apply_response_cap()
 
           affected_modules =
             affected
@@ -323,98 +323,6 @@ defmodule Giulia.Knowledge.Insights.Impact do
   end
 
   # Parse "Giulia.Foo.bar/2" into {:ok, "Giulia.Foo", "bar", 2}
-  # ============================================================================
-  # Enrichment attachment + caps
-  # ============================================================================
-  #
-  # Per the plan: errors uncapped (real bugs always surface), per-caller
-  # cap on warnings (default 3), drop info entirely from pre_impact_check
-  # (the dedicated /api/intelligence/enrichments endpoint is uncapped).
-  # Per-response cap dedups by {check, severity} so 47 callers all
-  # hitting the same Credo check collapse to one entry with affected_mfas.
-
-  defp attach_enrichments(callers, project_path) do
-    cfg = Giulia.Knowledge.ScoringConfig.enrichments()
-    drop = cfg |> Map.get(:drop_severities, [:info]) |> Enum.map(&normalize_severity/1)
-    warning_cap = Map.get(cfg, :per_caller_warning_cap, 3)
-
-    Enum.map(callers, fn caller ->
-      raw = Giulia.Enrichment.Reader.fetch_for_mfa(project_path, caller.mfa)
-
-      filtered =
-        Enum.into(raw, %{}, fn {tool, findings} ->
-          {tool, cap_per_caller(findings, drop, warning_cap)}
-        end)
-
-      Map.put(caller, :enrichments, filtered)
-    end)
-  end
-
-  defp cap_per_caller(findings, drop_severities, warning_cap) do
-    findings
-    |> Enum.reject(fn f ->
-      sev = Map.get(f, :severity)
-      sev in drop_severities
-    end)
-    |> Enum.split_with(fn f -> Map.get(f, :severity) == :error end)
-    |> then(fn {errors, rest} ->
-      warnings = Enum.take(rest, warning_cap)
-      errors ++ warnings
-    end)
-  end
-
-  defp apply_response_cap(callers) do
-    cfg = Giulia.Knowledge.ScoringConfig.enrichments()
-    cap = Map.get(cfg, :per_response_cap, 30)
-
-    # Flatten into a per-{check, severity} bucket map with affected_mfas
-    # tracking which callers each finding hit. Errors first (uncapped),
-    # then warnings until the cap.
-    {flat_errors, flat_warnings} = collect_findings(callers)
-
-    kept = flat_errors ++ Enum.take(flat_warnings, max(cap - length(flat_errors), 0))
-
-    if length(kept) == length(flat_errors) + length(flat_warnings) do
-      # Cap not exceeded — leave per-caller annotations as-is.
-      callers
-    else
-      # Cap exceeded — replace per-caller enrichments with a project-wide
-      # capped summary so consumers can see the full set without
-      # exceeding the budget.
-      capped_summary = build_capped_summary(kept)
-
-      Enum.map(callers, fn caller -> Map.put(caller, :enrichments, %{}) end)
-      |> List.update_at(0, fn first ->
-        Map.put(first, :enrichments_summary, capped_summary)
-      end)
-    end
-  end
-
-  defp collect_findings(callers) do
-    callers
-    |> Enum.flat_map(fn caller ->
-      Enum.flat_map(caller.enrichments, fn {tool, findings} ->
-        Enum.map(findings, fn f -> {tool, caller.mfa, f} end)
-      end)
-    end)
-    |> Enum.split_with(fn {_tool, _mfa, f} -> Map.get(f, :severity) == :error end)
-  end
-
-  defp build_capped_summary(triples) do
-    triples
-    |> Enum.group_by(
-      fn {tool, _mfa, f} -> {tool, Map.get(f, :check), Map.get(f, :severity)} end,
-      fn {_tool, mfa, _f} -> mfa end
-    )
-    |> Enum.map(fn {{tool, check, sev}, mfas} ->
-      %{tool: tool, check: check, severity: sev, affected_mfas: Enum.uniq(mfas)}
-    end)
-  end
-
-  defp normalize_severity(s) when is_atom(s), do: s
-  defp normalize_severity(s) when is_binary(s), do: String.to_atom(s)
-  defp normalize_severity(_), do: :info
-
   defp parse_mfa_vertex(mfa) do
     case Regex.run(~r/^(.+)\.([^.]+)\/(\d+)$/, mfa) do
       [_, module, function, arity_str] ->

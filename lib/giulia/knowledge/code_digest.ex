@@ -35,7 +35,9 @@ defmodule Giulia.Knowledge.CodeDigest do
     Giulia.Knowledge.DeadCodeClassifier,
     Giulia.Enrichment.Registry,
     Giulia.Enrichment.Sources.Credo,
-    Giulia.Enrichment.Ingest
+    Giulia.Enrichment.Sources.Dialyzer,
+    Giulia.Enrichment.Ingest,
+    Giulia.Enrichment.Consumer
   ]
 
   # Paths relative to :code.priv_dir(:giulia).

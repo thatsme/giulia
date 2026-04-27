@@ -513,12 +513,18 @@ defmodule Giulia.Knowledge.Metrics do
         )
       end)
 
-    summary = Giulia.Knowledge.DeadCodeClassifier.summarize(classified)
+    enriched =
+      classified
+      |> Enum.map(fn e -> Map.put(e, :mfa, "#{e.module}.#{e.name}/#{e.arity}") end)
+      |> Giulia.Enrichment.Consumer.attach(project_path)
+      |> Giulia.Enrichment.Consumer.apply_response_cap()
+
+    summary = Giulia.Knowledge.DeadCodeClassifier.summarize(enriched)
 
     {:ok,
      %{
-       dead: classified,
-       count: length(classified),
+       dead: enriched,
+       count: length(enriched),
        total: length(all_functions),
        summary: summary
      }}
