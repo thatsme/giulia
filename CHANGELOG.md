@@ -4,7 +4,66 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
-## [0.3.0 – Build 156] — 2026-04-27 — Categorized signals + external tool enrichment
+## [0.3.1 – Build 157] — 2026-04-27 — Slice-a: HEEx/EEx template scanner
+
+Patch release that completes the deferred slice-a from v0.3.0. The
+`:template_pending` category was a placeholder for "we know this might
+be template-callable but we never wrote the parser." Slice-a builds the
+parser (`Giulia.Tools.TemplateReferences`), so template-referenced
+functions are now exempted from the dead-code list at detection time
+rather than reaching the classifier.
+
+### Changed — observable analysis output
+
+- **`/api/knowledge/dead_code` no longer emits `:template_pending`.**
+  The category is removed from the type union. Functions called from
+  `*.heex` / `*.eex` templates are exempted from the response entirely
+  (matching Pass 7-11's exemption pattern). Consumers reading
+  `summary.by_category` will see the field gone; if you were depending
+  on its presence, switch to checking `Map.get(summary.by_category, :template_pending, 0)`.
+- **Plausible empirical delta**: the 3 `PlausibleWeb.{EmailView,LayoutView,SiteView}.plausible_url/0`
+  entries that v0.3.0 mis-classified as `:template_pending` are now
+  correctly exempted (they're called as `{plausible_url()}` from
+  `templates/layout/base_email.html.heex` etc., resolved through the
+  conventional `templates/<view>/...` → `<App>Web.<View>View` mapping).
+
+### Added — `Giulia.Tools.TemplateReferences`
+
+New scanner that walks `*.heex` and `*.eex` files and extracts function
+references in three syntactic surfaces:
+
+- HEEx curly interpolation: `{Module.Sub.fn(args)}`
+- Old EEx interpolation: `<%= Module.Sub.fn(args) %>` and `<% expr %>`
+- HEEx component invocation: `<Module.Sub.fn args />` (qualified) and
+  `<.local_fn args />` (local)
+
+Returns `%{qualified: MapSet, local_per_file: %{path => MapSet}}`. The
+local-per-file map is then resolved to a target module via Phoenix
+path conventions:
+
+1. Strip `.heex`/`.eex`/`.html` from the template path; if the resulting
+   `.ex` sibling exists in the project's module index, use that module
+   (LiveView / Component / colocated templates).
+2. `lib/<app>_web/templates/<view>/<file>.html.heex` → `<App>Web.<View>View`
+   (older Phoenix layout).
+
+`Metrics.dead_code_with_asts/3` consumes both signals as additional
+exemption sets alongside `protocol_impl_modules`, `router_actions`,
+`reference_targets`, etc.
+
+### Known limitation surfaced (not introduced) — TestReferences alias-blindness
+
+The cold-rescan triggered by this slice exposed a pre-existing
+limitation in `Giulia.Tools.TestReferences.referenced_functions/1`: it
+collects qualified `Mod.fn/N` strings from `*_test.exs` but does not
+resolve `alias` directives. A test using
+`alias AlexClawTest.Skills.EchoSkill` then `EchoSkill.config_help()`
+records `"EchoSkill.config_help/0"`, not the fully-qualified form, so
+the classifier's `:test_only` predicate misses the match. Filed as
+roadmap item 2h. Fix mirrors the resolve_alias pattern from
+`metrics.ex` `collect_all_calls/1`.
+
+
 
 The minor bump (v0.2.x → v0.3.0) is justified by new public API surface:
 two new endpoints, additive fields on three existing endpoints, a new

@@ -1,6 +1,6 @@
 # Giulia
 
-> **Build 156** · v0.3.0 · 2026-04-27
+> **Build 157** · v0.3.1 · 2026-04-27
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
@@ -154,7 +154,7 @@ Highlights from the self-analysis:
 
 ## Project Status
 
-- **Version**: v0.3.0 (Build 156)
+- **Version**: v0.3.1 (Build 157)
 - **Tests**: ~1030 unit/integration tests in the focused subsets (ast/ + knowledge/ + persistence/ + context/ + tools/ + enrichment/) + 13 StreamData property tests + 7 golden-fixture tests for extraction output
 - **Cross-store invariants**: `GET /api/knowledge/verify_l2` and `verify_l3` endpoints run on every mix-test invocation, with drift-detection tests that tamper L2/L3 state and assert the verifier catches the mismatch
 - **API**: 85+ self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)

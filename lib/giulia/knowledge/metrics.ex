@@ -468,6 +468,33 @@ defmodule Giulia.Knowledge.Metrics do
       |> Enum.map(fn edge -> edge.v2 end)
       |> MapSet.new()
 
+    # Step 4e: Template-referenced functions (slice-a). Walks every
+    # *.heex / *.eex under the project for qualified function refs
+    # (`{Mod.fn(...)}`, `&Mod.fn/N`, `<Mod.fn>` component) and local
+    # refs (`fn(...)`, `<.fn>`) per file. Local refs are bound to a
+    # conventional View module via path conventions (older
+    # `templates/<view>/...` → `<View>View`; newer colocated
+    # `path/foo.html.heex` → module declared in `path/foo.ex`).
+    template_refs = Giulia.Tools.TemplateReferences.scan(project_path)
+
+    module_index =
+      all_asts
+      |> Enum.reduce(%{}, fn {file_path, data}, acc ->
+        case data[:modules] || [] do
+          [%{name: first} | _] -> Map.put(acc, file_path, first)
+          _ -> acc
+        end
+      end)
+
+    template_locals_per_module =
+      template_refs.local_per_file
+      |> Enum.reduce(%{}, fn {file_path, fns}, acc ->
+        case Giulia.Tools.TemplateReferences.conventional_view_module(file_path, module_index) do
+          nil -> acc
+          mod -> Map.update(acc, mod, fns, &MapSet.union(&1, fns))
+        end
+      end)
+
     # Step 5: Find dead functions
     dead =
       all_functions
@@ -481,6 +508,8 @@ defmodule Giulia.Knowledge.Metrics do
           MapSet.member?(@implicit_functions, name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(reference_targets, "#{func.module}.#{func.name}/#{func.arity}") or
+          MapSet.member?(template_refs.qualified, "#{func.module}.#{func.name}") or
+          template_local_match?(template_locals_per_module, func) or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(
             called_functions,
@@ -1295,6 +1324,17 @@ defmodule Giulia.Knowledge.Metrics do
 
       true ->
         @resources_default_actions
+    end
+  end
+
+  # template_locals_per_module maps "Mod" → MapSet of fn-name strings
+  # called locally in any template bound to that module via path
+  # convention. A dead-code candidate matches when its module appears
+  # as a key AND its name is in the module's local-fn set.
+  defp template_local_match?(template_locals_per_module, func) do
+    case Map.fetch(template_locals_per_module, func.module) do
+      {:ok, fns} -> MapSet.member?(fns, to_string(func.name))
+      :error -> false
     end
   end
 end

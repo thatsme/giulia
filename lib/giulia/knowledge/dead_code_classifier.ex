@@ -20,21 +20,22 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
        does not return a `:mod` entry). Public functions in a library are
        exported for downstream consumers the static analyzer cannot see.
 
-    3. `:template_pending` — project contains `*.heex` or `*.eex` files.
-       Pending the deferred `.heex` template scanner (slice-a). Functions
-       called only from templates get this label as a placeholder so
-       consumers can track "blocked on slice-a" residuals separately from
-       genuine dead code.
-
-    4. `:genuine` — none of the above match. Most likely a real dead
+    3. `:genuine` — none of the above match. Most likely a real dead
        function. Default category.
 
-    5. `:uncategorized` — reserved. Unused by the current classifier but
+    4. `:uncategorized` — reserved. Unused by the current classifier but
        kept in the type union so future signals (variable-bound runtime
        dispatch, etc.) can land additively without breaking consumers.
 
   The classifier is a pure function over the entry and a `signals` map
   computed once per scan via `compute_signals/2`.
+
+  > Note: prior versions had a `:template_pending` category as a
+  > placeholder for the deferred `.heex` slice. That slice is now
+  > built (`Giulia.Tools.TemplateReferences`) — template-referenced
+  > functions are exempted from the dead-code list at detection time
+  > rather than reaching the classifier. The category was retired in
+  > v0.3.1.
   """
 
   alias Giulia.Context.ScanConfig
@@ -43,7 +44,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
   @type category ::
           :test_only
           | :library_public_api
-          | :template_pending
           | :genuine
           | :uncategorized
 
@@ -58,18 +58,15 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
 
   @type signals :: %{
           required(:test_function_refs) => MapSet.t(),
-          required(:application_mod?) => boolean(),
-          required(:has_templates?) => boolean()
+          required(:application_mod?) => boolean()
         }
 
   @doc """
   Compute project-wide signals once for an entire `dead_code` run.
 
-  Performs three I/O reads:
+  Performs two I/O reads:
     - Walks `<project_path>/test/**/*_test.exs` for function references.
     - Reads `<project_path>/mix.exs` to detect `application/0 [mod: _]`.
-    - Globs `<project_path>` for `*.heex` / `*.eex` template files
-      (existence check only — no parsing).
 
   Pass the result to `classify/2` for every dead-code candidate.
   """
@@ -77,8 +74,7 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
   def compute_signals(project_path, _all_asts) when is_binary(project_path) do
     %{
       test_function_refs: TestReferences.referenced_functions(project_path),
-      application_mod?: ScanConfig.application_mod?(project_path),
-      has_templates?: any_templates?(project_path)
+      application_mod?: ScanConfig.application_mod?(project_path)
     }
   end
 
@@ -91,7 +87,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
     cond do
       test_only?(entry, signals) -> :test_only
       library_public_api?(entry, signals) -> :library_public_api
-      template_pending?(signals) -> :template_pending
       true -> :genuine
     end
   end
@@ -100,7 +95,7 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
   Build a category-summary map for a list of classified entries. Returns
   `%{by_category: %{...}, irreducible: integer, actionable: integer}`.
 
-  `irreducible` = `:test_only + :library_public_api + :template_pending`
+  `irreducible` = `:test_only + :library_public_api`
   (entries the user is unlikely to want to act on; flagged for awareness).
   `actionable` = `:genuine + :uncategorized` (entries worth investigating).
   """
@@ -117,15 +112,12 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
           genuine: 0,
           test_only: 0,
           library_public_api: 0,
-          template_pending: 0,
           uncategorized: 0
         },
         fn %{category: c}, acc -> Map.update(acc, c, 1, &(&1 + 1)) end
       )
 
-    irreducible =
-      by_category.test_only + by_category.library_public_api + by_category.template_pending
-
+    irreducible = by_category.test_only + by_category.library_public_api
     actionable = by_category.genuine + by_category.uncategorized
 
     %{by_category: by_category, irreducible: irreducible, actionable: actionable}
@@ -139,19 +131,4 @@ defmodule Giulia.Knowledge.DeadCodeClassifier do
 
   defp library_public_api?(%{type: :def}, %{application_mod?: false}), do: true
   defp library_public_api?(_entry, _signals), do: false
-
-  defp template_pending?(%{has_templates?: true}), do: true
-  defp template_pending?(_), do: false
-
-  defp any_templates?(project_path) do
-    heex = Path.wildcard(Path.join([project_path, "**", "*.heex"]))
-
-    case heex do
-      [_ | _] ->
-        true
-
-      [] ->
-        Path.wildcard(Path.join([project_path, "**", "*.eex"])) != []
-    end
-  end
 end

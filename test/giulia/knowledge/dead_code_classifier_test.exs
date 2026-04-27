@@ -6,8 +6,7 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
   defp signals(opts \\ []) do
     %{
       test_function_refs: Keyword.get(opts, :test_refs, MapSet.new()),
-      application_mod?: Keyword.get(opts, :app, true),
-      has_templates?: Keyword.get(opts, :templates, false)
+      application_mod?: Keyword.get(opts, :app, true)
     }
   end
 
@@ -43,11 +42,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
       assert DeadCodeClassifier.classify(entry(type: :def), s) == :genuine
     end
 
-    test ":template_pending when project contains template files" do
-      s = signals(app: true, templates: true)
-      assert DeadCodeClassifier.classify(entry(type: :defp), s) == :template_pending
-    end
-
     test ":genuine when no signal matches" do
       assert DeadCodeClassifier.classify(entry(type: :defp), signals()) == :genuine
     end
@@ -62,21 +56,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
         )
 
       assert DeadCodeClassifier.classify(entry(type: :def), s) == :test_only
-    end
-
-    test ":test_only wins over :template_pending" do
-      s =
-        signals(
-          test_refs: MapSet.new(["MyApp.Foo.bar/1"]),
-          templates: true
-        )
-
-      assert DeadCodeClassifier.classify(entry(), s) == :test_only
-    end
-
-    test ":library_public_api wins over :template_pending" do
-      s = signals(app: false, templates: true)
-      assert DeadCodeClassifier.classify(entry(type: :def), s) == :library_public_api
     end
   end
 
@@ -106,7 +85,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
       assert summary.by_category.genuine == 0
       assert summary.by_category.test_only == 0
       assert summary.by_category.library_public_api == 0
-      assert summary.by_category.template_pending == 0
       assert summary.by_category.uncategorized == 0
     end
 
@@ -117,7 +95,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
         %{category: :test_only},
         %{category: :library_public_api},
         %{category: :library_public_api},
-        %{category: :template_pending},
         %{category: :uncategorized}
       ]
 
@@ -126,11 +103,10 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
       assert summary.by_category.genuine == 2
       assert summary.by_category.test_only == 1
       assert summary.by_category.library_public_api == 2
-      assert summary.by_category.template_pending == 1
       assert summary.by_category.uncategorized == 1
 
-      # irreducible = test_only + library_public_api + template_pending = 1 + 2 + 1 = 4
-      assert summary.irreducible == 4
+      # irreducible = test_only + library_public_api = 1 + 2 = 3
+      assert summary.irreducible == 3
       # actionable = genuine + uncategorized = 2 + 1 = 3
       assert summary.actionable == 3
     end
@@ -165,7 +141,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
 
         assert MapSet.size(s.test_function_refs) == 0
         assert s.application_mod? == false
-        assert s.has_templates? == false
       end)
     end
 
@@ -209,28 +184,6 @@ defmodule Giulia.Knowledge.DeadCodeClassifierTest do
         fn dir ->
           s = DeadCodeClassifier.compute_signals(dir, %{})
           assert s.application_mod? == false
-        end
-      )
-    end
-
-    test "detects has_templates? when *.heex file is present anywhere" do
-      with_project(
-        %{
-          "lib/my_app_web/templates/page/index.html.heex" => "<h1>hi</h1>"
-        },
-        fn dir ->
-          s = DeadCodeClassifier.compute_signals(dir, %{})
-          assert s.has_templates? == true
-        end
-      )
-    end
-
-    test "detects has_templates? for *.eex too" do
-      with_project(
-        %{"lib/my_app/template.eex" => "<%= @x %>"},
-        fn dir ->
-          s = DeadCodeClassifier.compute_signals(dir, %{})
-          assert s.has_templates? == true
         end
       )
     end

@@ -33,6 +33,7 @@ defmodule Giulia.Knowledge.CodeDigest do
     Giulia.Knowledge.Behaviours,
     Giulia.Knowledge.DispatchPatterns,
     Giulia.Knowledge.DeadCodeClassifier,
+    Giulia.Tools.TemplateReferences,
     Giulia.Enrichment.Registry,
     Giulia.Enrichment.Sources.Credo,
     Giulia.Enrichment.Sources.Dialyzer,
