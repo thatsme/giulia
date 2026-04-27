@@ -46,17 +46,37 @@ defmodule Giulia.Tools.TestReferences do
   """
   @spec referenced_modules(String.t()) :: MapSet.t()
   def referenced_modules(project_path) when is_binary(project_path) do
+    walk_test_files(project_path, MapSet.new(), &collect_from_ast/2)
+  end
+
+  @doc """
+  Collect every fully-qualified function reference from any `*_test.exs`
+  file under `<project_path>/test/`. Returns a `MapSet` of
+  `"Mod.Name.fn/N"` strings. Only references whose arity is determinable
+  at parse time are included — bare module references, captures with
+  variable arity, and MFA tuples with non-literal arg lists are skipped.
+
+  Used by `Giulia.Knowledge.DeadCodeClassifier` to mark dead-code
+  candidates as `:test_only` when their only reachability signal is a
+  test file.
+  """
+  @spec referenced_functions(String.t()) :: MapSet.t()
+  def referenced_functions(project_path) when is_binary(project_path) do
+    walk_test_files(project_path, MapSet.new(), &collect_functions_from_ast/2)
+  end
+
+  defp walk_test_files(project_path, init_acc, collector) do
     test_root = Path.join(project_path, "test")
 
     if File.dir?(test_root) do
       test_root
       |> Path.join("**/*_test.exs")
       |> Path.wildcard()
-      |> Enum.reduce(MapSet.new(), fn path, acc ->
+      |> Enum.reduce(init_acc, fn path, acc ->
         case File.read(path) do
           {:ok, source} ->
             case Sourceror.parse_string(source) do
-              {:ok, ast} -> collect_from_ast(ast, acc)
+              {:ok, ast} -> collector.(ast, acc)
               _ -> acc
             end
 
@@ -65,7 +85,7 @@ defmodule Giulia.Tools.TestReferences do
         end
       end)
     else
-      MapSet.new()
+      init_acc
     end
   end
 
@@ -73,6 +93,15 @@ defmodule Giulia.Tools.TestReferences do
     {_ast, refs} =
       Macro.prewalk(ast, acc, fn node, refs_acc ->
         {node, collect_from_node(node, refs_acc)}
+      end)
+
+    refs
+  end
+
+  defp collect_functions_from_ast(ast, acc) do
+    {_ast, refs} =
+      Macro.prewalk(ast, acc, fn node, refs_acc ->
+        {node, collect_function_from_node(node, refs_acc)}
       end)
 
     refs
@@ -170,4 +199,76 @@ defmodule Giulia.Tools.TestReferences do
   defp part_to_string(part) when is_atom(part), do: Atom.to_string(part)
   defp part_to_string({:__MODULE__, _, _}), do: "__MODULE__"
   defp part_to_string(other), do: inspect(other)
+
+  # ============================================================================
+  # Function-level reference collection (referenced_functions/1)
+  # ============================================================================
+
+  # Fully-qualified call: Mod.Name.fn(arg1, arg2)
+  defp collect_function_from_node(
+         {{:., _, [{:__aliases__, _, parts}, fn_name]}, _, args},
+         refs
+       )
+       when is_list(parts) and is_atom(fn_name) and is_list(args) do
+    add_function(refs, parts, fn_name, length(args))
+  end
+
+  # MFA tuple literal: {Mod.Name, :fn, [args]}
+  defp collect_function_from_node(
+         {:{}, _, [{:__aliases__, _, parts}, fn_atom, args_term]},
+         refs
+       )
+       when is_list(parts) do
+    case {resolve_atom_literal(fn_atom), resolve_list_arity(args_term)} do
+      {{:ok, fn_name}, {:ok, arity}} -> add_function(refs, parts, fn_name, arity)
+      _ -> refs
+    end
+  end
+
+  # Capture: &Mod.Name.fn/N
+  defp collect_function_from_node(
+         {:&, _, [{:/, _, [{{:., _, [{:__aliases__, _, parts}, fn_name]}, _, []}, arity_term]}]},
+         refs
+       )
+       when is_list(parts) and is_atom(fn_name) do
+    case resolve_int_literal(arity_term) do
+      {:ok, arity} -> add_function(refs, parts, fn_name, arity)
+      :skip -> refs
+    end
+  end
+
+  defp collect_function_from_node(_node, refs), do: refs
+
+  defp add_function(refs, parts, fn_name, arity) do
+    module = parts |> Enum.map(&part_to_string/1) |> Enum.join(".")
+
+    if module != "" do
+      MapSet.put(refs, "#{module}.#{fn_name}/#{arity}")
+    else
+      refs
+    end
+  end
+
+  defp resolve_atom_literal(atom) when is_atom(atom) and atom not in [nil, true, false],
+    do: {:ok, atom}
+
+  defp resolve_atom_literal({:__block__, _, [atom]})
+       when is_atom(atom) and atom not in [nil, true, false],
+       do: {:ok, atom}
+
+  defp resolve_atom_literal(_), do: :skip
+
+  defp resolve_list_arity(list) when is_list(list), do: {:ok, length(list)}
+
+  defp resolve_list_arity({:__block__, _, [list]}) when is_list(list),
+    do: {:ok, length(list)}
+
+  defp resolve_list_arity(_), do: :skip
+
+  defp resolve_int_literal(int) when is_integer(int), do: {:ok, int}
+
+  defp resolve_int_literal({:__block__, _, [int]}) when is_integer(int),
+    do: {:ok, int}
+
+  defp resolve_int_literal(_), do: :skip
 end

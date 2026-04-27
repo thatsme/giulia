@@ -84,6 +84,33 @@ defmodule Giulia.Context.ScanConfig do
     end
   end
 
+  @doc """
+  Returns `true` when the target project's `mix.exs` declares an
+  `application/0` callback whose return value contains a `:mod` entry
+  (i.e. the project is an OTP application with a top-level supervision
+  tree, e.g. `def application, do: [mod: {MyApp.Application, []}]`).
+
+  Returns `false` for library-shaped projects (no `:mod`, or no
+  `application/0` clause at all) and for any project where `mix.exs`
+  cannot be read or parsed. The library/app distinction drives the
+  `:library_public_api` dead-code category — public functions in a
+  library are exported for external consumers the static analyzer
+  cannot see, so dead-code residuals on `def`s in libraries are
+  honestly classified rather than reported as bugs.
+  """
+  @spec application_mod?(String.t()) :: boolean()
+  def application_mod?(project_path) do
+    mix_path = Path.join(project_path, "mix.exs")
+
+    with true <- File.regular?(mix_path),
+         {:ok, content} <- File.read(mix_path),
+         {:ok, ast} <- Sourceror.parse_string(content) do
+      detect_application_mod(ast)
+    else
+      _ -> false
+    end
+  end
+
   # Walk the mix.exs AST for every `def`/`defp elixirc_paths(_)` clause
   # and collect string literals appearing in its body. Union them across
   # all clauses. Tolerates the Sourceror wrapping of string literals in
@@ -109,7 +136,7 @@ defmodule Giulia.Context.ScanConfig do
   end
 
   defp get_do_value([{{:__block__, _, [:do]}, body} | _]), do: body
-  defp get_do_value([do: body]), do: body
+  defp get_do_value(do: body), do: body
   defp get_do_value(kw) when is_list(kw), do: Keyword.get(kw, :do)
   defp get_do_value(_), do: nil
 
@@ -140,5 +167,47 @@ defmodule Giulia.Context.ScanConfig do
     else
       {:error, reason} -> reason
     end
+  end
+
+  # Walk every `def`/`defp application` clause and return true if any
+  # body contains the atom literal `:mod` as a keyword key. Sourceror
+  # represents atom keyword keys as bare atoms in 2-tuples — we just
+  # look for the atom `:mod` anywhere in the application/0 body, which
+  # is sufficient: the only legal place for `:mod` in mix.exs's
+  # application keyword is the OTP-mod entry.
+  defp detect_application_mod(ast) do
+    {_, found?} =
+      Macro.traverse(
+        ast,
+        false,
+        fn
+          {def_type, _, [{:application, _, _args}, body_kw]} = node, acc
+          when def_type in [:def, :defp] ->
+            {node, acc or body_contains_mod?(get_do_value(body_kw))}
+
+          node, acc ->
+            {node, acc}
+        end,
+        fn node, acc -> {node, acc} end
+      )
+
+    found?
+  end
+
+  defp body_contains_mod?(nil), do: false
+
+  defp body_contains_mod?(body) do
+    {_, found?} =
+      Macro.traverse(
+        body,
+        false,
+        fn
+          :mod = n, _acc -> {n, true}
+          n, acc -> {n, acc}
+        end,
+        fn n, a -> {n, a} end
+      )
+
+    found?
   end
 end

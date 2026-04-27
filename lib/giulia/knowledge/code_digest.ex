@@ -31,7 +31,8 @@ defmodule Giulia.Knowledge.CodeDigest do
     Giulia.Knowledge.Builder,
     Giulia.Knowledge.Metrics,
     Giulia.Knowledge.Behaviours,
-    Giulia.Knowledge.DispatchPatterns
+    Giulia.Knowledge.DispatchPatterns,
+    Giulia.Knowledge.DeadCodeClassifier
   ]
 
   # Paths relative to :code.priv_dir(:giulia).

@@ -248,4 +248,114 @@ defmodule Giulia.Tools.TestReferencesTest do
       end
     )
   end
+
+  describe "referenced_functions/1" do
+    test "returns empty MapSet when test/ directory does not exist" do
+      refs = TestReferences.referenced_functions("/nonexistent/path/123")
+      assert MapSet.size(refs) == 0
+    end
+
+    test "collects fully-qualified function calls with arity" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            test "calls" do
+              MyApp.Foo.bar(:a)
+              MyApp.Foo.baz(:a, :b)
+              MyApp.Other.no_args()
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "MyApp.Foo.bar/1" in refs
+          assert "MyApp.Foo.baz/2" in refs
+          assert "MyApp.Other.no_args/0" in refs
+        end
+      )
+    end
+
+    test "collects function captures `&Mod.fn/N`" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            test "captures" do
+              fun = &MyApp.Foo.bar/2
+              fun.(1, 2)
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "MyApp.Foo.bar/2" in refs
+        end
+      )
+    end
+
+    test "collects MFA tuple literals with literal arg list" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            test "mfa tuple" do
+              spec = {MyApp.Worker, :start_link, [:opt1, :opt2]}
+              _ = spec
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "MyApp.Worker.start_link/2" in refs
+        end
+      )
+    end
+
+    test "skips MFA tuple with non-literal arg list" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            test "mfa with var args" do
+              args = [:foo]
+              spec = {MyApp.Worker, :start_link, args}
+              _ = spec
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          # Arity unknown → not added (no false positive at any synthetic arity).
+          refute Enum.any?(refs, &String.starts_with?(&1, "MyApp.Worker.start_link/"))
+        end
+      )
+    end
+
+    test "ignores bare alias / use / require nodes (those are module-only signals)" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            alias MyApp.Foo
+            require MyApp.Bar
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert MapSet.size(refs) == 0
+        end
+      )
+    end
+  end
 end

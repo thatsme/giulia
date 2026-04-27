@@ -12,22 +12,31 @@ defmodule Giulia.Knowledge.Metrics do
 
   # OTP/framework callbacks that are invoked implicitly, never via direct calls
   @implicit_functions MapSet.new([
-    # GenServer
-    {"init", 1}, {"handle_call", 3}, {"handle_cast", 2}, {"handle_info", 2},
-    {"handle_continue", 2}, {"terminate", 2}, {"code_change", 3},
-    # Application
-    {"start", 2}, {"stop", 1},
-    # Supervisor
-    {"child_spec", 1},
-    # Plug
-    {"call", 2},
-    # Escript
-    {"main", 1},
-    # Ecto
-    {"changeset", 1}, {"changeset", 2},
-    # Tool behaviour (Giulia-specific)
-    {"name", 0}, {"description", 0}, {"parameters", 0}
-  ])
+                        # GenServer
+                        {"init", 1},
+                        {"handle_call", 3},
+                        {"handle_cast", 2},
+                        {"handle_info", 2},
+                        {"handle_continue", 2},
+                        {"terminate", 2},
+                        {"code_change", 3},
+                        # Application
+                        {"start", 2},
+                        {"stop", 1},
+                        # Supervisor
+                        {"child_spec", 1},
+                        # Plug
+                        {"call", 2},
+                        # Escript
+                        {"main", 1},
+                        # Ecto
+                        {"changeset", 1},
+                        {"changeset", 2},
+                        # Tool behaviour (Giulia-specific)
+                        {"name", 0},
+                        {"description", 0},
+                        {"parameters", 0}
+                      ])
 
   # ============================================================================
   # Heatmap (Composite module health score)
@@ -84,7 +93,9 @@ defmodule Giulia.Knowledge.Metrics do
                   {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
                   _ -> 0
                 end
-              _ -> 0
+
+              _ ->
+                0
             end
           else
             0
@@ -116,16 +127,17 @@ defmodule Giulia.Knowledge.Metrics do
         score =
           trunc(
             norm_centrality * weights.centrality +
-            norm_complexity * weights.complexity +
-            norm_test * weights.test_coverage +
-            norm_coupling * weights.coupling
+              norm_complexity * weights.complexity +
+              norm_test * weights.test_coverage +
+              norm_coupling * weights.coupling
           )
 
-        zone = cond do
-          score >= zones_cfg.red_min -> "red"
-          score >= zones_cfg.yellow_min -> "yellow"
-          true -> "green"
-        end
+        zone =
+          cond do
+            score >= zones_cfg.red_min -> "red"
+            score >= zones_cfg.yellow_min -> "yellow"
+            true -> "green"
+          end
 
         %{
           module: mod,
@@ -144,15 +156,16 @@ defmodule Giulia.Knowledge.Metrics do
 
     zones = Enum.frequencies_by(modules, & &1.zone)
 
-    {:ok, %{
-      modules: modules,
-      count: length(modules),
-      zones: %{
-        red: Map.get(zones, "red", 0),
-        yellow: Map.get(zones, "yellow", 0),
-        green: Map.get(zones, "green", 0)
-      }
-    }}
+    {:ok,
+     %{
+       modules: modules,
+       count: length(modules),
+       zones: %{
+         red: Map.get(zones, "red", 0),
+         yellow: Map.get(zones, "yellow", 0),
+         green: Map.get(zones, "green", 0)
+       }
+     }}
   end
 
   # ============================================================================
@@ -193,6 +206,7 @@ defmodule Giulia.Knowledge.Metrics do
 
         # Complexity from AST
         path = Map.get(module_files, mod)
+
         complexity =
           if path do
             case File.read(path) do
@@ -201,7 +215,9 @@ defmodule Giulia.Knowledge.Metrics do
                   {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
                   _ -> 0
                 end
-              _ -> 0
+
+              _ ->
+                0
             end
           else
             0
@@ -210,11 +226,18 @@ defmodule Giulia.Knowledge.Metrics do
         # Function count + API surface
         {public, private} =
           case path do
-            nil -> {0, 0}
+            nil ->
+              {0, 0}
+
             _ ->
               all_asts_data = Map.get(Map.new(all_asts), path, %{})
               functions = all_asts_data[:functions] || []
-              pub = Enum.count(functions, fn f -> f.type in [:def, :defmacro, :defdelegate, :defguard] end)
+
+              pub =
+                Enum.count(functions, fn f ->
+                  f.type in [:def, :defmacro, :defdelegate, :defguard]
+                end)
+
               priv = Enum.count(functions, fn f -> f.type in [:defp, :defmacrop, :defguardp] end)
               {pub, priv}
           end
@@ -232,13 +255,13 @@ defmodule Giulia.Knowledge.Metrics do
         api_penalty = trunc(Float.round(api_ratio * total_funcs, 0))
 
         base =
-          (complexity * cr.weights.complexity) +
-          (fan_out * cr.weights.fan_out) +
-          (max_coupling * cr.weights.max_coupling) +
-          api_penalty +
-          (total_funcs * cr.weights.total_funcs)
+          complexity * cr.weights.complexity +
+            fan_out * cr.weights.fan_out +
+            max_coupling * cr.weights.max_coupling +
+            api_penalty +
+            total_funcs * cr.weights.total_funcs
 
-        multiplier = 1 + (centrality_val / cr.centrality_divisor)
+        multiplier = 1 + centrality_val / cr.centrality_divisor
 
         score = trunc(base * multiplier)
 
@@ -296,7 +319,9 @@ defmodule Giulia.Knowledge.Metrics do
                     {:ok, ast} -> Giulia.AST.Processor.estimate_complexity(ast)
                     _ -> 0
                   end
-                _ -> 0
+
+                _ ->
+                  0
               end
 
             # Get centrality from graph
@@ -311,18 +336,20 @@ defmodule Giulia.Knowledge.Metrics do
             gm = Giulia.Knowledge.ScoringConfig.god_modules()
 
             score =
-              (func_count * gm.weights.func_count) +
-                (complexity * gm.weights.complexity) +
-                (centrality_val * gm.weights.centrality)
+              func_count * gm.weights.func_count +
+                complexity * gm.weights.complexity +
+                centrality_val * gm.weights.centrality
 
-            [%{
-              module: module_name,
-              functions: func_count,
-              complexity: complexity,
-              centrality: centrality_val,
-              score: score,
-              file: path
-            }]
+            [
+              %{
+                module: module_name,
+                functions: func_count,
+                complexity: complexity,
+                centrality: centrality_val,
+                score: score,
+                file: path
+              }
+            ]
 
           _ ->
             []
@@ -364,10 +391,11 @@ defmodule Giulia.Knowledge.Metrics do
     ignored_modules =
       all_asts
       |> Enum.flat_map(fn {path, data} ->
-        source = case File.read(path) do
-          {:ok, content} -> content
-          _ -> ""
-        end
+        source =
+          case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
 
         if String.contains?(source, "@dead_code_ignore") do
           Enum.map(data[:modules] || [], fn mod -> mod.name end)
@@ -454,7 +482,10 @@ defmodule Giulia.Knowledge.Metrics do
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(reference_targets, "#{func.module}.#{func.name}/#{func.arity}") or
           MapSet.member?(called_functions, {func.module, to_string(func.name), func.arity}) or
-          MapSet.member?(called_functions, {func.module, :local, to_string(func.name), func.arity}) or
+          MapSet.member?(
+            called_functions,
+            {func.module, :local, to_string(func.name), func.arity}
+          ) or
           called_with_any_arity?(called_functions, func) or
           called_by_unresolved_alias?(called_functions, func)
       end)
@@ -470,7 +501,27 @@ defmodule Giulia.Knowledge.Metrics do
       end)
       |> Enum.sort_by(&{&1.module, &1.name, &1.arity})
 
-    {:ok, %{dead: dead, count: length(dead), total: length(all_functions)}}
+    classifier_signals =
+      Giulia.Knowledge.DeadCodeClassifier.compute_signals(project_path, all_asts)
+
+    classified =
+      Enum.map(dead, fn entry ->
+        Map.put(
+          entry,
+          :category,
+          Giulia.Knowledge.DeadCodeClassifier.classify(entry, classifier_signals)
+        )
+      end)
+
+    summary = Giulia.Knowledge.DeadCodeClassifier.summarize(classified)
+
+    {:ok,
+     %{
+       dead: classified,
+       count: length(classified),
+       total: length(all_functions),
+       summary: summary
+     }}
   end
 
   # ============================================================================
@@ -484,16 +535,18 @@ defmodule Giulia.Knowledge.Metrics do
     # Walk all source files and collect {caller_module, callee_module, function_name} tuples
     call_pairs =
       Enum.reduce(all_asts, [], fn {path, data}, acc ->
-        caller_module = case data[:modules] do
-          [%{name: name} | _] -> name
-          _ -> nil
-        end
+        caller_module =
+          case data[:modules] do
+            [%{name: name} | _] -> name
+            _ -> nil
+          end
 
         if caller_module do
-          source = case File.read(path) do
-            {:ok, content} -> content
-            _ -> ""
-          end
+          source =
+            case File.read(path) do
+              {:ok, content} -> content
+              _ -> ""
+            end
 
           case Sourceror.parse_string(source) do
             {:ok, ast} ->
@@ -503,6 +556,7 @@ defmodule Giulia.Knowledge.Metrics do
                   {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                   when is_atom(func_name) and is_list(args) ->
                     callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
+
                     if callee != caller_module do
                       {node, [{caller_module, callee, to_string(func_name)} | list]}
                     else
@@ -593,16 +647,18 @@ defmodule Giulia.Knowledge.Metrics do
   @spec collect_remote_calls(map()) :: [{String.t(), String.t(), String.t()}]
   def collect_remote_calls(all_asts) do
     Enum.reduce(all_asts, [], fn {path, data}, acc ->
-      caller_module = case data[:modules] do
-        [%{name: name} | _] -> name
-        _ -> nil
-      end
+      caller_module =
+        case data[:modules] do
+          [%{name: name} | _] -> name
+          _ -> nil
+        end
 
       if caller_module do
-        source = case File.read(path) do
-          {:ok, content} -> content
-          _ -> ""
-        end
+        source =
+          case File.read(path) do
+            {:ok, content} -> content
+            _ -> ""
+          end
 
         case Sourceror.parse_string(source) do
           {:ok, ast} ->
@@ -611,6 +667,7 @@ defmodule Giulia.Knowledge.Metrics do
                 {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                 when is_atom(func_name) and is_list(args) ->
                   callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
+
                   if callee != caller_module do
                     {node, [{caller_module, callee, to_string(func_name)} | list]}
                   else
@@ -684,16 +741,18 @@ defmodule Giulia.Knowledge.Metrics do
   defp build_coupling_map(all_asts) do
     call_pairs =
       Enum.reduce(all_asts, [], fn {path, data}, acc ->
-        caller = case data[:modules] do
-          [%{name: name} | _] -> name
-          _ -> nil
-        end
+        caller =
+          case data[:modules] do
+            [%{name: name} | _] -> name
+            _ -> nil
+          end
 
         if caller do
-          source = case File.read(path) do
-            {:ok, content} -> content
-            _ -> ""
-          end
+          source =
+            case File.read(path) do
+              {:ok, content} -> content
+              _ -> ""
+            end
 
           case Sourceror.parse_string(source) do
             {:ok, ast} ->
@@ -702,6 +761,7 @@ defmodule Giulia.Knowledge.Metrics do
                   {{:., _, [{:__aliases__, _, parts}, func_name]}, _meta, args} = node, list
                   when is_atom(func_name) and is_list(args) ->
                     callee = Enum.map_join(parts, ".", &safe_part_to_string/1)
+
                     if callee != caller do
                       {node, [{caller, callee} | list]}
                     else
@@ -713,7 +773,9 @@ defmodule Giulia.Knowledge.Metrics do
                 end)
 
               calls
-            _ -> acc
+
+            _ ->
+              acc
           end
         else
           acc
@@ -758,15 +820,60 @@ defmodule Giulia.Knowledge.Metrics do
   # resolve the first segment of `parts` through the alias map, then
   # prepend the resolved full name to the remaining segments.
   @local_call_exclusions [
-    :def, :defp, :defmodule, :defmacro, :defmacrop,
-    :defdelegate, :defguard, :defguardp,
-    :if, :unless, :case, :cond, :with, :for, :fn,
-    :quote, :unquote, :import, :alias, :use, :require,
-    :raise, :reraise, :throw, :try, :receive, :send,
-    :spawn, :spawn_link, :super, :__block__, :__aliases__,
-    :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
-    :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
-    :sigil_r, :sigil_s, :sigil_c, :sigil_w
+    :def,
+    :defp,
+    :defmodule,
+    :defmacro,
+    :defmacrop,
+    :defdelegate,
+    :defguard,
+    :defguardp,
+    :if,
+    :unless,
+    :case,
+    :cond,
+    :with,
+    :for,
+    :fn,
+    :quote,
+    :unquote,
+    :import,
+    :alias,
+    :use,
+    :require,
+    :raise,
+    :reraise,
+    :throw,
+    :try,
+    :receive,
+    :send,
+    :spawn,
+    :spawn_link,
+    :super,
+    :__block__,
+    :__aliases__,
+    :@,
+    :&,
+    :|>,
+    :=,
+    :==,
+    :!=,
+    :<,
+    :>,
+    :<=,
+    :>=,
+    :and,
+    :or,
+    :not,
+    :in,
+    :when,
+    :{},
+    :%{},
+    :<<>>,
+    :sigil_r,
+    :sigil_s,
+    :sigil_c,
+    :sigil_w
   ]
 
   @doc false
@@ -1063,10 +1170,11 @@ defmodule Giulia.Knowledge.Metrics do
   end
 
   defp scope_namespace_for_exemption({:scope, _meta, args}) when is_list(args) do
-    aliased = Enum.find(args, fn
-      {:__aliases__, _, _} -> true
-      _ -> false
-    end)
+    aliased =
+      Enum.find(args, fn
+        {:__aliases__, _, _} -> true
+        _ -> false
+      end)
 
     cond do
       aliased != nil ->
@@ -1109,8 +1217,7 @@ defmodule Giulia.Knowledge.Metrics do
   end
 
   defp route_call_for_exemption(
-         {verb, _meta,
-          [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
+         {verb, _meta, [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
          alias_map,
          scope_ns
        )
@@ -1175,11 +1282,13 @@ defmodule Giulia.Knowledge.Metrics do
 
       Keyword.has_key?(opts, :except) ->
         except = Keyword.get(opts, :except, [])
-        if is_list(except), do: @resources_default_actions -- except, else: @resources_default_actions
+
+        if is_list(except),
+          do: @resources_default_actions -- except,
+          else: @resources_default_actions
 
       true ->
         @resources_default_actions
     end
   end
-
 end
