@@ -1,5 +1,18 @@
 {
+  "$description": "Registered enrichment sources. Each entry binds a tool atom to its parser module and carries tool-specific tunables. severity_map keys are tool-emitted categories/checks; values are info|warning|error. default_severity applies when severity_map has no entry. Adding a tool: write the parser, append an entry here, restart the daemon.",
   "sources": [
-    { "tool": "credo", "module": "Giulia.Enrichment.Sources.Credo" }
+    {
+      "tool": "credo",
+      "module": "Giulia.Enrichment.Sources.Credo",
+      "$severity_note": "Credo's 'warning' category is misleadingly named — these are real bugs (IEx.pry left in code, String.to_atom on user input, RaiseInsideRescue), not cautions. Map to error.",
+      "severity_map": {
+        "warning": "error",
+        "design": "warning",
+        "refactor": "warning",
+        "readability": "info",
+        "consistency": "info"
+      },
+      "default_severity": "info"
+    }
   ]
 }

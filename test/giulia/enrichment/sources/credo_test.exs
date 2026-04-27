@@ -2,12 +2,17 @@ defmodule Giulia.Enrichment.Sources.CredoTest do
   use ExUnit.Case, async: false
 
   alias Giulia.Context.Store
-  alias Giulia.Enrichment.Sources.Credo
+  alias Giulia.Enrichment.{Registry, Sources}
+  alias Sources.Credo
 
   @project "/tmp/giulia_credo_parser_test"
 
   setup do
     File.mkdir_p!(@project)
+    # Severity mapping now lives in priv/config/enrichment_sources.json;
+    # reload so the registry reflects the on-disk config exactly even
+    # if a prior test mutated :persistent_term.
+    Registry.reload()
 
     on_exit(fn ->
       Store.clear_asts(@project)

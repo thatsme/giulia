@@ -11,21 +11,13 @@ defmodule Giulia.Enrichment.Sources.Credo do
   @behaviour Giulia.Enrichment.Source
 
   alias Giulia.Context.Store.Query
+  alias Giulia.Enrichment.Registry
 
-  # ============================================================================
-  # Severity mapping
-  # ============================================================================
-  #
-  # Credo's "warning" category is misleadingly named — these are bugs,
-  # not cautions. Examples: IEx.pry/0 left in code, String.to_atom/1
-  # on user input, RaiseInsideRescue. Map to :error.
-  @category_to_severity %{
-    "warning" => :error,
-    "design" => :warning,
-    "refactor" => :warning,
-    "readability" => :info,
-    "consistency" => :info
-  }
+  # Severity mapping lives in `priv/config/enrichment_sources.json`
+  # under `severity_map` for the `credo` source. The Credo "warning"
+  # category — misleadingly named, these are real bugs (IEx.pry left
+  # in code, String.to_atom/1 on user input, RaiseInsideRescue) —
+  # is mapped to `:error` there. Tunable without recompile.
 
   @impl true
   def tool_name, do: :credo
@@ -109,7 +101,7 @@ defmodule Giulia.Enrichment.Sources.Credo do
   # ============================================================================
 
   defp issue_to_finding(issue, function_index) do
-    severity = severity_for(issue["category"])
+    severity = Registry.severity_for(:credo, issue["category"])
     base = base_finding(issue, severity)
 
     case parse_scope(issue["scope"]) do
@@ -138,12 +130,6 @@ defmodule Giulia.Enrichment.Sources.Credo do
     }
     |> drop_nil_keys([:line, :column, :column_end])
   end
-
-  defp severity_for(category) when is_binary(category) do
-    Map.get(@category_to_severity, category, :info)
-  end
-
-  defp severity_for(_), do: :info
 
   # ============================================================================
   # Scope parsing
