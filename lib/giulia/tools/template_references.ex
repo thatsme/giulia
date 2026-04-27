@@ -62,12 +62,21 @@ defmodule Giulia.Tools.TemplateReferences do
   @doc """
   Walk the project's `.heex` / `.eex` files and return the reference
   set. Empty result for projects without templates.
+
+  Scoped to project source roots returned by
+  `Giulia.Context.ScanConfig.absolute_roots/1` (typically `lib/`,
+  `test/support/`, plus whatever `mix.exs` adds via `elixirc_paths/1`).
+  This excludes `deps/`, `_build/`, and other dirs that contain
+  third-party templates whose function references would falsely
+  exempt project functions through coincidental name overlap.
   """
   @spec scan(String.t()) :: result()
   def scan(project_path) when is_binary(project_path) do
     files =
-      Path.wildcard(Path.join([project_path, "**", "*.heex"])) ++
-        Path.wildcard(Path.join([project_path, "**", "*.eex"]))
+      project_path
+      |> Giulia.Context.ScanConfig.absolute_roots()
+      |> Enum.flat_map(&template_files_under/1)
+      |> Enum.uniq()
 
     Enum.reduce(files, %{qualified: MapSet.new(), local_per_file: %{}}, fn path, acc ->
       case File.read(path) do
@@ -75,6 +84,21 @@ defmodule Giulia.Tools.TemplateReferences do
         _ -> acc
       end
     end)
+  end
+
+  defp template_files_under(root) do
+    cond do
+      File.dir?(root) ->
+        Path.wildcard(Path.join([root, "**", "*.heex"])) ++
+          Path.wildcard(Path.join([root, "**", "*.eex"]))
+
+      File.regular?(root) and
+          (String.ends_with?(root, ".heex") or String.ends_with?(root, ".eex")) ->
+        [root]
+
+      true ->
+        []
+    end
   end
 
   defp ingest_file(acc, path, source) do

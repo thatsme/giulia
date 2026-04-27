@@ -4,7 +4,47 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
-## [0.3.1 – Build 157] — 2026-04-27 — Slice-a: HEEx/EEx template scanner
+## [0.3.2 – Build 158] — 2026-04-27 — Slice-a refinements: alias resolution + scope fix
+
+Patch release. Two fixes that together produce the cleanest dead-code
+state across canonical codebases since the project began.
+
+### Fixed — TestReferences alias resolution (roadmap item 2h)
+
+`Giulia.Tools.TestReferences.referenced_functions/1` now resolves
+`alias` directives before recording MFA strings. Previously, a test
+using `alias AlexClawTest.Skills.EchoSkill` followed by
+`EchoSkill.config_help()` recorded `"EchoSkill.config_help/0"` — a
+short form the dead-code classifier's `:test_only` predicate could
+never match against the real `"AlexClawTest.Skills.EchoSkill.config_help/0"`.
+Mirror's the alias-resolution pattern from
+`Giulia.Knowledge.Metrics.collect_all_calls/1` (single-segment +
+multi-alias `alias Mod.{A, B}` + `alias Mod, as: Other`; Sourceror
+keyword-key wrapping handled).
+
+### Fixed — TemplateReferences scoped to project source roots
+
+`Giulia.Tools.TemplateReferences.scan/1` now scopes its `*.heex` /
+`*.eex` walk to the project's source roots (returned by
+`Giulia.Context.ScanConfig.absolute_roots/1` — typically `lib/` plus
+`test/support/` plus whatever `mix.exs` `elixirc_paths/1` adds).
+Previously it walked everything under `project_path/**`, including
+`deps/` (third-party templates from `phoenix_live_dashboard`,
+`phoenix` codegen, etc.) and `_build/`, whose qualified function
+references coincidentally over-exempted local modules.
+
+### Empirical impact on canonical codebases
+
+| Codebase | v0.3.1 dead | v0.3.2 dead | Notes |
+|---|---|---|---|
+| AlexClaw | 6 | **0** | All 6 `EchoSkill.*` test-only entries now correctly resolved |
+| Plausible | 10 | **3** | 7 alias-blind entries resolved; remaining 3 = canonical residual (2 true positives + 1 SiteEncrypt accept-as-residual) |
+
+This is the cleanest residual state we've measured. The 3 remaining
+on Plausible are documented in the roadmap as known-and-accepted —
+not bugs.
+
+
 
 Patch release that completes the deferred slice-a from v0.3.0. The
 `:template_pending` category was a placeholder for "we know this might

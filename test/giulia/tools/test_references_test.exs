@@ -340,6 +340,96 @@ defmodule Giulia.Tools.TestReferencesTest do
       )
     end
 
+    test "resolves head alias before recording the MFA (item 2h)" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            alias AlexClawTest.Skills.EchoSkill
+
+            test "calls aliased module" do
+              EchoSkill.config_help()
+              EchoSkill.prompt_help(:foo, :bar)
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "AlexClawTest.Skills.EchoSkill.config_help/0" in refs
+          assert "AlexClawTest.Skills.EchoSkill.prompt_help/2" in refs
+          # The short form must NOT appear — that was the bug 2h fixed.
+          refute "EchoSkill.config_help/0" in refs
+        end
+      )
+    end
+
+    test "resolves multi-alias `alias Mod.{A, B}` head aliases" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            alias Plausible.TestUtils.{Auth, Sites}
+
+            test "calls" do
+              Auth.create_user()
+              Sites.add_site(:opts)
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "Plausible.TestUtils.Auth.create_user/0" in refs
+          assert "Plausible.TestUtils.Sites.add_site/1" in refs
+        end
+      )
+    end
+
+    test "respects `alias Mod, as: Other` rename" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            alias AlexClawTest.Skills.EchoSkill, as: Skill
+
+            test "calls renamed alias" do
+              Skill.config_help()
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "AlexClawTest.Skills.EchoSkill.config_help/0" in refs
+        end
+      )
+    end
+
+    test "leaves already-fully-qualified calls unchanged" do
+      with_project(
+        %{
+          "demo_test.exs" => """
+          defmodule DemoTest do
+            use ExUnit.Case
+            alias AlexClawTest.Skills.EchoSkill
+
+            test "fully-qualified call shouldn't be re-expanded" do
+              Plausible.TestUtils.tmp_dir()
+            end
+          end
+          """
+        },
+        fn dir ->
+          refs = TestReferences.referenced_functions(dir)
+          assert "Plausible.TestUtils.tmp_dir/0" in refs
+        end
+      )
+    end
+
     test "ignores bare alias / use / require nodes (those are module-only signals)" do
       with_project(
         %{
