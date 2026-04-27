@@ -43,8 +43,19 @@ defmodule Giulia.Context.Indexer do
     .nuxt
   )
 
-  @type project_status :: %{status: :idle | :scanning | :empty, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
-  @type indexer_status :: %{project_path: String.t() | nil, status: :idle | :scanning | :empty, last_scan: DateTime.t() | nil, file_count: non_neg_integer()}
+  @type scan_status :: :idle | :scanning | :building | :empty
+
+  @type project_status :: %{
+          status: scan_status(),
+          last_scan: DateTime.t() | nil,
+          file_count: non_neg_integer()
+        }
+  @type indexer_status :: %{
+          project_path: String.t() | nil,
+          status: scan_status(),
+          last_scan: DateTime.t() | nil,
+          file_count: non_neg_integer()
+        }
 
   # File patterns to ignore
   @ignore_patterns [
@@ -128,7 +139,11 @@ defmodule Giulia.Context.Indexer do
   end
 
   defp put_project_status(state, project_path, project_state) do
-    %{state | projects: Map.put(state.projects, project_path, project_state), last_project: project_path}
+    %{
+      state
+      | projects: Map.put(state.projects, project_path, project_state),
+        last_project: project_path
+    }
   end
 
   # Project root markers — at least one must exist for a valid scan target
@@ -145,7 +160,11 @@ defmodule Giulia.Context.Indexer do
       )
 
       new_state =
-        put_project_status(state, project_path, %{status: :scanning, last_scan: nil, file_count: 0})
+        put_project_status(state, project_path, %{
+          status: :scanning,
+          last_scan: nil,
+          file_count: 0
+        })
 
       cond do
         force? ->
@@ -230,6 +249,7 @@ defmodule Giulia.Context.Indexer do
   @impl true
   def handle_cast({:scan_file, file_path}, state) do
     project_path = state.last_project || File.cwd!()
+
     Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
       case process_file(file_path) do
         {:ok, ast_data} ->
@@ -246,45 +266,65 @@ defmodule Giulia.Context.Indexer do
 
   @impl true
   def handle_cast({:scan_complete, project_path}, state) do
+    # The scan task finished extracting ASTs — but the post-scan
+    # pipeline (`mix compile` + Knowledge.Store.rebuild + embedding
+    # generation) is heavy and historically ran inside this callback,
+    # blocking the GenServer mailbox for tens of seconds. During that
+    # window any `Indexer.status/1` GenServer.call would queue and
+    # hit the 5s default timeout, the caller would crash, and docker
+    # healthcheck eventually restarted the container.
+    #
+    # Fix: surface the post-scan work as `:building` immediately, hand
+    # the heavy work off to a supervised Task, and have it cast back
+    # `:scan_complete_done` when done. Status queries always return
+    # instantly from cached state.
     stats = Giulia.Context.Store.stats(project_path)
-
-    # A successful scan that indexed zero files is almost certainly a
-    # bug, not a valid state — wrong path, over-aggressive ignore
-    # rules, or a directory with only dependencies. Surface it as
-    # `:empty` so clients can distinguish "scan complete, nothing to
-    # do" from "scan complete, 0 files found — someone should look."
-    status = if stats.ast_files == 0, do: :empty, else: :idle
-
-    project_state = %{
-      status: status,
-      last_scan: DateTime.utc_now(),
-      file_count: stats.ast_files
-    }
-
-    new_state = put_project_status(state, project_path, project_state)
 
     if stats.ast_files == 0 do
       Logger.warning(
         "[Indexer] Scan of #{project_path} completed with 0 indexed files — " <>
           "project appears empty or all files were filtered. Status set to :empty."
       )
+
+      project_state = %{
+        status: :empty,
+        last_scan: DateTime.utc_now(),
+        file_count: 0
+      }
+
+      {:noreply, put_project_status(state, project_path, project_state)}
     else
-      Logger.info("Scan complete for #{project_path}. Indexed #{stats.ast_files} files.")
+      Logger.info(
+        "Scan complete for #{project_path}. Indexed #{stats.ast_files} files. " <>
+          "Building graph..."
+      )
+
+      project_state = %{
+        status: :building,
+        last_scan: DateTime.utc_now(),
+        file_count: stats.ast_files
+      }
+
+      new_state = put_project_status(state, project_path, project_state)
+
+      Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
+        run_post_scan_pipeline(project_path)
+        GenServer.cast(__MODULE__, {:scan_complete_done, project_path})
+      end)
+
+      {:noreply, new_state}
     end
+  end
 
-    # Debug: Inspect what's actually in ETS
-    Giulia.Context.Store.debug_inspect(project_path)
+  # Final transition: post-scan pipeline finished, project is ready.
+  @impl true
+  def handle_cast({:scan_complete_done, project_path}, state) do
+    project_state =
+      get_project_status(state, project_path)
+      |> Map.put(:status, :idle)
 
-    # Ensure project is compiled so xref has BEAM files for graph building
-    ensure_compiled(project_path)
-
-    # Rebuild knowledge graph from fresh AST data
-    Giulia.Knowledge.Store.rebuild(project_path)
-
-    # Trigger semantic embedding (async, no-op if model unavailable)
-    Giulia.Intelligence.SemanticIndex.embed_project(project_path)
-
-    {:noreply, new_state}
+    Logger.info("Build complete for #{project_path}. Project ready.")
+    {:noreply, put_project_status(state, project_path, project_state)}
   end
 
   # Backward compat: old :scan_complete without project_path
@@ -296,6 +336,29 @@ defmodule Giulia.Context.Indexer do
       Logger.warning("scan_complete received with no project context — ignoring")
       {:noreply, state}
     end
+  end
+
+  # Heavy follow-up work run inside Task.Supervisor — must NOT block
+  # the Indexer GenServer. ensure_compiled may run `mix compile`
+  # (seconds-to-tens-of-seconds), Knowledge.Store.rebuild walks every
+  # file's AST building the property graph, embed_project spawns
+  # async embedding generation. Errors here are logged but never
+  # crash the Indexer.
+  @spec run_post_scan_pipeline(String.t()) :: :ok
+  defp run_post_scan_pipeline(project_path) do
+    Giulia.Context.Store.debug_inspect(project_path)
+    ensure_compiled(project_path)
+    Giulia.Knowledge.Store.rebuild(project_path)
+    Giulia.Intelligence.SemanticIndex.embed_project(project_path)
+    :ok
+  rescue
+    error ->
+      Logger.error(
+        "[Indexer] Post-scan pipeline failed for #{project_path}: " <>
+          "#{Exception.message(error)}"
+      )
+
+      :ok
   end
 
   @impl true
@@ -370,6 +433,7 @@ defmodule Giulia.Context.Indexer do
         [first_file] ->
           Logger.info("=== DEBUG FIRST FILE ===")
           Giulia.AST.Processor.debug_file(first_file)
+
         _ ->
           Logger.info("No files to debug")
       end
@@ -461,9 +525,10 @@ defmodule Giulia.Context.Indexer do
       end)
 
     # Check if file matches any ignored pattern
-    pattern_ignored = Enum.any?(@ignore_patterns, fn pattern ->
-      Regex.match?(pattern, file_path)
-    end)
+    pattern_ignored =
+      Enum.any?(@ignore_patterns, fn pattern ->
+        Regex.match?(pattern, file_path)
+      end)
 
     dir_ignored or pattern_ignored
   end
@@ -491,7 +556,10 @@ defmodule Giulia.Context.Indexer do
         {:ok, ast_data} ->
           modules = ast_data[:modules] || []
           functions = ast_data[:functions] || []
-          Logger.info("EXTRACT: #{Path.basename(file_path)} -> #{length(modules)} modules, #{length(functions)} functions")
+
+          Logger.info(
+            "EXTRACT: #{Path.basename(file_path)} -> #{length(modules)} modules, #{length(functions)} functions"
+          )
 
         {:error, reason} ->
           Logger.warning("EXTRACT FAILED: #{Path.basename(file_path)} -> #{inspect(reason)}")
@@ -554,10 +622,19 @@ defmodule Giulia.Context.Indexer do
         if exit_code == 0 do
           app_name = infer_app_name(project_path)
           ebin = Path.join([build_path, "lib", app_name, "ebin"])
-          beam_count = if File.dir?(ebin), do: ebin |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".beam")), else: 0
-          Logger.info("Compiled #{project_path} successfully (#{beam_count} BEAM files in #{ebin})")
+
+          beam_count =
+            if File.dir?(ebin),
+              do: ebin |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".beam")),
+              else: 0
+
+          Logger.info(
+            "Compiled #{project_path} successfully (#{beam_count} BEAM files in #{ebin})"
+          )
         else
-          Logger.warning("Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}")
+          Logger.warning(
+            "Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}"
+          )
         end
       rescue
         e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
@@ -586,7 +663,8 @@ defmodule Giulia.Context.Indexer do
           _ -> Path.basename(project_path)
         end
 
-      _ -> Path.basename(project_path)
+      _ ->
+        Path.basename(project_path)
     end
   end
 

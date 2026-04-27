@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 158 · v0.3.2 · 2026-04-27
+> **Document version**: Build 159 · v0.3.3 · 2026-04-27
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against

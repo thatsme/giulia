@@ -125,6 +125,10 @@ defmodule Giulia.Daemon.Helpers do
       %{status: :scanning} ->
         {:pending, "scan in progress — poll GET /api/index/status?path=..."}
 
+      %{status: :building} ->
+        {:pending,
+         "post-scan build in progress (graph + embeddings) — poll GET /api/index/status?path=..."}
+
       %{status: :empty} ->
         {:not_indexed, "project was scanned but contained zero indexable files"}
 

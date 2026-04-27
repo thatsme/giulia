@@ -4,7 +4,56 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
-## [0.3.2 – Build 158] — 2026-04-27 — Slice-a refinements: alias resolution + scope fix
+## [0.3.3 – Build 159] — 2026-04-27 — Indexer post-scan pipeline non-blocking; new `:building` state
+
+Reliability fix. `Indexer.handle_cast({:scan_complete, ...})` previously
+ran the post-scan pipeline (`mix compile` + `Knowledge.Store.rebuild` +
+`SemanticIndex.embed_project`) inside the GenServer process. While that
+work ran (10-30+ seconds on a Phoenix app or on Giulia's self-scan),
+the Indexer mailbox was blocked. Any `Indexer.status/1` `GenServer.call`
+queued behind it and hit the default 5s timeout — caller crashed,
+Plug router emitted 500, eventually docker healthcheck restarted the
+container.
+
+Surfaced specifically when scanning Giulia itself (170 files of meta-
+AST work — heavier than typical project code; previous Plausible /
+AlexClaw scans completed within 5s and never tripped the timeout).
+
+### Fix
+
+`handle_cast({:scan_complete, project_path}, ...)` now:
+1. Computes `stats` (fast, in-process)
+2. Sets the project state to `:building` (new status atom)
+3. Spawns a `Task.Supervisor.start_child(Giulia.TaskSupervisor, ...)` running
+   `run_post_scan_pipeline/1` — the heavy compile + rebuild + embed work
+4. Returns `{:noreply, new_state}` immediately
+
+The task casts back `{:scan_complete_done, project_path}` when the
+pipeline finishes; that callback flips the status to `:idle`. Errors
+inside `run_post_scan_pipeline/1` are caught with `rescue` and logged
+but never crash the Indexer.
+
+The status check helper (`Giulia.Daemon.Helpers.scan_state/1`) now
+recognizes `:building` as a `:pending` state — knowledge endpoints
+return 409 Conflict with a hint pointing at status polling, same UX
+as `:scanning`.
+
+### Verified
+
+- Concurrent stress: 5 parallel `Indexer.status/1` polls during an
+  active force-rescan of Giulia all return instantly with
+  `{"status":"building","file_count":170}`. Previously these queued
+  in the mailbox and timed out at 5s.
+- Container survives the stress test (no docker restart).
+- 1063 unit tests + 13 properties pass; 0 regressions.
+
+### Type spec change
+
+New atom `:building` added to `Giulia.Context.Indexer.scan_status` type
+union. Consumers reading the status field via the typed API should
+handle this state. The `scan_state/1` helper already does.
+
+
 
 Patch release. Two fixes that together produce the cleanest dead-code
 state across canonical codebases since the project began.
