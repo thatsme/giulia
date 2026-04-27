@@ -98,7 +98,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | Logic flow (function-level) | `GET /api/knowledge/logic_flow?path=P&from=MFA&to=MFA` | Dijkstra path between two function MFA vertices (e.g. `Mod.func/2`) — traces data flow through function-call edges |
 | Graph overview | `GET /api/knowledge/stats?path=P` | Vertices, edges, components, top hubs |
 | Behaviour integrity | `GET /api/knowledge/integrity?path=P` | Checks all behaviour-implementer contracts — enriched fractures with `missing` (real), `injected` (MacroMap), `optional_omitted` (legal), `heuristic_injected` (ghost-detected). Only `missing` triggers fracture status |
-| Dead code | `GET /api/knowledge/dead_code?path=P` | Functions defined but never called anywhere — excludes OTP callbacks, behaviour implementations, framework entry points |
+| Dead code | `GET /api/knowledge/dead_code?path=P` | Functions defined but never called — excludes OTP callbacks, behaviour implementations, framework entry points. Each entry carries `:category` (`genuine`, `test_only`, `library_public_api`, `template_pending`, `uncategorized`) and the response gains a top-level `:summary` with `:by_category`, `:irreducible`, `:actionable` counts. When external-tool enrichments are ingested, entries also carry `:enrichments` per tool with the same caps as `pre_impact_check` |
 | Circular dependencies | `GET /api/knowledge/cycles?path=P` | Strongly connected components in the module dependency graph — modules that depend on each other in a cycle |
 | God modules | `GET /api/knowledge/god_modules?path=P` | Top 20 modules ranked by weighted score: function count + complexity + centrality — refactoring targets |
 | Orphan specs | `GET /api/knowledge/orphan_specs?path=P` | @spec declarations where no matching function definition exists (name/arity mismatch) |
@@ -107,7 +107,7 @@ Use these BEFORE modifying any shared module. They reveal the blast radius.
 | API surface | `GET /api/knowledge/api_surface?path=P` | Public vs private function ratio per module — high ratio = poor encapsulation |
 | Change risk | `GET /api/knowledge/change_risk?path=P` | Composite score: centrality + complexity + fan-in/out + coupling + API surface — "refactor this first" prioritized list |
 | Style oracle | `GET /api/knowledge/style_oracle?path=P&q=Q&top_k=N` | Exemplar functions matching concept Q, quality-gated (both @spec and @doc required) — includes source code, spec, doc |
-| Pre-impact check | `POST /api/knowledge/pre_impact_check` | Risk analysis for rename/remove operations — callers, risk score, phased migration plan, hub warnings. Body: `{"path":"P","module":"M","action":"rename_function\|remove_function\|rename_module","target":"func/arity","new_name":"new"}` |
+| Pre-impact check | `POST /api/knowledge/pre_impact_check` | Risk analysis for rename/remove operations — callers, risk score, phased migration plan, hub warnings. Body: `{"path":"P","module":"M","action":"rename_function\|remove_function\|rename_module","target":"func/arity","new_name":"new"}`. When external-tool enrichments are ingested, each `affected_callers[*]` entry also carries `:enrichments` (per-tool findings, capped: errors uncapped, top-3 warnings/caller, drop info, per-response cap of 30 dedup'd by `{check, severity}`) |
 | Heatmap | `GET /api/knowledge/heatmap?path=P` | All modules scored 0-100 by composite health (centrality 30%, complexity 25%, test coverage 25%, coupling 20%) — zones: red >=60, yellow >=30, green <30 |
 | Unprotected hubs | `GET /api/knowledge/unprotected_hubs?path=P&hub_threshold=3&spec_threshold=0.5` | Hub modules (in-degree >= threshold) with low spec/doc coverage — severity: red (<50% specs), yellow (<80% specs). Merges centrality with type safety gaps |
 | Struct lifecycle | `GET /api/knowledge/struct_lifecycle?path=P&struct=Module.Name` | Data flow tracing per struct: which modules create/consume it, logic leaks (non-defining modules that use the struct). Optional `struct` filter |
@@ -123,6 +123,7 @@ Giulia's intelligence layer runs **before** the LLM. It combines semantic search
 |--------|----------|---------|
 | **Preflight Contract Checklist** | `POST /api/briefing/preflight` | Structured JSON: 6 contract sections per module (behaviour, type, data, macro, topology, semantic integrity) + `suggested_tools` (top 5 API skills by semantic similarity to prompt) — **the single best call for planning** |
 | Surgical Briefing | `GET /api/intelligence/briefing?path=P&prompt=Q` | Auto-generated context: relevant modules with hub scores, dependents, key functions — or `"skipped"` if below relevance threshold |
+| **External tool findings** | `GET /api/intelligence/enrichments?path=P&mfa=Mod.fn/N` (or `&module=Mod`) | Uncapped drill-down for findings ingested from Credo, Dialyzer, etc. Returns `{findings: %{tool => [findings]}, target}`. Distinguishes `%{}` (project never enriched) from `%{credo: []}` (ingested, no findings on this target). Use this when `pre_impact_check` shows a capped enrichment summary and you need the full set for one MFA |
 | Report generation rules | `GET /api/intelligence/report_rules` | Returns the canonical REPORT_RULES.md content — the mandatory procedure for generating analysis reports (section order, scoring formulas, idiom rules) |
 
 **Preflight Contract Checklist** (`POST /api/briefing/preflight`) is the primary planning endpoint. Body:
@@ -311,6 +312,7 @@ Staging buffer for atomic multi-file changes with compile-check gates.
 |--------|--------|
 | Re-index after file changes | `POST /api/index/scan` with `{"path":"P"}` — cache-aware: only re-scans changed files. Returns 422 if the path is missing, not a directory, or lacks a project marker (mix.exs, GIULIA.md, package.json, Cargo.toml, go.mod). |
 | Verify cache integrity | `POST /api/index/verify` with `{"path":"P"}` — Merkle tree recomputation |
+| **Ingest external tool findings** | `POST /api/index/enrichment` with `{"tool":"credo\|dialyzer\|...","project":"P","payload_path":"/path/to/output"}`. Replace-on-ingest: prior findings for `{tool, project}` are deleted before the new set is written. `payload_path` must fall under `enrichment_payload_roots` allowlist (`/tmp`, `/var/tmp`, project-relative `tmp`/`_build`); 422 otherwise. Returns `{tool, ingested, targets, replaced}`. Findings persist across source rescans (decoupled from extractor lifecycle) and surface inline in `pre_impact_check` and `dead_code` |
 | Compact cache | `POST /api/index/compact` with `{"path":"P"}` — reclaim CubDB disk space |
 | Check behaviour contracts | `GET /api/knowledge/integrity?path=P` |
 | Debug last inference | `GET /api/agent/last_trace` |
