@@ -319,6 +319,90 @@ defmodule Giulia.Knowledge.Store.Reader do
   end
 
   @doc """
+  Module-level edges with function endpoints rolled up to their parent
+  module. The plain `all_dependencies/1` only surfaces edges whose
+  endpoints are both module vertices, which silently drops the synthetic
+  edges from Builder Passes 7-11 (protocol_impl, behaviour_impl,
+  router_dispatch, mfa_ref, capture_ref, apply_ref, use_import_ref) —
+  those go module→function or function→function, so module-level
+  visualizations show defimpls of project protocols, controller actions,
+  MFA-tuple-dispatched modules, etc. as isolated nodes.
+
+  This roll-up walks every edge in the graph and projects each endpoint
+  to its containing module: module vertices pass through; function
+  vertices map to the module that owns them. Self-loops (introduced by
+  e.g. a defimpl whose body recurses through its own protocol) are
+  dropped. The result is deduped on `{source, target, normalized_label}`.
+  """
+  @spec all_dependencies_with_rollup(String.t()) ::
+          {:ok, [{String.t(), String.t(), atom()}]}
+  def all_dependencies_with_rollup(project_path) do
+    graph = get_graph(project_path)
+
+    module_set =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :module in Graph.vertex_labels(graph, v) end)
+      |> MapSet.new()
+
+    function_to_module =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(fn v -> :function in Graph.vertex_labels(graph, v) end)
+      |> Enum.reduce(%{}, fn fn_vertex, acc ->
+        case parent_module(fn_vertex, module_set) do
+          nil -> acc
+          mod -> Map.put(acc, fn_vertex, mod)
+        end
+      end)
+
+    rolled =
+      graph
+      |> Graph.edges()
+      |> Enum.flat_map(fn edge ->
+        with {:ok, src} <- roll_up(edge.v1, module_set, function_to_module),
+             {:ok, dst} <- roll_up(edge.v2, module_set, function_to_module),
+             true <- src != dst do
+          [{src, dst, normalize_label(edge.label)}]
+        else
+          _ -> []
+        end
+      end)
+      |> Enum.uniq()
+
+    {:ok, rolled}
+  end
+
+  defp roll_up(vertex, module_set, function_to_module) do
+    cond do
+      MapSet.member?(module_set, vertex) -> {:ok, vertex}
+      Map.has_key?(function_to_module, vertex) -> {:ok, function_to_module[vertex]}
+      true -> :skip
+    end
+  end
+
+  defp parent_module(fn_vertex, module_set) do
+    # Function vertex IDs have shape "Mod.Sub.fn_name/N" (or with ?/!).
+    # Strip the trailing "/N" then drop the last dot-segment (the local
+    # function name) — what remains is the containing module.
+    case String.split(fn_vertex, "/") do
+      [name_part, _arity] ->
+        case String.split(name_part, ".") do
+          [_single] ->
+            # Bare local name with no module prefix — can't roll up.
+            nil
+
+          parts ->
+            mod = parts |> Enum.drop(-1) |> Enum.join(".")
+            if MapSet.member?(module_set, mod), do: mod, else: nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
   All function-level :calls edges in the graph as MFA→MFA tuples.
 
   Returns `{:ok, [{"Foo.bar/2", "Baz.qux/1", :calls}, ...]}`.

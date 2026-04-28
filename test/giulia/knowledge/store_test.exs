@@ -349,4 +349,107 @@ defmodule Giulia.Knowledge.StoreTest do
       ContextStore.clear_asts(project_b)
     end
   end
+
+  describe "all_dependencies_with_rollup/1" do
+    # The plain `all_dependencies/1` filters to module↔module edges, which
+    # silently hides Pass 7-11's synthesized edges (protocol_impl,
+    # behaviour_impl, router_dispatch, mfa_ref, etc.) — those go
+    # module→function or function→function. The rollup variant exists so
+    # /api/knowledge/topology can render a faithful module graph instead
+    # of a graph where defimpls and controller actions look isolated.
+
+    test "rolls a module→function edge up to a module→module edge" do
+      project = "/test/rollup_module_to_function"
+
+      # Seed a graph that mirrors Pass 7's shape: protocol module has a
+      # synthesized edge to a function vertex inside an impl module.
+      g =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("MyProto", :module)
+        |> Graph.add_vertex("MyProto.For.User", :module)
+        |> Graph.add_vertex("MyProto.For.User.encode/1", :function)
+        |> Graph.add_edge("MyProto", "MyProto.For.User.encode/1",
+          label: {:calls, :protocol_impl}
+        )
+
+      :ok = Store.restore_graph(project, g)
+
+      {:ok, edges} = Store.all_dependencies_with_rollup(project)
+
+      assert {"MyProto", "MyProto.For.User", :calls} in edges,
+             "function endpoint must roll up to its parent module so the " <>
+               "topology view sees the protocol→impl connection"
+
+      # Plain all_dependencies should NOT contain it — the function vertex
+      # disqualifies the edge from the module-only filter.
+      {:ok, plain} = Store.all_dependencies(project)
+      refute {"MyProto", "MyProto.For.User", :calls} in plain
+    end
+
+    test "drops self-loops introduced by recursive impl bodies" do
+      project = "/test/rollup_self_loop"
+
+      # An impl that recurses into its own protocol via its own function
+      # produces a function→function edge whose endpoints both roll up
+      # to the same module. Without the self-loop guard these would
+      # render as module-pointing-at-itself edges.
+      g =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("MyImpl", :module)
+        |> Graph.add_vertex("MyImpl.encode/1", :function)
+        |> Graph.add_vertex("MyImpl.helper/1", :function)
+        |> Graph.add_edge("MyImpl.encode/1", "MyImpl.helper/1",
+          label: {:calls, :direct}
+        )
+
+      :ok = Store.restore_graph(project, g)
+
+      {:ok, edges} = Store.all_dependencies_with_rollup(project)
+
+      refute Enum.any?(edges, fn {s, t, _} -> s == "MyImpl" and t == "MyImpl" end),
+             "self-loops produced by intra-module rollup must be dropped"
+    end
+
+    test "skips edges whose function endpoints can't be attributed to any module" do
+      project = "/test/rollup_orphan_function"
+
+      # A function vertex whose parent module isn't in the graph (could
+      # happen for a stale edge or a function vertex from outside the
+      # project's module set) must not produce a phantom module edge.
+      g =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("KnownMod", :module)
+        |> Graph.add_vertex("KnownMod.fn/0", :function)
+        |> Graph.add_vertex("UnknownMod.other/0", :function)
+        |> Graph.add_edge("KnownMod.fn/0", "UnknownMod.other/0",
+          label: {:calls, :direct}
+        )
+
+      :ok = Store.restore_graph(project, g)
+
+      {:ok, edges} = Store.all_dependencies_with_rollup(project)
+
+      refute Enum.any?(edges, fn {_s, t, _} -> t == "UnknownMod" end),
+             "function endpoints that don't map to a known project module " <>
+               "must be skipped, not invented as new module vertices"
+    end
+
+    test "preserves direct module↔module edges from the plain query" do
+      project = "/test/rollup_passthrough"
+
+      g =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("ModA", :module)
+        |> Graph.add_vertex("ModB", :module)
+        |> Graph.add_edge("ModA", "ModB", label: :depends_on)
+
+      :ok = Store.restore_graph(project, g)
+
+      {:ok, plain} = Store.all_dependencies(project)
+      {:ok, rolled} = Store.all_dependencies_with_rollup(project)
+
+      assert {"ModA", "ModB", :depends_on} in plain
+      assert {"ModA", "ModB", :depends_on} in rolled
+    end
+  end
 end

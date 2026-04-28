@@ -163,6 +163,10 @@ defmodule Giulia.Knowledge.Store do
   @spec all_dependencies(project_path()) :: {:ok, [{vertex_id(), vertex_id(), atom()}]}
   defdelegate all_dependencies(project_path), to: Reader
 
+  @spec all_dependencies_with_rollup(project_path()) ::
+          {:ok, [{vertex_id(), vertex_id(), atom()}]}
+  defdelegate all_dependencies_with_rollup(project_path), to: Reader
+
   @spec all_function_call_edges(project_path()) :: {:ok, [{vertex_id(), vertex_id(), atom()}]}
   defdelegate all_function_call_edges(project_path), to: Reader
 

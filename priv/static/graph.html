@@ -129,6 +129,101 @@
     font-size: 14px;
     z-index: 20;
   }
+
+  #cy.with-isolates { width: calc(100% - 260px); }
+
+  .isolates {
+    position: absolute;
+    top: 78px;
+    right: 0;
+    width: 260px;
+    height: calc(100vh - 78px);
+    background: #0d1117;
+    border-left: 1px solid #0f3460;
+    overflow-y: auto;
+    padding: 12px 14px;
+    font-size: 11px;
+    z-index: 5;
+    display: none;
+  }
+  .isolates.visible { display: block; }
+  .isolates-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #555;
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #0f3460;
+  }
+  .isolates-toggle {
+    background: none;
+    border: 1px solid #0f3460;
+    color: #888;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 2px;
+  }
+  .isolates-toggle:hover { color: #e0e0e0; border-color: #1a4a8a; }
+  .iso-section { margin-bottom: 18px; }
+  .iso-section-title {
+    color: #888;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+    display: flex;
+    justify-content: space-between;
+  }
+  .iso-section-title .iso-count {
+    color: #555;
+    font-weight: 400;
+  }
+  .iso-section.external .iso-section-title { color: #6c5b9c; }
+  .iso-section.project .iso-section-title { color: #c97f6a; }
+  .iso-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 6px;
+    margin: 2px 0;
+    border-radius: 3px;
+    cursor: default;
+    background: rgba(255,255,255,0.02);
+    border-left: 2px solid transparent;
+  }
+  .iso-section.external .iso-item { border-left-color: #6c5b9c; }
+  .iso-section.project .iso-item { border-left-color: #c97f6a; }
+  .iso-item:hover { background: rgba(255,255,255,0.06); }
+  .iso-name {
+    color: #c0c0c0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    margin-right: 6px;
+  }
+  .iso-meta { color: #555; font-size: 10px; }
+  .iso-empty {
+    color: #444;
+    font-style: italic;
+    font-size: 10px;
+    padding: 4px 6px;
+  }
+
+  .isolates-toggle.standalone {
+    position: absolute;
+    top: 88px;
+    right: 16px;
+    z-index: 6;
+    background: rgba(13,17,23,0.85);
+  }
+  .isolates-toggle.standalone.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -166,6 +261,23 @@
 <div id="cy">
   <div class="loading" id="loading">Select a project to visualize...</div>
 </div>
+
+<button class="isolates-toggle standalone hidden" id="isolates-show" title="Show isolates panel">Isolates ›</button>
+
+<aside class="isolates" id="isolates">
+  <div class="isolates-header">
+    <span>Isolated Nodes <span id="isolates-count" style="color:#555">(0)</span></span>
+    <button class="isolates-toggle" id="isolates-hide" title="Hide isolates panel">Hide</button>
+  </div>
+  <div class="iso-section external">
+    <div class="iso-section-title">External boundaries <span class="iso-count" id="iso-ext-count">0</span></div>
+    <div id="iso-ext-list"></div>
+  </div>
+  <div class="iso-section project">
+    <div class="iso-section-title">Project unreached <span class="iso-count" id="iso-proj-count">0</span></div>
+    <div id="iso-proj-list"></div>
+  </div>
+</aside>
 
 <div class="legend" id="legend">
   <div class="legend-row"><div class="legend-dot" style="background:#e94560"></div> Red zone (&ge;60)</div>
@@ -243,12 +355,116 @@
       .then(function(data) {
         graphData = data;
         loading.style.display = 'none';
-        initCytoscape(data);
+        var split = splitIsolates(data);
+        renderIsolates(split.isolates);
+        initCytoscape({ nodes: split.connected, edges: data.edges });
       })
       .catch(function(err) {
         loading.textContent = 'Error loading graph: ' + err.message;
       });
   }
+
+  // Compute isolated nodes: any node with no incoming or outgoing edge
+  // in the topology payload. External library boundaries (complexity == 0)
+  // and project modules with no statically-resolved callers/callees both
+  // surface here — see ARCHITECTURE notes on dispatch-edge synthesis.
+  function splitIsolates(data) {
+    var touched = Object.create(null);
+    (data.edges || []).forEach(function(e) {
+      touched[e.data.source] = true;
+      touched[e.data.target] = true;
+    });
+    var connected = [];
+    var isolates = [];
+    (data.nodes || []).forEach(function(n) {
+      if (touched[n.data.id]) connected.push(n);
+      else isolates.push(n);
+    });
+    return { connected: connected, isolates: isolates };
+  }
+
+  function renderIsolates(isolates) {
+    var ext = [];
+    var proj = [];
+    isolates.forEach(function(n) {
+      // complexity > 0 means the indexer extracted AST for this module —
+      // i.e., it lives in the project source. complexity == 0 means it's
+      // an external boundary (GenServer, Phoenix.*, Mix.Project, etc.)
+      // referenced by a `use`/`@behaviour`/`defimpl` but with no
+      // analyzed body inside this project.
+      if ((n.data.complexity || 0) > 0) proj.push(n);
+      else ext.push(n);
+    });
+
+    var byName = function(a, b) { return a.data.id.localeCompare(b.data.id); };
+    ext.sort(byName);
+    proj.sort(byName);
+
+    document.getElementById('isolates-count').textContent =
+      '(' + isolates.length + ')';
+    document.getElementById('iso-ext-count').textContent = ext.length;
+    document.getElementById('iso-proj-count').textContent = proj.length;
+
+    document.getElementById('iso-ext-list').innerHTML =
+      ext.length === 0
+        ? '<div class="iso-empty">none</div>'
+        : ext.map(renderIsoItem).join('');
+    document.getElementById('iso-proj-list').innerHTML =
+      proj.length === 0
+        ? '<div class="iso-empty">none</div>'
+        : proj.map(renderIsoItem).join('');
+
+    var panel = document.getElementById('isolates');
+    var showBtn = document.getElementById('isolates-show');
+    var cyEl = document.getElementById('cy');
+    if (isolates.length > 0) {
+      panel.classList.add('visible');
+      cyEl.classList.add('with-isolates');
+      showBtn.classList.add('hidden');
+    } else {
+      panel.classList.remove('visible');
+      cyEl.classList.remove('with-isolates');
+      showBtn.classList.add('hidden');
+    }
+  }
+
+  function renderIsoItem(n) {
+    var d = n.data;
+    var meta;
+    if ((d.complexity || 0) > 0) {
+      meta = 'cx ' + d.complexity;
+    } else {
+      // External boundary: fan_out is the metric-layer's count of project
+      // modules referencing this external (uses/@behaviour/defimpl), even
+      // when those edges aren't emitted into topology.
+      meta = d.fan_out > 0 ? '← ' + d.fan_out : '';
+    }
+    var safeId = d.id.replace(/[<>&"']/g, function(c) {
+      return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+    var safeMeta = meta.replace(/[<>&"']/g, function(c) {
+      return { '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+    return '<div class="iso-item" title="' + safeId + '">' +
+      '<span class="iso-name">' + safeId + '</span>' +
+      '<span class="iso-meta">' + safeMeta + '</span></div>';
+  }
+
+  document.getElementById('isolates-hide').addEventListener('click', function() {
+    document.getElementById('isolates').classList.remove('visible');
+    document.getElementById('cy').classList.remove('with-isolates');
+    document.getElementById('isolates-show').classList.remove('hidden');
+    if (cy) cy.resize();
+  });
+  document.getElementById('isolates-show').addEventListener('click', function() {
+    var panel = document.getElementById('isolates');
+    if (panel.querySelector('.iso-item')) {
+      panel.classList.add('visible');
+      document.getElementById('cy').classList.add('with-isolates');
+      this.classList.add('hidden');
+      if (cy) cy.resize();
+    }
+  });
 
   function initCytoscape(data) {
     if (cy) cy.destroy();

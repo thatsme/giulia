@@ -725,8 +725,14 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     case resolve_and_check_ready(conn) do
       {:halt, conn} -> conn
       {:ok, conn, project_path} ->
-        # Get edges
-        {:ok, edges} = Giulia.Knowledge.Store.all_dependencies(project_path)
+        # Use the rolled-up edge set so synthesized edges from Builder
+        # Passes 7-11 (protocol_impl, behaviour_impl, router_dispatch,
+        # mfa_ref, capture_ref, apply_ref, use_import_ref) are visible
+        # at module level. Without rollup, defimpls of project protocols,
+        # controller actions, and macro-injected import targets render
+        # as isolated nodes even though dead_code analysis correctly
+        # treats them as live.
+        {:ok, edges} = Giulia.Knowledge.Store.all_dependencies_with_rollup(project_path)
 
         # Get heatmap for node scores
         {:ok, heatmap} = Giulia.Knowledge.Store.heatmap(project_path)
