@@ -24,6 +24,24 @@
     %{
       arity: 1,
       complexity: 0,
+      line: 14,
+      min_arity: 1,
+      module: "Giulia.Fixtures.MultiSerializable.BitString",
+      name: :encode,
+      type: :def
+    },
+    %{
+      arity: 1,
+      complexity: 0,
+      line: 14,
+      min_arity: 1,
+      module: "Giulia.Fixtures.MultiSerializable.Float",
+      name: :encode,
+      type: :def
+    },
+    %{
+      arity: 1,
+      complexity: 0,
       line: 18,
       min_arity: 1,
       module: "Giulia.Fixtures.MultiSerializable.Atom",

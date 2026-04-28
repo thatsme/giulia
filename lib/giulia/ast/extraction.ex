@@ -340,8 +340,15 @@ defmodule Giulia.AST.Extraction do
         {node, {funcs, [full_name | stack], quote_depth}}
 
       {:ok_multi, local_names, _line, _body, _impl_for} ->
-        first_full_name = qualify(stack, List.first(local_names))
-        {node, {funcs, [first_full_name | stack], quote_depth}}
+        # Multi-type defimpl (`defimpl Proto, for: [T1, T2, T3]`) creates
+        # N sibling impl modules sharing one body. Phase 1 (commit 4136844)
+        # attributed the body's functions to the first sibling only, leaving
+        # T2..TN with zero functions and therefore invisible to Pass 7's
+        # `:protocol_impl` edge synthesis. Phase 2 fans out: push a tagged
+        # `{:multi, [name1, name2, name3]}` so the function emitter below
+        # produces one func record per sibling.
+        full_names = Enum.map(local_names, &qualify(stack, &1))
+        {node, {funcs, [{:multi, full_names} | stack], quote_depth}}
 
       :skip ->
         if quote_depth > 0 do
@@ -353,8 +360,21 @@ defmodule Giulia.AST.Extraction do
         else
           case safe_extract_function_info(node) do
             {:ok, func_info} ->
-              module = List.first(stack) || "Unknown"
-              {node, {[Map.put(func_info, :module, module) | funcs], stack, quote_depth}}
+              new_funcs =
+                case List.first(stack) do
+                  {:multi, names} ->
+                    Enum.reduce(names, funcs, fn name, acc_funcs ->
+                      [Map.put(func_info, :module, name) | acc_funcs]
+                    end)
+
+                  nil ->
+                    [Map.put(func_info, :module, "Unknown") | funcs]
+
+                  name when is_binary(name) ->
+                    [Map.put(func_info, :module, name) | funcs]
+                end
+
+              {node, {new_funcs, stack, quote_depth}}
 
             :skip ->
               {node, acc}
