@@ -125,6 +125,22 @@ defmodule Giulia.Context.Indexer do
   @spec status(String.t()) :: indexer_status()
   def status(project_path), do: GenServer.call(__MODULE__, {:status, project_path})
 
+  @doc """
+  Mark a project as already indexed from a prior daemon lifetime.
+
+  Called by `Persistence.WarmRestore` after restoring the L1 graph from L2
+  CubDB so that scan-gated endpoints (`Helpers.scan_state/1`) classify the
+  project as `:ready` instead of `:not_indexed`. Without this, warm-restored
+  projects 409 on every scan-dependent endpoint until re-scanned.
+
+  `last_scan` stays `nil` — we don't have the original scan timestamp.
+  """
+  @spec register_warm_restored(String.t(), non_neg_integer()) :: :ok
+  def register_warm_restored(project_path, file_count)
+      when is_binary(project_path) and is_integer(file_count) and file_count > 0 do
+    GenServer.cast(__MODULE__, {:register_warm_restored, project_path, file_count})
+  end
+
   # Server Callbacks
 
   @impl true
@@ -227,6 +243,12 @@ defmodule Giulia.Context.Indexer do
   # Backward compat: callers using the old 2-tuple cast pattern.
   def handle_cast({:scan, project_path}, state) do
     handle_cast({:scan, project_path, []}, state)
+  end
+
+  @impl true
+  def handle_cast({:register_warm_restored, project_path, file_count}, state) do
+    project_state = %{status: :idle, last_scan: nil, file_count: file_count}
+    {:noreply, put_project_status(state, project_path, project_state)}
   end
 
   @impl true

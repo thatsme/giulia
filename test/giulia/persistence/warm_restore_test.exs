@@ -15,6 +15,7 @@ defmodule Giulia.Persistence.WarmRestoreTest do
   """
   use ExUnit.Case, async: false
 
+  alias Giulia.Context.Indexer
   alias Giulia.Context.Store, as: ContextStore
   alias Giulia.Knowledge.Store, as: KnowledgeStore
   alias Giulia.Persistence.{Store, WarmRestore}
@@ -25,6 +26,7 @@ defmodule Giulia.Persistence.WarmRestoreTest do
     ensure_started!(ContextStore)
     ensure_started!(KnowledgeStore)
     ensure_started!(Store)
+    ensure_started!(Indexer)
 
     project = "/test/warm_restore_#{System.unique_integer([:positive])}"
 
@@ -76,6 +78,27 @@ defmodule Giulia.Persistence.WarmRestoreTest do
       [{_, graph}] = :ets.lookup(@knowledge_table, {:graph, project})
       assert "Alpha" in Graph.vertices(graph)
       assert "Beta" in Graph.vertices(graph)
+    end
+
+    test "marks Indexer state ready so scan-gated endpoints stop returning 409",
+         %{project: project} do
+      seed_l2!(project)
+
+      # Precondition: Indexer has no record of this project, so the
+      # scan-state gate would classify it as `:not_indexed`.
+      pre = Indexer.status(project)
+      assert pre.status == :idle
+      assert pre.file_count == 0
+
+      WarmRestore.run_for([project])
+
+      post = Indexer.status(project)
+      assert post.status == :idle,
+             "warm-restore must leave the project ready, not stuck in :scanning/:building"
+
+      assert post.file_count > 0,
+             "Helpers.scan_state/1 keys off file_count > 0 to return :ready; " <>
+               "without this the 409 not_indexed gate from 075816a hides warm-restored projects"
     end
 
     test "returns empty list for projects with no L2 state", %{project: project} do

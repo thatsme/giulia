@@ -29,6 +29,8 @@ defmodule Giulia.Persistence.WarmRestore do
 
   require Logger
 
+  alias Giulia.Context.Indexer
+  alias Giulia.Knowledge.Store, as: KnowledgeStore
   alias Giulia.Persistence.Loader
 
   # ============================================================================
@@ -64,6 +66,7 @@ defmodule Giulia.Persistence.WarmRestore do
           # Metrics are best-effort — a restore_graph success with
           # no metrics cache is a valid state (older snapshots).
           _ = Loader.restore_metrics(project)
+          mark_indexer_ready(project)
           Logger.info("[WarmRestore] Restored graph for #{project}")
           [project | acc]
 
@@ -72,6 +75,31 @@ defmodule Giulia.Persistence.WarmRestore do
       end
     end)
     |> Enum.reverse()
+  end
+
+  # Hydrate the Indexer's per-project state so scan-gated endpoints
+  # treat the warm-restored project as `:ready` instead of returning
+  # 409 not_indexed. The original AST file_count isn't recoverable from
+  # L2 (AST cache restore is intentionally skipped — see moduledoc), so
+  # we use the restored graph's vertex count as a proxy. Any positive
+  # value satisfies `Helpers.scan_state/1`.
+  defp mark_indexer_ready(project) do
+    case Process.whereis(Indexer) do
+      nil ->
+        :ok
+
+      _pid ->
+        count = restored_vertex_count(project)
+        if count > 0, do: Indexer.register_warm_restored(project, count)
+        :ok
+    end
+  end
+
+  defp restored_vertex_count(project) do
+    %{vertices: n} = KnowledgeStore.stats(project)
+    n
+  rescue
+    _ -> 0
   end
 
   # ============================================================================
