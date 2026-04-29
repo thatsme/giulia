@@ -33,20 +33,22 @@ defmodule Giulia.Knowledge.Builder do
       |> MapSet.new()
 
     # Pass 1: Add vertices
-    graph = Enum.reduce(ast_data, graph, fn {_path, data}, g ->
-      g
-      |> add_module_vertices(data)
-      |> add_function_vertices(data)
-      |> add_struct_vertices(data)
-      |> add_behaviour_vertices(data)
-    end)
+    graph =
+      Enum.reduce(ast_data, graph, fn {_path, data}, g ->
+        g
+        |> add_module_vertices(data)
+        |> add_function_vertices(data)
+        |> add_struct_vertices(data)
+        |> add_behaviour_vertices(data)
+      end)
 
     # Pass 2: Add edges
-    graph = Enum.reduce(ast_data, graph, fn {_path, data}, g ->
-      g
-      |> add_dependency_edges(data, all_modules)
-      |> add_implements_edges(data, all_modules)
-    end)
+    graph =
+      Enum.reduce(ast_data, graph, fn {_path, data}, g ->
+        g
+        |> add_dependency_edges(data, all_modules)
+        |> add_implements_edges(data, all_modules)
+      end)
 
     # Pass 3: Add xref call edges (if target project has compiled BEAM files)
     project_root = infer_project_root(ast_data)
@@ -220,6 +222,7 @@ defmodule Giulia.Knowledge.Builder do
       case modules do
         [first | _] ->
           Graph.add_vertex(graph, first.name, :behaviour)
+
         _ ->
           graph
       end
@@ -300,14 +303,27 @@ defmodule Giulia.Knowledge.Builder do
   end
 
   defp find_beam_directory(project_root) do
-    # Derive the app name from mix.exs or fall back to directory name
     app_name = infer_app_name(project_root)
+    giulia_build = Giulia.Context.Indexer.giulia_build_path(project_root)
 
-    # Giulia-managed per-project build path (set by ensure_compiled in Indexer)
-    giulia_build = giulia_build_path(project_root)
+    # On self-scan (running BEAM was launched from `project_root`), the
+    # outer mix process has already compiled the source — use its
+    # build path. The Indexer skips its sub-mix compile in this case
+    # to avoid recursive Mix on the same tree (SIGSEGV on ARM64 / OrbStack
+    # with concurrent EXLA).
+    outer_mix_build =
+      if Giulia.Context.Indexer.self_scan?(project_root) do
+        try do
+          Path.join([Mix.Project.build_path(), "lib", app_name, "ebin"])
+        rescue
+          _ -> nil
+        end
+      end
 
     candidates =
-      [
+      [outer_mix_build]
+      |> Enum.reject(&is_nil/1)
+      |> Kernel.++([
         # Giulia-managed compilation output (per-project, isolated)
         Path.join([giulia_build, "lib", app_name, "ebin"]),
         # Standard mix build (dev)
@@ -316,20 +332,9 @@ defmodule Giulia.Knowledge.Builder do
         Path.join([project_root, "_build", "prod", "lib", app_name, "ebin"]),
         # Standard mix build (test)
         Path.join([project_root, "_build", "test", "lib", app_name, "ebin"])
-      ]
+      ])
 
     Enum.find(candidates, &File.dir?/1)
-  end
-
-  # Per-project build path for xref BEAM files.
-  # Must match the path used by Giulia.Context.Indexer.ensure_compiled/1.
-  defp giulia_build_path(project_path) do
-    hash =
-      :crypto.hash(:md5, project_path)
-      |> Base.encode16(case: :lower)
-      |> String.slice(0, 12)
-
-    Path.join(["/tmp/giulia_build", "targets", hash])
   end
 
   # Infer the project root from AST file paths (common prefix of all source files)
@@ -337,8 +342,12 @@ defmodule Giulia.Knowledge.Builder do
     paths = Map.keys(ast_data)
 
     case paths do
-      [] -> nil
-      [single] -> single |> Path.dirname() |> strip_lib_suffix()
+      [] ->
+        nil
+
+      [single] ->
+        single |> Path.dirname() |> strip_lib_suffix()
+
       _ ->
         paths
         |> Enum.map(&Path.split/1)
@@ -370,7 +379,9 @@ defmodule Giulia.Knowledge.Builder do
           [_, name] -> name
           _ -> Path.basename(project_root)
         end
-      _ -> Path.basename(project_root)
+
+      _ ->
+        Path.basename(project_root)
     end
   end
 
@@ -531,7 +542,8 @@ defmodule Giulia.Knowledge.Builder do
   # Narrow helpers for the module-stack traversal. Kept separate from
   # `Giulia.AST.Extraction.module_node_info/1` because we only need the
   # local name here — not body, line, or impl_for.
-  defp def_module_local_name({:defmodule, _, [{:__aliases__, _, parts} | _]}) when is_list(parts) do
+  defp def_module_local_name({:defmodule, _, [{:__aliases__, _, parts} | _]})
+       when is_list(parts) do
     {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
   end
 
@@ -544,7 +556,9 @@ defmodule Giulia.Knowledge.Builder do
     {:ok, parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")}
   end
 
-  defp def_module_local_name({:defimpl, _, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | _]})
+  defp def_module_local_name(
+         {:defimpl, _, [{:__aliases__, _, proto_parts}, [{for_key, type_ast}] | _]}
+       )
        when is_list(proto_parts) do
     if for_key == :for or match?({:__block__, _, [:for]}, for_key) do
       proto = proto_parts |> Enum.map(&safe_part_to_string/1) |> Enum.join(".")
@@ -651,14 +665,59 @@ defmodule Giulia.Knowledge.Builder do
         # Local call: func(args) — same module
         {local_name, _meta, args} = node, acc
         when is_atom(local_name) and is_list(args) and
-             local_name not in [:def, :defp, :defmodule, :defmacro, :defmacrop,
-                                :if, :unless, :case, :cond, :with, :for, :fn,
-                                :quote, :unquote, :import, :alias, :use, :require,
-                                :raise, :reraise, :throw, :try, :receive, :send,
-                                :spawn, :spawn_link, :super, :__block__, :__aliases__,
-                                :@, :&, :|>, :=, :==, :!=, :<, :>, :<=, :>=,
-                                :and, :or, :not, :in, :when, :{}, :%{}, :<<>>,
-                                :sigil_r, :sigil_s, :sigil_c, :sigil_w] ->
+               local_name not in [
+                 :def,
+                 :defp,
+                 :defmodule,
+                 :defmacro,
+                 :defmacrop,
+                 :if,
+                 :unless,
+                 :case,
+                 :cond,
+                 :with,
+                 :for,
+                 :fn,
+                 :quote,
+                 :unquote,
+                 :import,
+                 :alias,
+                 :use,
+                 :require,
+                 :raise,
+                 :reraise,
+                 :throw,
+                 :try,
+                 :receive,
+                 :send,
+                 :spawn,
+                 :spawn_link,
+                 :super,
+                 :__block__,
+                 :__aliases__,
+                 :@,
+                 :&,
+                 :|>,
+                 :=,
+                 :==,
+                 :!=,
+                 :<,
+                 :>,
+                 :<=,
+                 :>=,
+                 :and,
+                 :or,
+                 :not,
+                 :in,
+                 :when,
+                 :{},
+                 :%{},
+                 :<<>>,
+                 :sigil_r,
+                 :sigil_s,
+                 :sigil_c,
+                 :sigil_w
+               ] ->
           target_mfa = "#{caller_module}.#{local_name}/#{length(args)}"
           {node, Map.put_new(acc, target_mfa, :local)}
 
@@ -686,12 +745,12 @@ defmodule Giulia.Knowledge.Builder do
       callee_mod = extract_module_from_mfa(edge.v2)
 
       if caller_mod && callee_mod &&
-         caller_mod != callee_mod &&
-         MapSet.member?(module_set, caller_mod) &&
-         MapSet.member?(module_set, callee_mod) &&
-         Graph.has_vertex?(g, caller_mod) &&
-         Graph.has_vertex?(g, callee_mod) &&
-         not has_module_edge?(g, caller_mod, callee_mod) do
+           caller_mod != callee_mod &&
+           MapSet.member?(module_set, caller_mod) &&
+           MapSet.member?(module_set, callee_mod) &&
+           Graph.has_vertex?(g, caller_mod) &&
+           Graph.has_vertex?(g, callee_mod) &&
+           not has_module_edge?(g, caller_mod, callee_mod) do
         Graph.add_edge(g, caller_mod, callee_mod, label: {:calls, :promoted})
       else
         g
@@ -726,27 +785,31 @@ defmodule Giulia.Knowledge.Builder do
 
       case modules do
         [source_mod | _] ->
-          source = case File.read(path) do
-            {:ok, content} -> content
-            _ -> ""
-          end
+          source =
+            case File.read(path) do
+              {:ok, content} -> content
+              _ -> ""
+            end
 
           case Sourceror.parse_string(source) do
             {:ok, ast} ->
               targets = extract_defdelegate_targets(ast, all_modules)
 
               Enum.reduce(targets, g, fn target_mod, g2 ->
-                if target_mod != source_mod.name and not has_module_edge?(g2, source_mod.name, target_mod) do
+                if target_mod != source_mod.name and
+                     not has_module_edge?(g2, source_mod.name, target_mod) do
                   Graph.add_edge(g2, source_mod.name, target_mod, label: :depends_on)
                 else
                   g2
                 end
               end)
 
-            _ -> g
+            _ ->
+              g
           end
 
-        _ -> g
+        _ ->
+          g
       end
     end)
   end
@@ -850,6 +913,7 @@ defmodule Giulia.Knowledge.Builder do
       Macro.prewalk(ast, MapSet.new(), fn
         {:defdelegate, _meta, [_call, [to: {:__aliases__, _, parts}]]} = node, set ->
           mod = Enum.map_join(parts, ".", &Atom.to_string/1)
+
           if MapSet.member?(all_modules, mod) do
             {node, MapSet.put(set, mod)}
           else
@@ -899,8 +963,10 @@ defmodule Giulia.Knowledge.Builder do
       case resolved do
         [mod_string | rest] when is_binary(mod_string) and rest != [] ->
           mod_string <> "." <> Enum.join(rest, ".")
+
         [mod_string] when is_binary(mod_string) ->
           mod_string
+
         _ ->
           Enum.join(resolved, ".")
       end
@@ -1178,10 +1244,11 @@ defmodule Giulia.Knowledge.Builder do
   # `scope path, Namespace, opts, do: body` → Namespace wins.
   # `scope path, opts, do: body` or `scope opts, do: body` → check opts[:alias].
   defp namespace_from_scope_args(args) do
-    aliased_args = Enum.find(args, fn
-      {:__aliases__, _, _} -> true
-      _ -> false
-    end)
+    aliased_args =
+      Enum.find(args, fn
+        {:__aliases__, _, _} -> true
+        _ -> false
+      end)
 
     cond do
       aliased_args != nil ->
@@ -1207,8 +1274,7 @@ defmodule Giulia.Knowledge.Builder do
 
   # Standard HTTP-verb route: `get "/path", ControllerAlias, :action [, opts]`
   defp route_call(
-         {verb, _meta,
-          [_path, {:__aliases__, _, parts}, action | _rest]},
+         {verb, _meta, [_path, {:__aliases__, _, parts}, action | _rest]},
          alias_map,
          current_scope_ns
        )
@@ -1219,8 +1285,7 @@ defmodule Giulia.Knowledge.Builder do
 
   # Same shape but action wrapped in Sourceror's :__block__.
   defp route_call(
-         {verb, _meta,
-          [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
+         {verb, _meta, [_path, {:__aliases__, _, parts}, {:__block__, _, [action]} | _rest]},
          alias_map,
          current_scope_ns
        )
@@ -1278,7 +1343,10 @@ defmodule Giulia.Knowledge.Builder do
 
       Keyword.has_key?(opts, :except) ->
         except = Keyword.get(opts, :except, [])
-        if is_list(except), do: @resources_default_actions -- except, else: @resources_default_actions
+
+        if is_list(except),
+          do: @resources_default_actions -- except,
+          else: @resources_default_actions
 
       true ->
         @resources_default_actions

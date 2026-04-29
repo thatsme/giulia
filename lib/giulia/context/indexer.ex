@@ -647,62 +647,86 @@ defmodule Giulia.Context.Indexer do
   defp ensure_compiled(project_path) do
     mix_file = Path.join(project_path, "mix.exs")
 
-    if File.exists?(mix_file) do
-      build_path = giulia_build_path(project_path)
+    cond do
+      not File.exists?(mix_file) ->
+        :ok
 
-      Logger.info("Compiling #{project_path} for xref analysis (build: #{build_path})")
+      self_scan?(project_path) ->
+        # The currently-running BEAM was launched (via `mix test`) from
+        # this same source tree. Spawning a `mix deps.get` + `mix compile`
+        # subprocess here creates a recursive Mix invocation that shares
+        # `mix.lock`, `deps/`, and `.fetch` markers with the outer
+        # process. On ARM64 / OrbStack with concurrent EXLA work this
+        # was observed to SIGSEGV the BEAM (exit 139) right after xref
+        # finishes — the inner Mix's writes to `deps/` and the outer's
+        # ongoing compilation overlap unsafely. The outer Mix has
+        # already produced BEAMs; `Knowledge.Builder.find_beam_directory/1`
+        # falls back to `Mix.Project.build_path/0` for self-scans.
+        Logger.info(
+          "[Indexer] Skipping sub-mix compile for self-scan of #{project_path} " <>
+            "— outer mix process already compiled this source"
+        )
 
-      try do
-        # Always run `mix deps.get`. Mix considers a dep "not available" if
-        # its tracking state (mix.lock registration, .fetch markers) is out
-        # of sync with the filesystem, even when deps/<name>/ is populated
-        # from a prior partial checkout. The previous `File.dir?("deps")`
-        # guard treated a half-populated deps/ as "done" and skipped the
-        # reconcile, which made `mix compile` fail with "Unchecked
-        # dependencies" and xref quietly never run. deps.get is idempotent
-        # and <1s when up-to-date; always-run costs little and closes the
-        # gap.
-        Logger.info("Fetching deps for #{project_path}...")
+        :ok
 
-        {deps_output, deps_exit} =
-          System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
+      true ->
+        do_ensure_compiled(project_path)
+    end
+  end
 
-        if deps_exit != 0 do
-          Logger.warning(
-            "mix deps.get failed for #{project_path} (exit #{deps_exit}): " <>
-              String.slice(deps_output, 0, 500)
-          )
-        end
+  defp do_ensure_compiled(project_path) do
+    build_path = giulia_build_path(project_path)
 
-        # Compile with project-specific build path to isolate multi-project builds.
-        # MIX_BUILD_PATH overrides _build/{env} so each project gets its own BEAM output.
-        {output, exit_code} =
-          System.cmd("mix", ["compile"],
-            cd: project_path,
-            stderr_to_stdout: true,
-            env: [{"MIX_BUILD_PATH", build_path}, {"MIX_ENV", "dev"}]
-          )
+    Logger.info("Compiling #{project_path} for xref analysis (build: #{build_path})")
 
-        if exit_code == 0 do
-          app_name = infer_app_name(project_path)
-          ebin = Path.join([build_path, "lib", app_name, "ebin"])
+    try do
+      # Always run `mix deps.get`. Mix considers a dep "not available" if
+      # its tracking state (mix.lock registration, .fetch markers) is out
+      # of sync with the filesystem, even when deps/<name>/ is populated
+      # from a prior partial checkout. The previous `File.dir?("deps")`
+      # guard treated a half-populated deps/ as "done" and skipped the
+      # reconcile, which made `mix compile` fail with "Unchecked
+      # dependencies" and xref quietly never run. deps.get is idempotent
+      # and <1s when up-to-date; always-run costs little and closes the
+      # gap.
+      Logger.info("Fetching deps for #{project_path}...")
 
-          beam_count =
-            if File.dir?(ebin),
-              do: ebin |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".beam")),
-              else: 0
+      {deps_output, deps_exit} =
+        System.cmd("mix", ["deps.get"], cd: project_path, stderr_to_stdout: true)
 
-          Logger.info(
-            "Compiled #{project_path} successfully (#{beam_count} BEAM files in #{ebin})"
-          )
-        else
-          Logger.warning(
-            "Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}"
-          )
-        end
-      rescue
-        e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
+      if deps_exit != 0 do
+        Logger.warning(
+          "mix deps.get failed for #{project_path} (exit #{deps_exit}): " <>
+            String.slice(deps_output, 0, 500)
+        )
       end
+
+      # Compile with project-specific build path to isolate multi-project builds.
+      # MIX_BUILD_PATH overrides _build/{env} so each project gets its own BEAM output.
+      {output, exit_code} =
+        System.cmd("mix", ["compile"],
+          cd: project_path,
+          stderr_to_stdout: true,
+          env: [{"MIX_BUILD_PATH", build_path}, {"MIX_ENV", "dev"}]
+        )
+
+      if exit_code == 0 do
+        app_name = infer_app_name(project_path)
+        ebin = Path.join([build_path, "lib", app_name, "ebin"])
+
+        beam_count =
+          if File.dir?(ebin),
+            do: ebin |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".beam")),
+            else: 0
+
+        Logger.info("Compiled #{project_path} successfully (#{beam_count} BEAM files in #{ebin})")
+      else
+        Logger.warning(
+          "Compilation failed for #{project_path} (exit #{exit_code}): #{String.slice(output, 0, 500)}"
+        )
+      end
+    rescue
+      e -> Logger.warning("Failed to compile #{project_path}: #{Exception.message(e)}")
     end
   end
 
@@ -716,6 +740,29 @@ defmodule Giulia.Context.Indexer do
 
     Path.join(["/tmp/giulia_build", "targets", hash])
   end
+
+  # True when `project_path` resolves to the same source tree as the
+  # currently-running BEAM's working directory. Used to short-circuit
+  # the recursive sub-mix compile in `ensure_compiled/1` (and to pick
+  # the right BEAM directory in `Knowledge.Builder.find_beam_directory/1`).
+  #
+  # In a release/prod context the daemon is launched with
+  # `cwd != project_path`, so this returns `false` and the normal
+  # per-project sub-mix path is used. Under `mix test` against the
+  # Giulia codebase scanning `/projects/Giulia`, it returns `true`.
+  @doc false
+  @spec self_scan?(String.t()) :: boolean()
+  def self_scan?(project_path) when is_binary(project_path) do
+    case File.cwd() do
+      {:ok, cwd} ->
+        Path.expand(project_path) == Path.expand(cwd)
+
+      _ ->
+        false
+    end
+  end
+
+  def self_scan?(_), do: false
 
   defp infer_app_name(project_path) do
     mix_path = Path.join(project_path, "mix.exs")
