@@ -93,11 +93,26 @@ defmodule Giulia.Storage.Arcade.Verifier do
 
   defp classify_count_parity(l1, l3) do
     cond do
-      l1 == l3 -> %{status: :match, l1: l1, l3: l3, delta: 0}
-      l3 > l1 -> %{status: :l3_exceeds_l1, l1: l1, l3: l3, delta: l3 - l1,
-                   hint: "non-idempotent inserts or duplicate snapshots"}
-      l3 < l1 -> %{status: :l3_under_l1, l1: l1, l3: l3, delta: l1 - l3,
-                   hint: "partial write, failed inserts, or stale L3"}
+      l1 == l3 ->
+        %{status: :match, l1: l1, l3: l3, delta: 0}
+
+      l3 > l1 ->
+        %{
+          status: :l3_exceeds_l1,
+          l1: l1,
+          l3: l3,
+          delta: l3 - l1,
+          hint: "non-idempotent inserts or duplicate snapshots"
+        }
+
+      l3 < l1 ->
+        %{
+          status: :l3_under_l1,
+          l1: l1,
+          l3: l3,
+          delta: l1 - l3,
+          hint: "partial write, failed inserts, or stale L3"
+        }
     end
   end
 
@@ -135,11 +150,49 @@ defmodule Giulia.Storage.Arcade.Verifier do
     end
   end
 
+  # Count L3 CALLS edges scoped to the project's most-recent build_id.
+  # L1 always represents the CURRENT build (it lives in ETS and gets
+  # rebuilt on each scan), so the round-trip parity check must compare
+  # against the L3 build that was most recently snapshotted, not the
+  # cumulative cross-build total. Pre-fix this would conflate
+  # "non-idempotent duplicate inserts" (real bug) with "history
+  # accumulation across N rescans" (working as designed). After the
+  # 2026-04-29 fix, count_parity.status returns :match on a healthy
+  # system regardless of how many prior builds are retained.
+  #
+  # Implemented as two queries (max build_id, then count) rather than
+  # a nested SELECT — ArcadeDB's SQL parser handled the subquery
+  # variant unstably on large CALLS tables (timeouts under load).
   defp count_l3_calls(project_path) do
-    sql = "SELECT count(*) AS n FROM CALLS WHERE project = :project"
+    case latest_build_id(project_path) do
+      {:ok, nil} ->
+        {:ok, 0}
+
+      {:ok, build_id} ->
+        sql = """
+        SELECT count(*) AS n FROM CALLS
+        WHERE project = :project AND build_id = :build_id
+        """
+
+        case Client.query(sql, "sql", %{project: project_path, build_id: build_id}) do
+          {:ok, [%{"n" => n}]} when is_integer(n) -> {:ok, n}
+          {:ok, []} -> {:ok, 0}
+          {:ok, other} -> {:error, {:unexpected_shape, other}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp latest_build_id(project_path) do
+    sql = "SELECT max(build_id) AS m FROM CALLS WHERE project = :project"
 
     case Client.query(sql, "sql", %{project: project_path}) do
-      {:ok, [%{"n" => n}]} when is_integer(n) -> {:ok, n}
+      {:ok, [%{"m" => m}]} when is_integer(m) -> {:ok, m}
+      {:ok, [%{"m" => nil}]} -> {:ok, nil}
+      {:ok, []} -> {:ok, nil}
       {:ok, other} -> {:error, {:unexpected_shape, other}}
       {:error, reason} -> {:error, reason}
     end

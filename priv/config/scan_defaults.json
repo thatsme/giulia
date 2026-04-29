@@ -1,6 +1,6 @@
 {
-  "$schema_version": 3,
-  "$description": "Paths within a target project scanned for Elixir source (.ex/.exs) files. Each entry may be a directory (walked recursively) or a single file. Universal defaults for Mix projects: lib/ always exists; test/support/ contains shared test helpers (ExUnit convention); test/test_helper.exs is the universal ExUnit bootstrap where test_utils / DB setup hooks are invoked. Missing paths are skipped silently. enrichment_payload_roots lists absolute-or-project-relative directories from which POST /api/index/enrichment will accept a payload_path; anything outside is rejected with 422 (prevents arbitrary file read).",
+  "$schema_version": 4,
+  "$description": "Paths within a target project scanned for Elixir source (.ex/.exs) files. Each entry may be a directory (walked recursively) or a single file. Universal defaults for Mix projects: lib/ always exists; test/support/ contains shared test helpers (ExUnit convention); test/test_helper.exs is the universal ExUnit bootstrap where test_utils / DB setup hooks are invoked. Missing paths are skipped silently. enrichment_payload_roots lists absolute-or-project-relative directories from which POST /api/index/enrichment will accept a payload_path; anything outside is rejected with 422 (prevents arbitrary file read). arcade_history_builds is the number of past builds whose CALLS / DEPENDS_ON edges are kept in ArcadeDB before periodic pruning by the Consolidator — drift / coupling / hotspot detectors require >=3 builds, so values <3 are clamped to 3.",
   "source_roots": [
     "lib",
     "test/support",
@@ -11,5 +11,6 @@
     "/var/tmp",
     "tmp",
     "_build"
-  ]
+  ],
+  "arcade_history_builds": 10
 }

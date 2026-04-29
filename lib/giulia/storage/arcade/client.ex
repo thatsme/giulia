@@ -44,7 +44,11 @@ defmodule Giulia.Storage.Arcade.Client do
     url = "#{base_url()}/api/v1/server"
     body = %{command: "create database #{db()}"}
 
-    case Req.post(url, json: body, auth: {:basic, "#{user()}:#{password()}"}, receive_timeout: @default_timeout) do
+    case Req.post(url,
+           json: body,
+           auth: {:basic, "#{user()}:#{password()}"},
+           receive_timeout: @default_timeout
+         ) do
       {:ok, %{status: 200}} ->
         :ok
 
@@ -79,14 +83,38 @@ defmodule Giulia.Storage.Arcade.Client do
     ]
 
     properties = [
-      {"Module", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME",
-                   "function_count INTEGER", "complexity_score INTEGER", "dep_in INTEGER", "dep_out INTEGER"]},
-      {"Function", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME",
-                     "complexity INTEGER"]},
+      {"Module",
+       [
+         "name STRING",
+         "project STRING",
+         "build_id INTEGER",
+         "indexed_at DATETIME",
+         "function_count INTEGER",
+         "complexity_score INTEGER",
+         "dep_in INTEGER",
+         "dep_out INTEGER"
+       ]},
+      {"Function",
+       [
+         "name STRING",
+         "project STRING",
+         "build_id INTEGER",
+         "indexed_at DATETIME",
+         "complexity INTEGER"
+       ]},
       {"File", ["name STRING", "project STRING", "build_id INTEGER", "indexed_at DATETIME"]},
-      {"Insight", ["type STRING", "module STRING", "project STRING", "build_id INTEGER",
-                    "severity STRING", "trend STRING", "detected_at DATETIME",
-                    "build_range_start INTEGER", "build_range_end INTEGER"]},
+      {"Insight",
+       [
+         "type STRING",
+         "module STRING",
+         "project STRING",
+         "build_id INTEGER",
+         "severity STRING",
+         "trend STRING",
+         "detected_at DATETIME",
+         "build_range_start INTEGER",
+         "build_range_end INTEGER"
+       ]},
       {"DEPENDS_ON", ["project STRING", "build_id INTEGER"]},
       {"CALLS", ["project STRING", "build_id INTEGER"]},
       {"DEFINED_IN", ["project STRING", "build_id INTEGER"]}
@@ -151,7 +179,8 @@ defmodule Giulia.Storage.Arcade.Client do
   # ---------------------------------------------------------------------------
 
   @doc "Upsert a Module vertex. Idempotent per (project, name)."
-  @spec upsert_module(String.t(), String.t(), integer(), map()) :: {:ok, term()} | {:error, term()}
+  @spec upsert_module(String.t(), String.t(), integer(), map()) ::
+          {:ok, term()} | {:error, term()}
   def upsert_module(project, name, build_id, metrics \\ %{}) do
     fc = Map.get(metrics, :function_count, 0)
     cs = Map.get(metrics, :complexity_score, 0)
@@ -169,7 +198,8 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Upsert a Function vertex. Idempotent per (project, name)."
-  @spec upsert_function(String.t(), String.t(), integer(), non_neg_integer()) :: {:ok, term()} | {:error, term()}
+  @spec upsert_function(String.t(), String.t(), integer(), non_neg_integer()) ::
+          {:ok, term()} | {:error, term()}
   def upsert_function(project, name, build_id, complexity \\ 0) do
     command(
       """
@@ -181,17 +211,43 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Upsert an Insight vertex. Idempotent per (project, type, module)."
-  @spec upsert_insight(String.t(), String.t(), String.t(), String.t(), integer(), String.t(), integer(), integer()) ::
+  @spec upsert_insight(
+          String.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          integer(),
+          String.t(),
+          integer(),
+          integer()
+        ) ::
           {:ok, term()} | {:error, term()}
-  def upsert_insight(project, type, module, severity, build_id, trend, build_range_start, build_range_end) do
+  def upsert_insight(
+        project,
+        type,
+        module,
+        severity,
+        build_id,
+        trend,
+        build_range_start,
+        build_range_end
+      ) do
     command(
       """
       UPDATE Insight SET build_id = :build_id, severity = :severity, trend = :trend,
         build_range_start = :brs, build_range_end = :bre, detected_at = sysdate()
       UPSERT WHERE project = :project AND type = :type AND module = :module
       """,
-      %{project: project, type: type, module: module, severity: severity,
-        build_id: build_id, trend: trend, brs: build_range_start, bre: build_range_end}
+      %{
+        project: project,
+        type: type,
+        module: module,
+        severity: severity,
+        build_id: build_id,
+        trend: trend,
+        brs: build_range_start,
+        bre: build_range_end
+      }
     )
   end
 
@@ -199,8 +255,10 @@ defmodule Giulia.Storage.Arcade.Client do
   @spec list_insights(String.t(), integer() | nil) :: {:ok, list()} | {:error, term()}
   def list_insights(project, build_id \\ nil) do
     if build_id do
-      query("SELECT FROM Insight WHERE project = :p AND build_id = :b",
-        "sql", %{p: project, b: build_id})
+      query("SELECT FROM Insight WHERE project = :p AND build_id = :b", "sql", %{
+        p: project,
+        b: build_id
+      })
     else
       query("SELECT FROM Insight WHERE project = :p", "sql", %{p: project})
     end
@@ -209,39 +267,51 @@ defmodule Giulia.Storage.Arcade.Client do
   @doc "Return modules ranked by hotspot score for a given build."
   @spec hotspots(String.t(), integer(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def hotspots(project, build_id, limit \\ 10) do
-    query("""
-      SELECT name, complexity_score, dep_in, dep_out, function_count,
-        (complexity_score + dep_in + dep_out) AS hotspot_score
-      FROM Module
-      WHERE project = :p AND build_id = :b
-        AND (complexity_score > 0 OR dep_in > 0 OR dep_out > 0)
-      ORDER BY hotspot_score DESC
-      LIMIT #{limit}
-    """, "sql", %{p: project, b: build_id})
+    query(
+      """
+        SELECT name, complexity_score, dep_in, dep_out, function_count,
+          (complexity_score + dep_in + dep_out) AS hotspot_score
+        FROM Module
+        WHERE project = :p AND build_id = :b
+          AND (complexity_score > 0 OR dep_in > 0 OR dep_out > 0)
+        ORDER BY hotspot_score DESC
+        LIMIT #{limit}
+      """,
+      "sql",
+      %{p: project, b: build_id}
+    )
   end
 
   @doc "Return complexity history across builds for a project."
   @spec complexity_history(String.t(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def complexity_history(project, limit \\ 10) do
-    query("""
-      SELECT name, build_id, complexity_score
-      FROM Module
-      WHERE project = :p AND complexity_score > 0
-      ORDER BY name, build_id
-      LIMIT #{limit * 50}
-    """, "sql", %{p: project})
+    query(
+      """
+        SELECT name, build_id, complexity_score
+        FROM Module
+        WHERE project = :p AND complexity_score > 0
+        ORDER BY name, build_id
+        LIMIT #{limit * 50}
+      """,
+      "sql",
+      %{p: project}
+    )
   end
 
   @doc "Return coupling history across builds for a project."
   @spec coupling_history(String.t(), non_neg_integer()) :: {:ok, list()} | {:error, term()}
   def coupling_history(project, limit \\ 10) do
-    query("""
-      SELECT name, build_id, dep_in, dep_out
-      FROM Module
-      WHERE project = :p AND (dep_in > 0 OR dep_out > 0)
-      ORDER BY name, build_id
-      LIMIT #{limit * 50}
-    """, "sql", %{p: project})
+    query(
+      """
+        SELECT name, build_id, dep_in, dep_out
+        FROM Module
+        WHERE project = :p AND (dep_in > 0 OR dep_out > 0)
+        ORDER BY name, build_id
+        LIMIT #{limit * 50}
+      """,
+      "sql",
+      %{p: project}
+    )
   end
 
   @doc """
@@ -263,8 +333,27 @@ defmodule Giulia.Storage.Arcade.Client do
     )
   end
 
+  @doc """
+  Delete edges of `edge_type` scoped to `project` whose `build_id` is
+  strictly less than `keep_from`. Used by the Consolidator's retention
+  pruning — preserves the most recent N builds while shedding the
+  long tail that accumulates across rescans (each scan re-snapshots
+  the current build's edges idempotently, but prior builds' edges are
+  NOT removed by `delete_edges_for_build/3`, which is build-id-scoped).
+  """
+  @spec delete_edges_older_than(String.t(), String.t(), integer()) ::
+          {:ok, term()} | {:error, term()}
+  def delete_edges_older_than(edge_type, project, keep_from)
+      when edge_type in ["CALLS", "DEPENDS_ON"] and is_integer(keep_from) do
+    command(
+      "DELETE FROM #{edge_type} WHERE project = :project AND build_id < :keep_from",
+      %{project: project, keep_from: keep_from}
+    )
+  end
+
   @doc "Create a DEPENDS_ON edge between two modules for a given build."
-  @spec insert_dependency(String.t(), String.t(), String.t(), integer()) :: {:ok, term()} | {:error, term()}
+  @spec insert_dependency(String.t(), String.t(), String.t(), integer()) ::
+          {:ok, term()} | {:error, term()}
   def insert_dependency(project, from_module, to_module, build_id) do
     script("""
     LET $a = SELECT FROM Module WHERE project = "#{escape(project)}" AND name = "#{escape(from_module)}";
@@ -274,7 +363,8 @@ defmodule Giulia.Storage.Arcade.Client do
   end
 
   @doc "Create a CALLS edge between two functions for a given build."
-  @spec insert_call(String.t(), String.t(), String.t(), integer()) :: {:ok, term()} | {:error, term()}
+  @spec insert_call(String.t(), String.t(), String.t(), integer()) ::
+          {:ok, term()} | {:error, term()}
   def insert_call(project, from_function, to_function, build_id) do
     script("""
     LET $a = SELECT FROM Function WHERE project = "#{escape(project)}" AND name = "#{escape(from_function)}";
@@ -294,27 +384,36 @@ defmodule Giulia.Storage.Arcade.Client do
   edges in either direction. One Cypher query does what requires two recursive
   functions in libgraph (upstream + downstream).
   """
-  @spec impact_map(String.t(), String.t(), integer(), pos_integer()) :: {:ok, list()} | {:error, term()}
-  def impact_map(project, module_name, build_id, depth \\ 3) when is_integer(depth) and depth > 0 do
-    cypher("""
-    MATCH path = (start:Module {project: $project, name: $name, build_id: $build_id})
-                 -[:DEPENDS_ON|CALLS*1..#{depth}]-(affected)
-    RETURN DISTINCT affected.name AS name, min(length(path)) AS depth
-    ORDER BY depth
-    """, %{project: project, name: module_name, build_id: build_id})
+  @spec impact_map(String.t(), String.t(), integer(), pos_integer()) ::
+          {:ok, list()} | {:error, term()}
+  def impact_map(project, module_name, build_id, depth \\ 3)
+      when is_integer(depth) and depth > 0 do
+    cypher(
+      """
+      MATCH path = (start:Module {project: $project, name: $name, build_id: $build_id})
+                   -[:DEPENDS_ON|CALLS*1..#{depth}]-(affected)
+      RETURN DISTINCT affected.name AS name, min(length(path)) AS depth
+      ORDER BY depth
+      """,
+      %{project: project, name: module_name, build_id: build_id}
+    )
   end
 
   @doc "All builds stored in history for a project, most recent first."
   @spec list_builds(String.t()) :: {:ok, list()} | {:error, term()}
   def list_builds(project) do
-    query("""
-    SELECT build_id, min(indexed_at) AS first_seen, max(indexed_at) AS last_seen,
-           count(*) AS vertex_count
-    FROM Module
-    WHERE project = :project
-    GROUP BY build_id
-    ORDER BY build_id DESC
-    """, "sql", %{project: project})
+    query(
+      """
+      SELECT build_id, min(indexed_at) AS first_seen, max(indexed_at) AS last_seen,
+             count(*) AS vertex_count
+      FROM Module
+      WHERE project = :project
+      GROUP BY build_id
+      ORDER BY build_id DESC
+      """,
+      "sql",
+      %{project: project}
+    )
   end
 
   @doc "All projects that have been indexed."
@@ -330,29 +429,39 @@ defmodule Giulia.Storage.Arcade.Client do
   """
   @spec dependency_diff(String.t(), integer(), integer()) :: {:ok, list()} | {:error, term()}
   def dependency_diff(project, build_a, build_b) do
-    {:ok, removed} = query("""
-    SELECT out.name AS `from`, in.name AS `to`, 'removed' AS change
-    FROM DEPENDS_ON
-    WHERE project = :project AND build_id = :b1
-    AND NOT EXISTS (
-      SELECT 1 FROM DEPENDS_ON
-      WHERE project = :project AND build_id = :b2
-      AND out.name = (SELECT name FROM Module WHERE @rid = $parent.out)
-      AND in.name  = (SELECT name FROM Module WHERE @rid = $parent.in)
-    )
-    """, "sql", %{project: project, b1: build_a, b2: build_b})
+    {:ok, removed} =
+      query(
+        """
+        SELECT out.name AS `from`, in.name AS `to`, 'removed' AS change
+        FROM DEPENDS_ON
+        WHERE project = :project AND build_id = :b1
+        AND NOT EXISTS (
+          SELECT 1 FROM DEPENDS_ON
+          WHERE project = :project AND build_id = :b2
+          AND out.name = (SELECT name FROM Module WHERE @rid = $parent.out)
+          AND in.name  = (SELECT name FROM Module WHERE @rid = $parent.in)
+        )
+        """,
+        "sql",
+        %{project: project, b1: build_a, b2: build_b}
+      )
 
-    {:ok, added} = query("""
-    SELECT out.name AS `from`, in.name AS `to`, 'added' AS change
-    FROM DEPENDS_ON
-    WHERE project = :project AND build_id = :b2
-    AND NOT EXISTS (
-      SELECT 1 FROM DEPENDS_ON
-      WHERE project = :project AND build_id = :b1
-      AND out.name = (SELECT name FROM Module WHERE @rid = $parent.out)
-      AND in.name  = (SELECT name FROM Module WHERE @rid = $parent.in)
-    )
-    """, "sql", %{project: project, b1: build_a, b2: build_b})
+    {:ok, added} =
+      query(
+        """
+        SELECT out.name AS `from`, in.name AS `to`, 'added' AS change
+        FROM DEPENDS_ON
+        WHERE project = :project AND build_id = :b2
+        AND NOT EXISTS (
+          SELECT 1 FROM DEPENDS_ON
+          WHERE project = :project AND build_id = :b1
+          AND out.name = (SELECT name FROM Module WHERE @rid = $parent.out)
+          AND in.name  = (SELECT name FROM Module WHERE @rid = $parent.in)
+        )
+        """,
+        "sql",
+        %{project: project, b1: build_a, b2: build_b}
+      )
 
     {:ok, removed ++ added}
   end
@@ -401,7 +510,10 @@ defmodule Giulia.Storage.Arcade.Client do
         match?({:ok, _}, insert_dependency(project, from, to, build_id))
       end)
 
-    Logger.info("ArcadeDB snapshot [#{project}]: #{module_count} modules, #{edge_count} edges (build #{build_id})")
+    Logger.info(
+      "ArcadeDB snapshot [#{project}]: #{module_count} modules, #{edge_count} edges (build #{build_id})"
+    )
+
     {:ok, %{modules: module_count, edges: edge_count}}
   end
 
@@ -455,12 +567,16 @@ defmodule Giulia.Storage.Arcade.Client do
       result =
         Enum.reduce_while(props, :ok, fn prop, _inner ->
           case command("CREATE PROPERTY #{type}.#{prop}") do
-            {:ok, _} -> {:cont, :ok}
+            {:ok, _} ->
+              {:cont, :ok}
+
             {:error, {500, %{"detail" => detail}}} when is_binary(detail) ->
               if String.contains?(detail, "already exists"),
                 do: {:cont, :ok},
                 else: {:halt, {:error, detail}}
-            {:error, _} = err -> {:halt, err}
+
+            {:error, _} = err ->
+              {:halt, err}
           end
         end)
 

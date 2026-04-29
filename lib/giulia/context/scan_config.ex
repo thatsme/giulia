@@ -135,6 +135,26 @@ defmodule Giulia.Context.ScanConfig do
   end
 
   @doc """
+  Number of historical builds to retain in ArcadeDB before pruning by
+  `Giulia.Storage.Arcade.Consolidator`.
+
+  Values below 3 are clamped to 3 because the Consolidator's drift /
+  coupling / hotspot detectors require at least three builds of history
+  per module to detect monotonic trends. Falls back to 10 if the
+  config key is missing or malformed.
+  """
+  @spec arcade_history_builds() :: pos_integer()
+  def arcade_history_builds do
+    raw =
+      case read_config() do
+        %{"arcade_history_builds" => n} when is_integer(n) -> n
+        _ -> 10
+      end
+
+    max(raw, 3)
+  end
+
+  @doc """
   Validates that `payload_path` falls under one of the allowed roots
   for the given project. Returns `:ok` or `{:error, :path_not_allowed}`.
 

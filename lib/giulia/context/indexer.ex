@@ -411,6 +411,12 @@ defmodule Giulia.Context.Indexer do
   @spec run_post_scan_pipeline(String.t()) :: :ok
   defp run_post_scan_pipeline(project_path) do
     Giulia.Context.Store.debug_inspect(project_path)
+    # Drain any pending AST writes BEFORE downstream stages read L2
+    # (verifiers, debug tooling). Without this, `verify_l2.check=ast`
+    # immediately after scan_complete reports L1>L2 because the
+    # writer's 100ms debounce window may still hold the tail of the
+    # extraction's `persist_ast` casts.
+    Giulia.Persistence.Writer.flush_now(project_path)
     ensure_compiled(project_path)
     Giulia.Knowledge.Store.rebuild(project_path)
     Giulia.Intelligence.SemanticIndex.embed_project(project_path)

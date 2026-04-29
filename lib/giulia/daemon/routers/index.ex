@@ -245,22 +245,44 @@ defmodule Giulia.Daemon.Routers.Index do
   end
 
   # -------------------------------------------------------------------
-  # POST /api/index/compact — Trigger CubDB compaction
+  # POST /api/index/compact — Trigger CubDB compaction (+ optional Arcade prune)
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Trigger CubDB compaction to reclaim disk space",
+    intent:
+      "Trigger CubDB compaction to reclaim disk space; with include=arcade " <>
+        "also prune stale build_id rows from ArcadeDB (CALLS + DEPENDS_ON " <>
+        "edges older than the configured retention window)",
     endpoint: "POST /api/index/compact",
-    params: %{path: :required},
-    returns: "JSON confirmation of compaction trigger",
+    params: %{path: :required, include: :optional},
+    returns:
+      "JSON %{status, path, arcade?: %{pruned: %{kept, pruned, keep_from, calls, depends_on}}}",
     category: "index"
   }
   post "/compact" do
     path = conn.body_params["path"]
     resolved_path = Giulia.Core.PathMapper.resolve_path(path)
+    include_arcade? = conn.body_params["include"] == "arcade"
 
     case Giulia.Persistence.Store.compact(resolved_path) do
-      :ok -> send_json(conn, 200, %{status: "compacting", path: resolved_path})
-      {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
+      :ok ->
+        base = %{status: "compacting", path: resolved_path}
+
+        body =
+          if include_arcade? do
+            retention = Giulia.Context.ScanConfig.arcade_history_builds()
+
+            arcade_result =
+              Giulia.Storage.Arcade.Consolidator.prune_old_builds(resolved_path, retention)
+
+            Map.put(base, :arcade, %{retention: retention, pruned: arcade_result})
+          else
+            base
+          end
+
+        send_json(conn, 200, body)
+
+      {:error, reason} ->
+        send_json(conn, 500, %{error: inspect(reason)})
     end
   end
 

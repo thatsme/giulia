@@ -32,10 +32,23 @@ defmodule Giulia.Persistence.Writer do
     )
   end
 
-  @doc "Delete all cached data for a project."
+  @doc """
+  Delete all cached data for a project. **Synchronous** — returns only
+  after CubDB keys for the project have been wiped.
+
+  The previous async-via-Task implementation raced with the immediate
+  `persist_ast` casts that `do_scan/1` issues right after `clear_asts/1`:
+  if the clear iterator was still running when the freshly-persisted
+  entries landed in CubDB, the iterator would delete them too. On
+  Plausible cold-rescan this manifested as 30-80 files missing in L2,
+  reported by `verify_l2.check=ast` as `file_set_parity = mismatch`.
+
+  Enrichment keys (`{:enrichment, _, _, _}`) are preserved — tool
+  ingest cadence is decoupled from source rescan cadence.
+  """
   @spec clear_project(String.t()) :: :ok
   def clear_project(project_path) do
-    GenServer.cast(__MODULE__, {:clear_project, project_path})
+    GenServer.call(__MODULE__, {:clear_project, project_path}, 30_000)
   end
 
   @doc "Persist the serialized knowledge graph."
@@ -68,6 +81,23 @@ defmodule Giulia.Persistence.Writer do
     GenServer.cast(__MODULE__, {:persist_merkle, project_path, tree})
   end
 
+  @doc """
+  Synchronously drain any pending AST writes for `project_path` into
+  CubDB before returning. Used by `Indexer.run_post_scan_pipeline/1`
+  so verifiers and downstream consumers reading the L2 AST cache
+  immediately after `:scan_complete` don't race with the 100ms
+  debounce window.
+
+  GenServer.call ordering guarantees this processes after all
+  preceding `persist_ast` casts in the writer's mailbox — anything
+  queued before the call is durable on return. Cancels the debounce
+  timer if no pending entries remain.
+  """
+  @spec flush_now(String.t()) :: :ok
+  def flush_now(project_path) when is_binary(project_path) do
+    GenServer.call(__MODULE__, {:flush_now, project_path}, 30_000)
+  end
+
   # Server Callbacks
 
   @impl true
@@ -89,36 +119,6 @@ defmodule Giulia.Persistence.Writer do
     timer_ref = Process.send_after(self(), :flush, @debounce_ms)
 
     {:noreply, %{state | pending: pending, timer_ref: timer_ref}}
-  end
-
-  @impl true
-  def handle_cast({:clear_project, project_path}, state) do
-    # Remove pending writes for this project
-    pending = Map.delete(state.pending, project_path)
-
-    # Clear CubDB — but preserve enrichment keys. Enrichments are
-    # ingested independently of source scans (CI runs Credo/Dialyzer
-    # on a different cadence than full re-extraction); wiping them
-    # along with the AST cache breaks the "ingest persists across
-    # rescans" mental model.
-    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
-      case Giulia.Persistence.Store.get_db(project_path) do
-        {:ok, db} ->
-          keys =
-            db
-            |> CubDB.select()
-            |> Enum.map(fn {key, _val} -> key end)
-            |> Enum.reject(&enrichment_key?/1)
-
-          Enum.each(keys, fn key -> CubDB.delete(db, key) end)
-          Logger.info("Cleared CubDB cache for #{project_path}")
-
-        {:error, reason} ->
-          Logger.warning("Failed to clear CubDB for #{project_path}: #{inspect(reason)}")
-      end
-    end)
-
-    {:noreply, %{state | pending: pending}}
   end
 
   @impl true
@@ -208,6 +208,54 @@ defmodule Giulia.Persistence.Writer do
     end)
 
     {:noreply, state}
+  end
+
+  @impl true
+  @spec handle_call(term(), GenServer.from(), map()) :: {:reply, :ok, map()}
+  def handle_call({:clear_project, project_path}, _from, state) do
+    # Remove pending writes for this project so a debounce that fires
+    # right after the clear can't restore stale entries.
+    pending = Map.delete(state.pending, project_path)
+
+    # Clear CubDB synchronously — preserve enrichment keys. Tool ingest
+    # cadence is decoupled from source rescan cadence; wiping enrichment
+    # findings on every scan would break the "ingest persists across
+    # rescans" mental model.
+    case Giulia.Persistence.Store.get_db(project_path) do
+      {:ok, db} ->
+        keys =
+          db
+          |> CubDB.select()
+          |> Enum.map(fn {key, _val} -> key end)
+          |> Enum.reject(&enrichment_key?/1)
+
+        Enum.each(keys, fn key -> CubDB.delete(db, key) end)
+        Logger.info("Cleared CubDB cache for #{project_path}")
+
+      {:error, reason} ->
+        Logger.warning("Failed to clear CubDB for #{project_path}: #{inspect(reason)}")
+    end
+
+    {:reply, :ok, %{state | pending: pending}}
+  end
+
+  def handle_call({:flush_now, project_path}, _from, state) do
+    case Map.pop(state.pending, project_path) do
+      {nil, _pending} ->
+        {:reply, :ok, state}
+
+      {file_map, remaining} ->
+        flush_pending(%{project_path => file_map})
+
+        state =
+          if map_size(remaining) == 0 do
+            cancel_timer(%{state | pending: remaining})
+          else
+            %{state | pending: remaining}
+          end
+
+        {:reply, :ok, state}
+    end
   end
 
   @impl true

@@ -14,6 +14,15 @@ defmodule Giulia.Storage.Arcade.Consolidator do
 
   Build 137: skeleton only — schedule ticking, empty consolidation logic.
   Build 138+: consolidation queries.
+
+  Build 159+: retention pruning. Each scan re-snapshots the current
+  build's CALLS / DEPENDS_ON edges into ArcadeDB; prior builds' edges
+  accumulate forever because `Client.delete_edges_for_build/3` is
+  build-id-scoped (it only purges duplicates of the same snapshot).
+  Without pruning, `verify_l3.count_parity.status == "l3_exceeds_l1"`
+  reliably even on a healthy system. The Consolidator now drops edges
+  older than the configured retention window
+  (`ScanConfig.arcade_history_builds/0`, default 10) on each cycle.
   """
 
   use GenServer
@@ -22,7 +31,8 @@ defmodule Giulia.Storage.Arcade.Consolidator do
 
   alias Giulia.Storage.Arcade.Client
 
-  @default_interval_ms 30 * 60 * 1_000  # 30 minutes
+  # 30 minutes
+  @default_interval_ms 30 * 60 * 1_000
 
   # ---------------------------------------------------------------------------
   # Client API
@@ -145,7 +155,12 @@ defmodule Giulia.Storage.Arcade.Consolidator do
         end)
         |> Enum.map(fn {name, builds} ->
           scores = Enum.map(builds, & &1["complexity_score"])
-          %{module: name, trend: scores, severity: classify_complexity_severity(List.last(scores))}
+
+          %{
+            module: name,
+            trend: scores,
+            severity: classify_complexity_severity(List.last(scores))
+          }
         end)
 
       _ ->
@@ -163,6 +178,7 @@ defmodule Giulia.Storage.Arcade.Consolidator do
         |> Enum.filter(fn {_name, builds} ->
           fan_in = Enum.map(builds, & &1["dep_in"])
           fan_out = Enum.map(builds, & &1["dep_out"])
+
           (length(fan_in) >= 3 and monotonically_increasing?(fan_in)) or
             (length(fan_out) >= 3 and monotonically_increasing?(fan_out))
         end)
@@ -201,15 +217,32 @@ defmodule Giulia.Storage.Arcade.Consolidator do
         Logger.info("[Arcade.Consolidator] Running consolidation cycle #{state.run_count + 1}")
         start = System.monotonic_time(:millisecond)
 
-        result = %{status: :ok, insights: 0}
+        retention = Giulia.Context.ScanConfig.arcade_history_builds()
+
+        result =
+          case Client.list_projects() do
+            {:ok, project_rows} ->
+              pruned =
+                project_rows
+                |> Enum.map(fn row -> row["project"] || row[:project] end)
+                |> Enum.reject(&(&1 in [nil, ""]))
+                |> Enum.map(fn project -> {project, prune_old_builds(project, retention)} end)
+                |> Map.new()
+
+              %{status: :ok, retention: retention, pruned: pruned}
+
+            {:error, reason} ->
+              %{status: :error, retention: retention, error: inspect(reason)}
+          end
 
         elapsed = System.monotonic_time(:millisecond) - start
         Logger.info("[Arcade.Consolidator] Cycle complete in #{elapsed}ms — #{inspect(result)}")
 
-        %{state |
-          last_run: DateTime.utc_now(),
-          run_count: state.run_count + 1,
-          last_result: result
+        %{
+          state
+          | last_run: DateTime.utc_now(),
+            run_count: state.run_count + 1,
+            last_result: result
         }
 
       {:error, reason} ->
@@ -217,6 +250,61 @@ defmodule Giulia.Storage.Arcade.Consolidator do
         state
     end
   end
+
+  @doc """
+  Prune CALLS + DEPENDS_ON edges in ArcadeDB for `project` whose
+  `build_id` is older than the most recent `retention` builds.
+
+  Behavior:
+    * `retention` < 3 is rejected (caller's responsibility — drift
+      detection needs at least 3 builds of history).
+    * If the project has fewer builds than the retention window,
+      nothing is pruned.
+    * The cutoff is `keep_from = Nth-newest build_id`; the SQL
+      delete uses `build_id < keep_from`, so the Nth-newest is kept.
+
+  Returns a summary map: `%{kept, pruned, keep_from, calls, depends_on}`
+  on success, `%{kept: 0, pruned: 0, error: ...}` on lookup failure,
+  or `%{kept: N, pruned: 0}` when no pruning was needed.
+  """
+  @spec prune_old_builds(String.t(), pos_integer()) :: map()
+  def prune_old_builds(project, retention)
+      when is_binary(project) and is_integer(retention) and retention >= 3 do
+    case Client.list_builds(project) do
+      {:ok, builds} when is_list(builds) and builds != [] ->
+        build_ids =
+          builds
+          |> Enum.map(fn row -> row["build_id"] || row[:build_id] end)
+          |> Enum.reject(&is_nil/1)
+          |> Enum.sort(:desc)
+
+        if length(build_ids) <= retention do
+          %{kept: length(build_ids), pruned: 0}
+        else
+          keep_from = Enum.at(build_ids, retention - 1)
+
+          calls_result = Client.delete_edges_older_than("CALLS", project, keep_from)
+          deps_result = Client.delete_edges_older_than("DEPENDS_ON", project, keep_from)
+
+          %{
+            kept: retention,
+            pruned: length(build_ids) - retention,
+            keep_from: keep_from,
+            calls: result_status(calls_result),
+            depends_on: result_status(deps_result)
+          }
+        end
+
+      {:ok, []} ->
+        %{kept: 0, pruned: 0}
+
+      {:error, reason} ->
+        %{kept: 0, pruned: 0, error: inspect(reason)}
+    end
+  end
+
+  defp result_status({:ok, _}), do: :ok
+  defp result_status({:error, reason}), do: {:error, reason}
 
   defp schedule_next(interval) do
     Process.send_after(self(), :consolidate, interval)
