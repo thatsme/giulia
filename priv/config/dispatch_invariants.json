@@ -1,0 +1,60 @@
+{
+  "$schema_version": 1,
+  "$description": "Dispatch invariants — sets and maps the indexer / metrics / builder / behaviour-integrity checks consult on every analysis. Loaded once at first call by Giulia.Config.DispatchInvariants and cached in :persistent_term. Editing this file and restarting the daemon picks up new values — no recompile. Defaults must be valid for every codebase (per feedback_zero_config_universal). project_markers: filenames any of which qualifies a directory as a scannable project root. implicit_functions: name/arity pairs invoked by OTP/framework dispatch never via direct calls — exempted from dead_code. known_behaviour_callbacks: behaviour module name (as it appears in `use X` / `@behaviour X`) → callback signatures. Used to exempt callback functions of stdlib/ecosystem behaviours that aren't in the project graph. router_verbs: HTTP verbs Phoenix's router DSL recognises; Pass 9 dispatch-edge synthesis only fires for AST nodes whose head matches one of these.",
+  "project_markers": ["mix.exs", "GIULIA.md", "package.json", "Cargo.toml", "go.mod"],
+  "implicit_functions": [
+    ["init", 1],
+    ["handle_call", 3],
+    ["handle_cast", 2],
+    ["handle_info", 2],
+    ["handle_continue", 2],
+    ["terminate", 2],
+    ["code_change", 3],
+    ["start", 2],
+    ["stop", 1],
+    ["child_spec", 1],
+    ["call", 2],
+    ["main", 1],
+    ["changeset", 1],
+    ["changeset", 2],
+    ["name", 0],
+    ["description", 0],
+    ["parameters", 0]
+  ],
+  "known_behaviour_callbacks": {
+    "GenServer": [
+      ["init", 1], ["handle_call", 3], ["handle_cast", 2], ["handle_info", 2],
+      ["handle_continue", 2], ["terminate", 2], ["code_change", 3],
+      ["format_status", 1], ["format_status", 2]
+    ],
+    "Supervisor": [["init", 1]],
+    "DynamicSupervisor": [["init", 1]],
+    "Application": [["start", 2], ["stop", 1], ["config_change", 3], ["prep_stop", 1], ["start_phase", 3]],
+    "Mix.Task": [["run", 1]],
+    "Mix.Task.Compiler": [["run", 1], ["manifests", 0], ["clean", 0]],
+    "Mix.Project": [["project", 0], ["application", 0], ["cli", 0], ["config", 0], ["aliases", 0]],
+    "PromEx": [["plugins", 0], ["dashboards", 0], ["dashboard_assigns", 0]],
+    "PromEx.Plugin": [["event_metrics", 1], ["polling_metrics", 1], ["manual_metrics", 1]],
+    "OpenApiSpex.OpenApi": [["spec", 0]],
+    "SiteEncrypt": [["certification", 0], ["handle_new_cert", 0]],
+    "Ecto.Type": [["type", 0], ["cast", 1], ["load", 1], ["dump", 1], ["equal?", 2], ["embed_as", 1]],
+    "Ecto.ParameterizedType": [
+      ["type", 1], ["init", 1], ["cast", 2], ["load", 3], ["dump", 2], ["equal?", 3], ["embed_as", 1]
+    ],
+    "Plug": [["init", 1], ["call", 2]],
+    "Plug.ErrorHandler": [["handle_errors", 2]],
+    "Phoenix.Controller": [["action", 2], ["init", 1], ["call", 2]],
+    "Phoenix.LiveView": [
+      ["mount", 3], ["render", 1], ["handle_params", 3], ["handle_event", 3], ["handle_info", 2],
+      ["handle_call", 3], ["handle_cast", 2], ["terminate", 2], ["handle_async", 3]
+    ],
+    "Phoenix.LiveComponent": [["mount", 1], ["update", 2], ["render", 1], ["handle_event", 3]],
+    "Phoenix.Endpoint": [["init", 1], ["call", 2]],
+    "Phoenix.Param": [["to_param", 1]],
+    "Phoenix.HTML.Safe": [["to_iodata", 1]],
+    "Oban.Worker": [["perform", 1], ["backoff", 1], ["timeout", 1], ["new", 2]],
+    "Bamboo.Adapter": [["deliver", 2], ["handle_config", 1], ["supports_attachments?", 0]],
+    "Jason.Encoder": [["encode", 2]]
+  },
+  "router_verbs": ["get", "post", "put", "patch", "delete", "head", "options"]
+}

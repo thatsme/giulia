@@ -207,7 +207,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Detect dead code (functions defined but never called)",
     endpoint: "GET /api/knowledge/dead_code",
-    params: %{path: :required},
+    params: %{path: :required, relevance: :optional},
     returns: "JSON list of unused functions",
     category: "knowledge"
   }
@@ -218,7 +218,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
           conn
 
         {:ok, conn, project_path} ->
-          case Giulia.Knowledge.Store.find_dead_code(project_path) do
+          opts = [relevance: conn.query_params["relevance"]]
+
+          case Giulia.Knowledge.Store.find_dead_code(project_path, opts) do
             {:ok, result} ->
               send_json(conn, 200, result)
 
@@ -698,7 +700,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find semantic duplicates (redundant logic via embedding similarity)",
     endpoint: "GET /api/knowledge/duplicates",
-    params: %{path: :required, threshold: :optional, max: :optional},
+    params: %{path: :required, threshold: :optional, max: :optional, relevance: :optional},
     returns: "JSON clusters of semantically similar functions",
     category: "knowledge"
   }
@@ -713,7 +715,8 @@ defmodule Giulia.Daemon.Routers.Knowledge do
 
         case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path,
                threshold: threshold,
-               max: max_clusters
+               max: max_clusters,
+               relevance: conn.query_params["relevance"]
              ) do
           {:ok, result} ->
             send_json(conn, 200, result)
@@ -780,7 +783,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent:
       "Detect coding convention violations (error handling, OTP, atoms, pipes, docs) with optional per-rule per-module suppression",
     endpoint: "GET /api/knowledge/conventions",
-    params: %{path: :required, module: :optional, suppress: :optional},
+    params: %{path: :required, module: :optional, suppress: :optional, relevance: :optional},
     returns: "JSON violations grouped by severity, category, and file with convention references",
     category: "knowledge"
   }
@@ -794,7 +797,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
           module_filter = conn.query_params["module"]
           suppress = parse_suppress(conn.query_params["suppress"])
 
-          opts = [suppress: suppress]
+          opts = [suppress: suppress, relevance: conn.query_params["relevance"]]
           opts = if module_filter, do: Keyword.put(opts, :module, module_filter), else: opts
 
           case Giulia.Knowledge.Store.find_conventions(project_path, opts) do

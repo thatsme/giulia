@@ -437,7 +437,9 @@ defmodule Giulia.Intelligence.SemanticIndex do
   @spec find_duplicates(String.t(), keyword()) ::
           {:ok, %{clusters: [map()], count: non_neg_integer()}} | {:error, String.t()}
   def find_duplicates(project_path, opts \\ []) do
-    threshold = Keyword.get(opts, :threshold, 0.85)
+    supplied_threshold = Keyword.get(opts, :threshold, 0.85)
+    relevance = Keyword.get(opts, :relevance)
+    threshold = Giulia.Config.Relevance.duplicate_threshold(relevance, supplied_threshold)
     max_clusters = Keyword.get(opts, :max, 20)
 
     unless EmbeddingServing.available?() do

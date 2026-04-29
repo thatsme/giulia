@@ -150,6 +150,36 @@ defmodule Giulia.Knowledge.Store.Reader do
     end
   end
 
+  @spec find_dead_code(String.t(), keyword()) :: {:ok, map()}
+  def find_dead_code(project_path, opts) do
+    {:ok, full} = find_dead_code(project_path)
+    {:ok, apply_dead_code_relevance(full, Keyword.get(opts, :relevance))}
+  end
+
+  defp apply_dead_code_relevance(result, bucket)
+       when bucket in [nil, "all"] do
+    result
+  end
+
+  defp apply_dead_code_relevance(result, bucket) when is_binary(bucket) do
+    case Giulia.Config.Relevance.dead_code_categories(bucket) do
+      :all ->
+        result
+
+      keep_set ->
+        filtered =
+          Enum.filter(result.dead, fn entry ->
+            MapSet.member?(keep_set, entry.category)
+          end)
+
+        result
+        |> Map.put(:dead, filtered)
+        |> Map.put(:count, length(filtered))
+        |> Map.put(:summary, Giulia.Knowledge.DeadCodeClassifier.summarize(filtered))
+        |> Map.put(:relevance, bucket)
+    end
+  end
+
   @spec find_coupling(String.t()) :: {:ok, map()}
   def find_coupling(project_path) do
     case get_cached(project_path, :coupling) do
@@ -197,7 +227,49 @@ defmodule Giulia.Knowledge.Store.Reader do
   @spec find_conventions(String.t(), String.t() | keyword()) :: {:ok, map()}
   def find_conventions(project_path, module_filter_or_opts) do
     # Module-filtered and suppressed queries are not cached (params vary per request)
-    Analyzer.conventions(project_path, module_filter_or_opts)
+    {:ok, full} = Analyzer.conventions(project_path, module_filter_or_opts)
+    bucket = relevance_from(module_filter_or_opts)
+    {:ok, apply_conventions_relevance(full, bucket)}
+  end
+
+  defp relevance_from(opts) when is_list(opts), do: Keyword.get(opts, :relevance)
+  defp relevance_from(_), do: nil
+
+  defp apply_conventions_relevance(result, bucket) when bucket in [nil, "all"], do: result
+
+  defp apply_conventions_relevance(result, bucket) when is_binary(bucket) do
+    case Giulia.Config.Relevance.convention_severities(bucket) do
+      :all ->
+        result
+
+      keep_set ->
+        by_file =
+          result.by_file
+          |> Enum.map(fn {file, vs} ->
+            {file, Enum.filter(vs, fn v -> MapSet.member?(keep_set, v.severity) end)}
+          end)
+          |> Enum.reject(fn {_file, vs} -> vs == [] end)
+          |> Map.new()
+
+        violations = Enum.flat_map(by_file, fn {_f, vs} -> vs end)
+        by_severity_counts = Enum.frequencies_by(violations, & &1.severity)
+
+        result
+        |> Map.put(:by_file, by_file)
+        |> Map.put(:total_violations, length(violations))
+        |> Map.put(:by_severity, %{
+          error: Map.get(by_severity_counts, "error", 0),
+          warning: Map.get(by_severity_counts, "warning", 0),
+          info: Map.get(by_severity_counts, "info", 0)
+        })
+        |> Map.put(:by_category,
+          violations
+          |> Enum.group_by(& &1.category)
+          |> Enum.map(fn {k, vs} -> {k, length(vs)} end)
+          |> Enum.sort_by(fn {_k, n} -> -n end)
+        )
+        |> Map.put(:relevance, bucket)
+    end
   end
 
   # ============================================================================

@@ -4,7 +4,73 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
-## [0.3.7 – Build 160] — 2026-04-29 — Protocol-shim discipline, self-scan SIGSEGV fix, verifier parity
+## [0.3.8 – Build 161] — 2026-04-29 — Config-driven dispatch invariants + relevance filter on noisy endpoints
+
+Two slices, both user-visible.
+
+### `?relevance=high|medium|all` on `dead_code`, `conventions`, `duplicates`
+
+A single shared parameter that lets clients trade noise for signal on
+the three highest-volume listing endpoints. Invariant: missing or
+unrecognised value → `all` (current default — fully backwards compatible).
+
+  - `/api/knowledge/dead_code?relevance=high` → only `:genuine` entries.
+    `medium` → `:genuine + :uncategorized` (matches existing `actionable`
+    rollup).
+  - `/api/knowledge/conventions?relevance=high` → only `severity: "error"`
+    violations. `medium` → error + warning. Filter applies to `by_file`
+    grouping and recomputes `total_violations` + `by_severity` +
+    `by_category` so the response shape stays consistent with the
+    unfiltered call.
+  - `/api/knowledge/duplicates?relevance=high` → tightens the cosine
+    threshold to **0.95** (very-likely true duplicates). `medium` → 0.90.
+    A user-supplied `?threshold=` HIGHER than the bucket wins (relevance
+    can only tighten, never loosen).
+
+Same `relevance` arg available on the equivalent MCP tools
+(`knowledge_dead_code`, `knowledge_conventions`, `knowledge_duplicates`).
+Bucket boundaries live in `priv/config/relevance.json` and are tunable
+without recompile — same persistence pattern as `ScoringConfig` /
+`DispatchPatterns` / `DispatchInvariants` / `ScanConfig`.
+
+Closes a long-standing LLM-context-pollution complaint: agents asking
+for `dead_code` against a large project no longer have to manually
+filter `library_public_api` / `test_only` rollups out of the response
+before reasoning about it.
+
+### Config-driven dispatch invariants (closes 2f)
+
+Four module attributes that previously hardcoded dispatch-time data
+in `.ex` source moved to `priv/config/dispatch_invariants.json`:
+
+  - `@project_markers` (Indexer)
+  - `@implicit_functions` (Metrics — OTP/framework callbacks exempted from dead_code)
+  - `@known_behaviour_callbacks` (Behaviours — 24 stdlib/ecosystem behaviour signatures)
+  - `@router_verbs` (Builder + Metrics — Phoenix HTTP verbs; previously DUPLICATED across two modules)
+
+All four read through `Giulia.Config.DispatchInvariants` (persistent_term
+cache, mirrors `ScoringConfig` shape). The `@router_verbs`-in-guard
+sites refactored to runtime check (`is_atom(verb) and is_atom(action)`
+guard + `router_verb?/1` body call) so the convention "JSON edit +
+daemon restart, no recompile" applies uniformly.
+
+### Hermetic test compose
+
+Independent of the two slices above, `docker-compose.test.yml` was
+audited for precondition violations against prod state and corrected:
+
+  - Top-level `name: giulia-test` → its own compose project + own
+    default network. No more shared `giulia_default` with prod.
+  - Volumes renamed `giulia_deps` → `giulia_test_deps`,
+    `giulia_models` → `giulia_test_models`. The four-volume layout is
+    now mechanically incapable of touching prod state
+    (`giulia_data`, `giulia_build`, `giulia_deps`, `giulia_models`).
+  - `down -v` on the test compose can no longer wipe prod caches.
+
+Test ritual collapsed from 4 steps (pre-flight, stop prod, run, teardown)
+to 3 (pre-flight, run, teardown). Prod stays up during tests.
+
+
 
 Three independent slices in one release. Each closes a class of
 silent-correctness or operational issue surfaced by the v0.3.x

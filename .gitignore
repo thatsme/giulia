@@ -60,3 +60,6 @@ start-work.bat
 .env.home
 .env.work
 CLAUDE.md
+
+# macOS metadata
+.DS_Store

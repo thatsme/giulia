@@ -14,6 +14,14 @@
 #
 # The test runner uses /projects/Giulia (live mount), NOT /app (stale image copy).
 # NEVER run `mix format` inside this container — see TESTING.md for why.
+#
+# HERMETIC BY CONSTRUCTION: this stack uses its own project name (`giulia-test`),
+# its own network, and `giulia_test_*` / `arcadedb_test_*` volumes only. It is
+# mechanically incapable of touching prod state (`giulia_data`, `giulia_build`,
+# `giulia_deps`, `giulia_models`, `giulia-worker`, `giulia-monitor`).
+# `down -v` is unconditionally safe.
+
+name: giulia-test
 
 services:
   # ============================================================================
@@ -85,12 +93,14 @@ services:
     volumes:
       # Live source mount — edits on host are immediately visible
       - ${GIULIA_PROJECTS_PATH:-D:/Development/GitHub}:/projects:rw
-      # Shared deps cache (saves ~30s on repeated runs)
-      - giulia_deps:/tmp/giulia_deps
+      # Test-isolated deps cache — separate from prod's giulia_deps so
+      # `down -v` cannot wipe prod's Mix dependency cache.
+      - giulia_test_deps:/tmp/giulia_deps
       # Isolated test build (separate from dev to avoid MIX_ENV collisions)
       - giulia_test_build:/tmp/giulia_test_build
-      # Model cache (EmbeddingServing)
-      - giulia_models:/root/.cache
+      # Test-isolated model cache — separate from prod's giulia_models so
+      # `down -v` cannot wipe prod's Bumblebee/EXLA embedding model cache.
+      - giulia_test_models:/root/.cache
       # Temp data dir (CubDB etc — fresh each run via tmpfs)
       - giulia_test_data:/data
 
@@ -102,12 +112,12 @@ services:
           memory: 1G
 
 volumes:
-  giulia_deps:
-    name: giulia_deps
+  giulia_test_deps:
+    name: giulia_test_deps
   giulia_test_build:
     name: giulia_test_build
-  giulia_models:
-    name: giulia_models
+  giulia_test_models:
+    name: giulia_test_models
   arcadedb_test_data:
     # Fresh each `down -v`
   giulia_test_data:

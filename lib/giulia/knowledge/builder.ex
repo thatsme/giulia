@@ -1132,8 +1132,6 @@ defmodule Giulia.Knowledge.Builder do
   # Pass 9: Phoenix router dispatch edges
   # ============================================================================
 
-  @router_verbs [:get, :post, :put, :patch, :delete, :head, :options]
-
   # Standard actions `resources/2,3` generates if no `:only`/`:except` opt.
   # Arity 2 (Phoenix controller convention: `def action(conn, params)`).
   @resources_default_actions [:index, :show, :new, :create, :edit, :update, :delete]
@@ -1278,9 +1276,13 @@ defmodule Giulia.Knowledge.Builder do
          alias_map,
          current_scope_ns
        )
-       when verb in @router_verbs and is_atom(action) do
-    controller = resolve_controller(parts, alias_map, current_scope_ns)
-    {:ok, [{controller, to_string(action), 2}]}
+       when is_atom(verb) and is_atom(action) do
+    if Giulia.Config.DispatchInvariants.router_verb?(verb) do
+      controller = resolve_controller(parts, alias_map, current_scope_ns)
+      {:ok, [{controller, to_string(action), 2}]}
+    else
+      :skip
+    end
   end
 
   # Same shape but action wrapped in Sourceror's :__block__.
@@ -1289,9 +1291,13 @@ defmodule Giulia.Knowledge.Builder do
          alias_map,
          current_scope_ns
        )
-       when verb in @router_verbs and is_atom(action) do
-    controller = resolve_controller(parts, alias_map, current_scope_ns)
-    {:ok, [{controller, to_string(action), 2}]}
+       when is_atom(verb) and is_atom(action) do
+    if Giulia.Config.DispatchInvariants.router_verb?(verb) do
+      controller = resolve_controller(parts, alias_map, current_scope_ns)
+      {:ok, [{controller, to_string(action), 2}]}
+    else
+      :skip
+    end
   end
 
   # `resources "/path", ControllerAlias` → 7 RESTful actions.

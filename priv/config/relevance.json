@@ -1,0 +1,16 @@
+{
+  "$schema_version": 1,
+  "$description": "Relevance bucket definitions for noisy listing endpoints (dead_code, conventions, duplicates). The ?relevance=high|medium|all query parameter / MCP arg is a shorthand the client sends; the server consults this file to decide what to retain. Universal defaults — must be valid for every codebase. Editing this file and restarting the daemon picks up new buckets — no recompile.\n\ndead_code: filter retains entries whose :category is in the listed set. high keeps only :genuine (likely-real dead). medium keeps :genuine + :uncategorized (matches the existing actionable rollup; uncategorized is reserved for future signals).\n\nconventions: filter retains violations whose :severity is in the listed set. Severity strings match the values the analyzer already emits.\n\nduplicates: relevance overrides the supplied/default :threshold to a HIGHER value (never lower). high → 0.95 (very-likely true duplicates). medium → 0.90.\n\n?relevance=all (or absent) means no filter — full unfiltered response, current default.",
+  "dead_code": {
+    "high": ["genuine"],
+    "medium": ["genuine", "uncategorized"]
+  },
+  "conventions": {
+    "high": ["error"],
+    "medium": ["error", "warning"]
+  },
+  "duplicates": {
+    "high": 0.95,
+    "medium": 0.90
+  }
+}

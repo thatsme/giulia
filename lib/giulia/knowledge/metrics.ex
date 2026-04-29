@@ -10,34 +10,6 @@ defmodule Giulia.Knowledge.Metrics do
   Extracted from `Knowledge.Analyzer` (Build 108).
   """
 
-  # OTP/framework callbacks that are invoked implicitly, never via direct calls
-  @implicit_functions MapSet.new([
-                        # GenServer
-                        {"init", 1},
-                        {"handle_call", 3},
-                        {"handle_cast", 2},
-                        {"handle_info", 2},
-                        {"handle_continue", 2},
-                        {"terminate", 2},
-                        {"code_change", 3},
-                        # Application
-                        {"start", 2},
-                        {"stop", 1},
-                        # Supervisor
-                        {"child_spec", 1},
-                        # Plug
-                        {"call", 2},
-                        # Escript
-                        {"main", 1},
-                        # Ecto
-                        {"changeset", 1},
-                        {"changeset", 2},
-                        # Tool behaviour (Giulia-specific)
-                        {"name", 0},
-                        {"description", 0},
-                        {"parameters", 0}
-                      ])
-
   # ============================================================================
   # Heatmap (Composite module health score)
   # ============================================================================
@@ -505,7 +477,7 @@ defmodule Giulia.Knowledge.Metrics do
           MapSet.member?(protocol_impl_modules, func.module) or
           MapSet.member?(router_actions, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(dispatch_entries, {func.module, to_string(func.name), func.arity}) or
-          MapSet.member?(@implicit_functions, name_arity) or
+          MapSet.member?(Giulia.Config.DispatchInvariants.implicit_functions(), name_arity) or
           MapSet.member?(impl_callbacks, {func.module, to_string(func.name), func.arity}) or
           MapSet.member?(reference_targets, "#{func.module}.#{func.name}/#{func.arity}") or
           MapSet.member?(template_refs.qualified, "#{func.module}.#{func.name}") or
@@ -1133,7 +1105,6 @@ defmodule Giulia.Knowledge.Metrics do
   # Router action collection
   # ============================================================================
 
-  @router_verbs [:get, :post, :put, :patch, :delete, :head, :options]
   @resources_default_actions [:index, :show, :new, :create, :edit, :update, :delete]
 
   @doc false
@@ -1246,9 +1217,13 @@ defmodule Giulia.Knowledge.Metrics do
          alias_map,
          scope_ns
        )
-       when verb in @router_verbs and is_atom(action) do
-    controller = resolve_controller_name(parts, alias_map, scope_ns)
-    {:ok, [{controller, to_string(action), 2}]}
+       when is_atom(verb) and is_atom(action) do
+    if Giulia.Config.DispatchInvariants.router_verb?(verb) do
+      controller = resolve_controller_name(parts, alias_map, scope_ns)
+      {:ok, [{controller, to_string(action), 2}]}
+    else
+      :skip
+    end
   end
 
   defp route_call_for_exemption(
@@ -1256,9 +1231,13 @@ defmodule Giulia.Knowledge.Metrics do
          alias_map,
          scope_ns
        )
-       when verb in @router_verbs and is_atom(action) do
-    controller = resolve_controller_name(parts, alias_map, scope_ns)
-    {:ok, [{controller, to_string(action), 2}]}
+       when is_atom(verb) and is_atom(action) do
+    if Giulia.Config.DispatchInvariants.router_verb?(verb) do
+      controller = resolve_controller_name(parts, alias_map, scope_ns)
+      {:ok, [{controller, to_string(action), 2}]}
+    else
+      :skip
+    end
   end
 
   defp route_call_for_exemption(

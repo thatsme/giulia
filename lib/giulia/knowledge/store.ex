@@ -139,6 +139,9 @@ defmodule Giulia.Knowledge.Store do
   @spec find_dead_code(project_path()) :: {:ok, map()}
   defdelegate find_dead_code(project_path), to: Reader
 
+  @spec find_dead_code(project_path(), keyword()) :: {:ok, map()}
+  defdelegate find_dead_code(project_path, opts), to: Reader
+
   @spec find_god_modules(project_path()) :: {:ok, map()}
   defdelegate find_god_modules(project_path), to: Reader
 

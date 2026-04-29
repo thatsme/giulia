@@ -91,7 +91,14 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
   end
 
   @spec dead_code(map()) :: {:ok, term()} | {:error, String.t()}
-  def dead_code(args), do: simple_call(args, :find_dead_code)
+  def dead_code(args) do
+    with {:ok, path} <- require_path(args) do
+      case Store.find_dead_code(path, relevance: args["relevance"]) do
+        {:ok, result} -> {:ok, result}
+        {:error, reason} -> {:error, "find_dead_code failed: #{inspect(reason)}"}
+      end
+    end
+  end
 
   @spec cycles(map()) :: {:ok, term()} | {:error, String.t()}
   def cycles(args), do: simple_call(args, :find_cycles)
@@ -225,7 +232,11 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
       threshold = parse_float(args["threshold"], 0.85)
       max_clusters = parse_int(args["max"], 20)
 
-      case SemanticIndex.find_duplicates(path, threshold: threshold, max: max_clusters) do
+      case SemanticIndex.find_duplicates(path,
+             threshold: threshold,
+             max: max_clusters,
+             relevance: args["relevance"]
+           ) do
         {:ok, result} ->
           {:ok, result}
 
@@ -256,7 +267,7 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
   def conventions(args) do
     with {:ok, path} <- require_path(args) do
       suppress = parse_suppress(args["suppress"])
-      opts = [suppress: suppress]
+      opts = [suppress: suppress, relevance: args["relevance"]]
       opts = if args["module"], do: Keyword.put(opts, :module, args["module"]), else: opts
 
       case Store.find_conventions(path, opts) do

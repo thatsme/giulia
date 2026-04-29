@@ -13,72 +13,14 @@ defmodule Giulia.Knowledge.Behaviours do
   # ============================================================================
   # Known external behaviours
   # ============================================================================
-  #
-  # Static map of stdlib / ecosystem behaviours to their callback
-  # signatures. Keyed by the string module name as it appears in
-  # `use SomeModule` or `@behaviour SomeModule` declarations. Covers
-  # the frameworks that account for the bulk of real-world Elixir
-  # dispatch — dead_code and future graph-traversal analyses use this
-  # to avoid flagging callback functions as dead.
-  #
-  # v1 approach (inline static map): simplest, ships immediately,
-  # adequate for the behaviours implemented by >95% of Elixir projects.
-  # Maintenance liability acknowledged — callback sets evolve as
-  # frameworks change. TODO for future slice: compile-time introspection
-  # against loadable behaviour modules so the map becomes derivative,
-  # not authoritative.
-  @known_behaviour_callbacks %{
-    "GenServer" => [
-      init: 1, handle_call: 3, handle_cast: 2, handle_info: 2,
-      handle_continue: 2, terminate: 2, code_change: 3, format_status: 1, format_status: 2
-    ],
-    "Supervisor" => [init: 1],
-    "DynamicSupervisor" => [init: 1],
-    "Application" => [start: 2, stop: 1, config_change: 3, prep_stop: 1, start_phase: 3],
-    "Mix.Task" => [run: 1],
-    "Mix.Task.Compiler" => [run: 1, manifests: 0, clean: 0],
-    "Mix.Project" => [project: 0, application: 0, cli: 0, config: 0, aliases: 0],
-    # PromEx root module: `use PromEx, otp_app: :app` injects @behaviour PromEx
-    # and the project defines plugins/0 (required) + dashboards/0 +
-    # dashboard_assigns/0 (optional).
-    "PromEx" => [plugins: 0, dashboards: 0, dashboard_assigns: 0],
-    # PromEx plugins: `use PromEx.Plugin`. Prior entries for execute_*/1 were
-    # wrong — those are user-defined helpers registered via function captures
-    # (`&Module.fn/0`) inside polling_metrics/1 return values, not behaviour
-    # callbacks. That's a separate dispatch pattern (function-capture
-    # registration) which this map can't express cleanly.
-    "PromEx.Plugin" => [event_metrics: 1, polling_metrics: 1, manual_metrics: 1],
-    # OpenApiSpex top-level spec module: @behaviour OpenApiSpex.OpenApi,
-    # requires spec/0 returning the OpenAPI document.
-    "OpenApiSpex.OpenApi" => [spec: 0],
-    # SiteEncrypt (ACME / Let's Encrypt auto-cert library) — host app
-    # implements the behaviour on its Phoenix Endpoint module.
-    "SiteEncrypt" => [certification: 0, handle_new_cert: 0],
-    "Ecto.Type" => [type: 0, cast: 1, load: 1, dump: 1, equal?: 2, embed_as: 1],
-    "Ecto.ParameterizedType" => [
-      type: 1, init: 1, cast: 2, load: 3, dump: 2, equal?: 3, embed_as: 1
-    ],
-    "Plug" => [init: 1, call: 2],
-    "Plug.ErrorHandler" => [handle_errors: 2],
-    "Phoenix.Controller" => [action: 2, init: 1, call: 2],
-    "Phoenix.LiveView" => [
-      mount: 3, render: 1, handle_params: 3, handle_event: 3, handle_info: 2,
-      handle_call: 3, handle_cast: 2, terminate: 2, handle_async: 3
-    ],
-    "Phoenix.LiveComponent" => [mount: 1, update: 2, render: 1, handle_event: 3],
-    "Phoenix.Endpoint" => [init: 1, call: 2],
-    "Phoenix.Param" => [to_param: 1],
-    "Phoenix.HTML.Safe" => [to_iodata: 1],
-    "Oban.Worker" => [perform: 1, backoff: 1, timeout: 1, new: 2],
-    "Bamboo.Adapter" => [deliver: 2, handle_config: 1, supports_attachments?: 0],
-    "Jason.Encoder" => [encode: 2]
-  }
+  # Behaviour name → callback signatures. Config-driven; see
+  # priv/config/dispatch_invariants.json and Giulia.Config.DispatchInvariants.
 
   @doc """
   List of behaviour module names recognized by the indexer.
   """
   @spec known_behaviours() :: [String.t()]
-  def known_behaviours, do: Map.keys(@known_behaviour_callbacks)
+  def known_behaviours, do: Giulia.Config.DispatchInvariants.known_behaviours()
 
   @doc """
   Callback `{name, arity}` pairs for a known behaviour module name,
@@ -86,7 +28,7 @@ defmodule Giulia.Knowledge.Behaviours do
   """
   @spec callbacks_for(String.t()) :: [{atom(), non_neg_integer()}]
   def callbacks_for(behaviour_name) do
-    Map.get(@known_behaviour_callbacks, behaviour_name, [])
+    Giulia.Config.DispatchInvariants.callbacks_for(behaviour_name)
   end
 
   # ============================================================================
@@ -249,7 +191,7 @@ defmodule Giulia.Knowledge.Behaviours do
         end)
       end)
 
-    # Source 2: external behaviours from `@known_behaviour_callbacks`.
+    # Source 2: external behaviours from DispatchInvariants config.
     # The behaviour module (GenServer, Mix.Task, Ecto.Type, etc.) is
     # not in the project graph, so there's no :implements edge to walk.
     # Instead, iterate module_info entries, find declarations of known
@@ -301,7 +243,7 @@ defmodule Giulia.Knowledge.Behaviours do
     imports
     |> Enum.filter(fn imp -> imp.type in [:use, :behaviour] end)
     |> Enum.map(fn imp -> Map.get(alias_map, imp.module, imp.module) end)
-    |> Enum.filter(fn mod -> Map.has_key?(@known_behaviour_callbacks, mod) end)
+    |> Enum.filter(&Giulia.Config.DispatchInvariants.known_behaviour?/1)
     |> Enum.uniq()
   end
 

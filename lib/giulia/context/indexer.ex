@@ -204,9 +204,6 @@ defmodule Giulia.Context.Indexer do
     }
   end
 
-  # Project root markers — at least one must exist for a valid scan target
-  @project_markers ["mix.exs", "GIULIA.md", "package.json", "Cargo.toml", "go.mod"]
-
   @impl true
   @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:scan, project_path, opts}, state) do
@@ -275,7 +272,7 @@ defmodule Giulia.Context.Indexer do
     else
       Logger.error(
         "SCAN REFUSED: No project root marker found at #{project_path}. " <>
-          "Expected one of: #{Enum.join(@project_markers, ", ")}"
+          "Expected one of: #{Enum.join(Giulia.Config.DispatchInvariants.project_markers(), ", ")}"
       )
 
       {:noreply, state}
@@ -790,7 +787,7 @@ defmodule Giulia.Context.Indexer do
   Public so the HTTP layer can report expected markers in 422 errors.
   """
   @spec project_markers() :: [String.t()]
-  def project_markers, do: @project_markers
+  def project_markers, do: Giulia.Config.DispatchInvariants.project_markers()
 
   @doc """
   Returns true iff `path` is a binary pointing at a directory that
@@ -802,7 +799,7 @@ defmodule Giulia.Context.Indexer do
   def valid_project_root?(nil), do: false
 
   def valid_project_root?(path) when is_binary(path) do
-    Enum.any?(@project_markers, fn marker ->
+    Enum.any?(Giulia.Config.DispatchInvariants.project_markers(), fn marker ->
       File.exists?(Path.join(path, marker))
     end)
   end
