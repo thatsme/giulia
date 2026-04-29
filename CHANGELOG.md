@@ -70,7 +70,7 @@ audited for precondition violations against prod state and corrected:
 Test ritual collapsed from 4 steps (pre-flight, stop prod, run, teardown)
 to 3 (pre-flight, run, teardown). Prod stays up during tests.
 
-
+## [0.3.7 – Build 160] — 2026-04-29 — Protocol-shim discipline, self-scan SIGSEGV fix, verifier parity
 
 Three independent slices in one release. Each closes a class of
 silent-correctness or operational issue surfaced by the v0.3.x
