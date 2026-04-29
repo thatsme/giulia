@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 155 · v0.2.1 · 2026-03-28
+> **Document version**: Build 160 · v0.3.7 · 2026-04-29
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -527,15 +527,16 @@ curl -X POST http://localhost:4000/api/index/verify \
 
 ### POST /api/index/compact
 
-Trigger CubDB compaction to reclaim disk space from the persistence layer.
+Trigger CubDB compaction to reclaim disk space from the persistence layer. With `include: "arcade"`, also prune stale build_id rows from ArcadeDB (`CALLS` + `DEPENDS_ON` edges older than the configured retention window in `priv/config/scan_defaults.json :arcade_history_builds`).
 
 **Parameters (JSON body):**
 
-| Field  | Required | Description            |
-|--------|----------|------------------------|
-| `path` | Yes      | Host-side project path |
+| Field     | Required | Description                                                                                |
+|-----------|----------|--------------------------------------------------------------------------------------------|
+| `path`    | Yes      | Host-side project path                                                                     |
+| `include` | No       | Set to `"arcade"` to additionally prune stale ArcadeDB build_id rows. Default: CubDB only. |
 
-**Example:**
+**Example (CubDB only):**
 
 ```bash
 curl -X POST http://localhost:4000/api/index/compact \
@@ -551,6 +552,82 @@ curl -X POST http://localhost:4000/api/index/compact \
   "path": "/projects/Giulia"
 }
 ```
+
+**Example (with Arcade prune):**
+
+```bash
+curl -X POST http://localhost:4000/api/index/compact \
+  -H "Content-Type: application/json" \
+  -d '{"path": "C:/Development/GitHub/Giulia", "include": "arcade"}'
+```
+
+**Response (with Arcade prune):**
+
+```json
+{
+  "status": "compacting",
+  "path": "/projects/Giulia",
+  "arcade": {
+    "retention": 10,
+    "pruned": {
+      "kept": 10,
+      "pruned": 3,
+      "keep_from": 157,
+      "calls": "ok",
+      "depends_on": "ok"
+    }
+  }
+}
+```
+
+When fewer builds exist than the retention window, `pruned.pruned` is `0` and the `keep_from` field is omitted. The retention window is configurable via `arcade_history_builds` (default 10, clamped ≥3). Without periodic pruning, `verify_l3.count_parity` would report `l3_exceeds_l1` reliably even on a healthy system as builds accumulate.
+
+---
+
+### POST /api/index/enrichment
+
+Ingest output from external Elixir tools (Credo, Dialyzer, …) and attach findings to graph vertices. Replaces all prior findings for the `(tool, project)` pair atomically — re-running an ingest is idempotent. Findings persist across source rescans (decoupled lifecycle: tool ingest cadence is typically per-PR, source scan cadence is per-edit).
+
+**Parameters (JSON body):**
+
+| Field          | Required | Description                                                                                              |
+|----------------|----------|----------------------------------------------------------------------------------------------------------|
+| `tool`         | Yes      | Tool name as registered in `priv/config/enrichment_sources.json` (e.g., `"credo"`, `"dialyzer"`)         |
+| `project`      | Yes      | Host-side project path                                                                                   |
+| `payload_path` | Yes      | Absolute or project-relative path to the tool's JSON output. Must fall under one of `enrichment_payload_roots` from `scan_defaults.json` (rejects with HTTP 422 otherwise — prevents arbitrary file read) |
+
+**Example:**
+
+```bash
+mix credo --format json > /tmp/credo.json
+curl -X POST http://localhost:4000/api/index/enrichment \
+  -H "Content-Type: application/json" \
+  -d '{"tool": "credo", "project": "C:/Development/GitHub/Giulia", "payload_path": "/tmp/credo.json"}'
+```
+
+**Response:**
+
+```json
+{
+  "tool": "credo",
+  "ingested": 98,
+  "targets": 81,
+  "replaced": 0
+}
+```
+
+`ingested` is the total finding count; `targets` is the number of unique graph vertices the findings attach to (multiple findings can share a target); `replaced` is the prior count that was overwritten by the new ingest (0 on first run).
+
+**Errors:**
+
+| HTTP | Reason                                                                            |
+|------|-----------------------------------------------------------------------------------|
+| 422  | Missing or invalid `:tool` / `:project` / `:payload_path`                         |
+| 422  | Project path doesn't resolve to an existing directory                             |
+| 422  | `payload_path` not under any allowed root (`enrichment_payload_roots`)            |
+| 422  | `payload_path` is not a regular file (directory, symlink to dir, missing)         |
+| 422  | Tool not registered in `enrichment_sources.json`                                  |
+| 422  | Tool's parser failed on the payload (malformed JSON, unexpected schema)           |
 
 ---
 
@@ -1403,6 +1480,86 @@ curl "http://localhost:4000/api/knowledge/conventions?path=D:/Development/GitHub
 When `module` filter is provided, the response also includes `"module_filter": "Module.Name"`.
 When `suppress` is provided, the response includes `"suppressions_applied"` showing which rules/modules were suppressed.
 
+---
+
+### GET /api/knowledge/verify_l2
+
+L1↔L2 round-trip integrity check across the graph, AST, and metric caches. For each requested payload, runs vertex/edge parity, stratified sample identity, and per-payload pass/fail. Backed by `Giulia.Persistence.Verifier.verify_l2/2`.
+
+**Parameters (query string):**
+
+| Param               | Required | Description                                                                                              |
+|---------------------|----------|----------------------------------------------------------------------------------------------------------|
+| `path`              | Yes      | Host project path                                                                                        |
+| `check`             | No       | One of `graph`, `ast`, `metrics`, `all` (default `all`)                                                  |
+| `sample_per_label`  | No       | Per-label edge sample size for the graph + AST identity checks (default 10)                              |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/verify_l2?path=D:/Development/GitHub/Giulia&check=all"
+```
+
+**Response (healthy):**
+
+```json
+{
+  "project": "/projects/Giulia",
+  "overall": "pass",
+  "checks": {
+    "graph": {"overall": "pass", "vertex_parity": {"status": "match"}, "edge_parity": {"status": "match"}, "sample_identity": {"overall": "pass"}},
+    "ast":   {"overall": "pass", "file_set_parity": {"status": "match", "l1_count": 180, "l2_count": 180}, "sample_identity": {"ok": 10, "sampled": 10}},
+    "metrics": {"overall": "pass", "l1_keys": 9, "l2_keys": 9, "mismatched_keys": []}
+  }
+}
+```
+
+`overall: "fail"` indicates real cross-store divergence — investigate the failing sub-check's `mismatched_files` / `mismatched_keys` / `extra_in_l2` / `missing_in_l2` lists.
+
+---
+
+### GET /api/knowledge/verify_l3
+
+L1→L3 CALLS edge integrity. Stratified sample of function-level :calls edges from L1 (libgraph in ETS) is looked up in L3 (ArcadeDB CALLS edges) by MFA endpoints; orthogonal count_parity check compares L1's current-build edges against L3's most-recent-build edges. Backed by `Giulia.Storage.Arcade.Verifier.verify/2`.
+
+**Parameters (query string):**
+
+| Param                | Required | Description                                                                  |
+|----------------------|----------|------------------------------------------------------------------------------|
+| `path`               | Yes      | Host project path                                                            |
+| `sample_per_bucket`  | No       | Per-bucket sample size across the resolution-path strata (default 10)        |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/verify_l3?path=D:/Development/GitHub/Giulia&sample_per_bucket=10"
+```
+
+**Response (healthy):**
+
+```json
+{
+  "project": "/projects/Giulia",
+  "overall": "pass",
+  "l1_calls_total": 1863,
+  "l3_calls_total": 1863,
+  "count_parity": {"status": "match", "l1": 1863, "l3": 1863, "delta": 0},
+  "report": {
+    "direct":          {"total_in_bucket": 1100, "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "alias_resolved":  {"total_in_bucket": 320,  "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "local":           {"total_in_bucket": 280,  "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "mfa_ref":         {"total_in_bucket": 38,   "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "capture_ref":     {"total_in_bucket": 64,   "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "use_import_ref":  {"total_in_bucket": 12,   "sampled": 10, "ok": 10, "missing": 0, "errors": 0},
+    "predicate_bang":  {"total_in_bucket": 49,   "sampled": 10, "ok": 10, "missing": 0, "errors": 0}
+  }
+}
+```
+
+`count_parity.l3` is scoped to the most-recent build_id for the project (not cumulative across history), so `match` is achievable on a healthy system regardless of how many prior scans have run. ArcadeDB retention is controlled by `priv/config/scan_defaults.json :arcade_history_builds` and pruned periodically by `Giulia.Storage.Arcade.Consolidator`.
+
+---
+
 ### GET /api/knowledge/topology
 
 Full module dependency graph in Cytoscape.js-ready format. Returns nodes with heatmap scores, centrality (fan-in/fan-out), complexity breakdown, and edges with dependency labels. Designed for direct consumption by the Graph Explorer visualization.
@@ -1608,6 +1765,52 @@ curl -X POST http://localhost:4000/api/plan/validate \
   "suggestion": "Consider adding an alias instead of a full rename"
 }
 ```
+
+---
+
+### GET /api/intelligence/enrichments
+
+Drill-down query for external-tool enrichment findings (Credo, Dialyzer, …) attached to a specific function MFA or module. Uncapped — returns the full set of findings for the requested target. Used by agents that need full context for a specific decision; the consumer surfaces (`/api/knowledge/dead_code`, `POST /api/knowledge/pre_impact_check`) inline a capped subset.
+
+**Parameters (query string):**
+
+| Param    | Required          | Description                                                                                  |
+|----------|-------------------|----------------------------------------------------------------------------------------------|
+| `path`   | Yes               | Host project path                                                                            |
+| `mfa`    | One of mfa/module | Function MFA in `Module.function/arity` form (e.g., `Giulia.Knowledge.Store.audit/1`)        |
+| `module` | One of mfa/module | Module-level findings (e.g., `Giulia.Knowledge.Store`)                                       |
+
+Exactly one of `mfa` or `module` must be provided. Providing neither returns HTTP 400.
+
+**Example (MFA-level):**
+
+```bash
+curl "http://localhost:4000/api/intelligence/enrichments?path=C:/Development/GitHub/Giulia&mfa=Giulia.Knowledge.Store.audit/1"
+```
+
+**Response:**
+
+```json
+{
+  "target": "Giulia.Knowledge.Store.audit/1",
+  "findings": {
+    "credo": [
+      {
+        "check": "Credo.Check.Refactor.CyclomaticComplexity",
+        "severity": "warning",
+        "message": "...",
+        "line": 245,
+        "tool_version": "1.7.5",
+        "run_at": "2026-04-29T05:30:00Z",
+        "source_digest_at_run": "abc123…"
+      }
+    ],
+    "dialyzer": []
+  }
+}
+```
+
+`findings` is a map keyed by tool name. An empty list (`"credo": []`) means the tool was ingested for the project but has no findings on this target. An entirely missing tool key means that tool was never ingested for the project (different signal).
 
 ---
 

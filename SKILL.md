@@ -312,8 +312,10 @@ Staging buffer for atomic multi-file changes with compile-check gates.
 |--------|--------|
 | Re-index after file changes | `POST /api/index/scan` with `{"path":"P"}` — cache-aware: only re-scans changed files. Returns 422 if the path is missing, not a directory, or lacks a project marker (mix.exs, GIULIA.md, package.json, Cargo.toml, go.mod). |
 | Verify cache integrity | `POST /api/index/verify` with `{"path":"P"}` — Merkle tree recomputation |
+| Verify L1↔L2 (graph + AST + metrics) | `GET /api/knowledge/verify_l2?path=P&check=all` — round-trip parity + stratified sample identity per payload. `overall: pass` on a healthy fresh-scanned project; `fail` indicates real cross-store divergence (writer race, partial flush, dropped on serialization). `check` ∈ `graph` \| `ast` \| `metrics` \| `all` (default all) |
+| Verify L1→L3 (CALLS edges) | `GET /api/knowledge/verify_l3?path=P` — stratified MFA sample across resolution-path buckets + count_parity scoped to the most-recent build_id. `overall: pass` on a healthy system regardless of how many prior scans have run. Use after touching extraction / Builder / dispatch-edge passes |
 | **Ingest external tool findings** | `POST /api/index/enrichment` with `{"tool":"credo\|dialyzer\|...","project":"P","payload_path":"/path/to/output"}`. Replace-on-ingest: prior findings for `{tool, project}` are deleted before the new set is written. `payload_path` must fall under `enrichment_payload_roots` allowlist (`/tmp`, `/var/tmp`, project-relative `tmp`/`_build`); 422 otherwise. Returns `{tool, ingested, targets, replaced}`. Findings persist across source rescans (decoupled from extractor lifecycle) and surface inline in `pre_impact_check` and `dead_code` |
-| Compact cache | `POST /api/index/compact` with `{"path":"P"}` — reclaim CubDB disk space |
+| Compact cache | `POST /api/index/compact` with `{"path":"P"}` — reclaim CubDB disk space. Add `"include":"arcade"` to also prune stale build_id rows from ArcadeDB (`CALLS` + `DEPENDS_ON` edges older than `arcade_history_builds`, default 10) |
 | Check behaviour contracts | `GET /api/knowledge/integrity?path=P` |
 | Debug last inference | `GET /api/agent/last_trace` |
 | Compile check | `mix compile --all-warnings` (shell) |

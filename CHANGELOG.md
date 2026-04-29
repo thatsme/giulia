@@ -4,6 +4,240 @@ All notable changes to Giulia that affect observable behavior, API contracts,
 analysis output correctness, or cached-data compatibility. Internal refactors
 and test-only changes are not listed here — see the git log for those.
 
+## [0.3.7 – Build 160] — 2026-04-29 — Protocol-shim discipline, self-scan SIGSEGV fix, verifier parity
+
+Three independent slices in one release. Each closes a class of
+silent-correctness or operational issue surfaced by the v0.3.x
+architectural cleanup.
+
+### MCP dispatch split + orchestration lift (commits `02bd92f` + corrective lift)
+
+`Giulia.MCP.Server` collapsed from 1061 → 118 lines. Tool dispatch is
+now table-driven via `Giulia.MCP.ToolSchema.handler_for/1` — tool
+name maps to `{Module, function}` in the matching
+`Giulia.MCP.Dispatch.<Category>` module via prefix routing, with
+`String.to_existing_atom/1` + `function_exported?/3` guards. The 12
+per-prefix `handle_tool_call` heads and 71 per-category
+`defp dispatch_*` clauses are gone, replaced by a single head.
+
+**Crucially**, the dispatch modules are NOT a place for orchestration.
+Every multi-step composite now lives in the business-logic layer, and
+both HTTP routers and MCP dispatchers reduce to a SINGLE call:
+
+  - `Giulia.Knowledge.Store.audit/1` (was 4-sub-call composite duplicated in router + dispatch)
+  - `Giulia.Knowledge.Store.integrity_report/1` (was triplicated; `format_fracture` was missing the `{name, arity}` → `"name/arity"` step on the MCP path — clients got tuples, HTTP got strings)
+  - `Giulia.Knowledge.Store.topology_view/1` (was DIVERGENT — HTTP used rolled-up edges from v0.3.5, MCP used flat: same operation, different output)
+  - `Giulia.Knowledge.Store.format_fracture/1` (single source of truth)
+  - `Giulia.Persistence.Store.verify_cache/1` (Merkle/CubDB cascade)
+  - `Giulia.Persistence.Verifier.verify_l2/2` (composite over graph/ast/metrics)
+  - `Giulia.Context.Indexer.status_with_cache/1`
+  - `Giulia.Context.Store.Query.functions_by_complexity/2`
+  - `Giulia.Enrichment.Ingest.run_with_validation/3`
+
+Closes the MCP "tools/list ↔ tools/call" gap from v0.3.x: 4 declared
+tools that silently 404'd via MCP are now wired through to the same
+business-logic functions: `index_enrichment`, `intelligence_enrichments`,
+`knowledge_verify_l2`, `knowledge_verify_l3`. Test invariant
+`Giulia.MCP.ToolSchema.unhandled_tools()` must return `[]` — pinned
+by `tool_schema_handler_test.exs`.
+
+Two preexisting bugs surfaced and fixed by the new dispatch tests:
+`Dispatch.Runtime.connect` (case clauses matched a tuple shape that
+`Daemon.Helpers.safe_to_node_atom/1` never returns — every MCP
+runtime_connect call crashed with CaseClauseError) and
+`Dispatch.Runtime.profile_latest` (atom mismatch
+`:no_profiles` vs the actual `:not_found` returned by Monitor).
+
+### Self-scan SIGSEGV fix (commit `350da83`)
+
+`Indexer.scan/1` triggered `mix deps.get` + `mix compile` subprocesses
+via `ensure_compiled/1` to give the project an isolated build path
+for xref analysis. When the project being scanned was the same source
+tree the running BEAM was launched from (e.g., `mix test` running on
+the Giulia codebase scanning `/projects/Giulia`), the inner Mix shared
+`mix.lock`, `deps/`, and `.fetch` markers with the outer Mix process.
+Under ARM64 / OrbStack this SIGSEGV'd the BEAM (exit 139) every time,
+right after xref completed. Integration tests had been failing
+silently at boot for weeks.
+
+  - `Giulia.Context.Indexer.self_scan?/1` detects when
+    `Path.expand(project_path) == Path.expand(File.cwd!())`. On true,
+    `ensure_compiled/1` logs and returns `:ok` without spawning sub-mix.
+  - `Giulia.Knowledge.Builder.find_beam_directory/1` falls back to
+    `Mix.Project.build_path/0` for self-scans so xref reads the outer
+    Mix's already-compiled BEAMs.
+  - `Builder.giulia_build_path/1` (private duplicate) deleted; both
+    modules now share `Indexer.giulia_build_path/1`.
+
+**Prod unaffected**: prod runs the daemon binary (not `mix test`), so
+`cwd != project_path` and the normal sub-mix path stays.
+
+Verified: 52/52 integration tests pass (was 0 — process died at boot).
+
+### verify_l2 + verify_l3 cross-store parity (commit `1b5d78c`)
+
+Both verifier endpoints reported `overall: fail` on a clean,
+fresh-scanned project — useless as CI signal. Two independent root
+causes, both fixed:
+
+**verify_l3 — count_parity always reported `l3_exceeds_l1`.**
+`Storage.Arcade.Verifier.count_l3_calls/1` summed CALLS edges across
+ALL build_ids; L1 only ever holds the CURRENT build's edges. Comparing
+cumulative L3 vs current L1 was structurally guaranteed to mismatch.
+`count_l3_calls/1` now scopes to the most-recent build_id (two queries:
+`max(build_id)` then count — nested SELECT was unstable on large CALLS
+tables, timing out under load).
+
+**L3 history accumulation — exposed by the fix above.**
+`Client.delete_edges_for_build/3` is build-id-scoped (purges duplicates
+of the same snapshot, not history). `Storage.Arcade.Consolidator` was
+a Build-137 skeleton that ran a 30-min timer and did nothing. Replaced
+with real pruning:
+
+  - `Giulia.Storage.Arcade.Client.delete_edges_older_than/3` — new
+    low-level, mirrors `delete_edges_for_build/3` with `< keep_from`.
+  - `Giulia.Storage.Arcade.Consolidator.prune_old_builds/2` — keeps
+    the most-recent N builds of CALLS + DEPENDS_ON edges per project;
+    deletes the rest.
+  - `Consolidator.run_consolidation/1` now actually prunes (was a no-op).
+  - `Giulia.Context.ScanConfig.arcade_history_builds/0` reads
+    `arcade_history_builds` from `priv/config/scan_defaults.json`
+    (default `10`, clamped to ≥3 because drift / coupling / hotspot
+    detectors require ≥3 builds of history).
+  - `POST /api/index/compact?include=arcade` triggers immediate
+    prune for a single project on demand.
+
+**verify_l2 — 80 files missing in L2 on cold-rescan.**
+`Persistence.Writer.clear_project/1` was an async cast that spawned a
+Task to delete CubDB keys. `do_scan/1` calls `clear_asts/1` (which
+casts `clear_project`) then immediately starts streaming `persist_ast`
+casts for each scanned file. The async clear iterator overlapped with
+the freshly-persisted entries and deleted them too — observed as 30-80
+files missing in L2 right after `scan_complete`.
+
+  - `clear_project/1` is now a synchronous `GenServer.call`. The CubDB
+    iteration runs inside the writer's `handle_call`, so subsequent
+    `persist_ast` casts in the writer's mailbox are guaranteed to land
+    AFTER clear completes.
+  - `Giulia.Persistence.Writer.flush_now/1` — synchronous per-project
+    flush of the 100ms-debounce pending map. Called by
+    `Indexer.run_post_scan_pipeline/1` before downstream stages read
+    L2 (verifiers, debug tooling). Closes the second-order race.
+
+### Verified end-to-end on `/projects/giulia` after fresh rescan
+
+```
+verify_l2.check=all  -> overall: pass
+  graph: pass, ast: pass (L1=180=L2=180), metrics: pass
+verify_l3            -> overall: pass
+  count_parity: match (L1=L3=1863)
+  sample_identity: pass across all 7 buckets
+```
+
+Both verifier endpoints are now actual CI signals — they go red only
+on real cross-store divergence, not on the structural artifacts that
+were drowning the signal before. Wiring `verify_l2` / `verify_l3`
+into a hard CI gate is now viable (was previously gated on this slice).
+
+### New API surface
+
+  - `POST /api/index/compact?include=arcade` — opt-in body param to
+    also prune stale build_id rows from ArcadeDB. Without `include`,
+    behavior is unchanged (CubDB compaction only).
+
+### New config field
+
+  - `priv/config/scan_defaults.json` gains `arcade_history_builds`
+    (default `10`, clamped ≥3). Tunes the Consolidator's retention
+    window. `$schema_version` bumped from 3 to 4.
+
+### Test coverage
+
+  - `test/giulia/mcp/dispatch/helpers_test.exs` — 18 adversarial cases
+    on argument-coercion helpers shared across all dispatch modules.
+  - `test/giulia/mcp/dispatch/required_params_test.exs` — 60 required-
+    parameter accountability cases across 9 dispatch modules.
+  - `test/giulia/mcp/tool_schema_handler_test.exs` — 17 handler-routing
+    + atom-leak resolver tests, including the
+    `assert [] = ToolSchema.unhandled_tools()` invariant.
+  - `test/giulia/knowledge/store_format_fracture_test.exs` — pins the
+    canonical `{name, arity}` → `"name/arity"` shape.
+  - `test/giulia/context/indexer_self_scan_test.exs` — 5 cases on
+    `self_scan?/1` predicate.
+  - `test/giulia/storage/arcade/consolidator_prune_test.exs` — input
+    contracts on retention pruning.
+  - `test/giulia/persistence/writer_flush_now_test.exs` — flush_now
+    contract.
+
+870 tests / 10 properties / 0 failures across the touched subsystems
+(`mcp/`, `knowledge/`, `context/`, `persistence/`, `storage/`,
+`daemon/`).
+
+### Migration
+
+  - L2 caches auto-invalidate via `CodeDigest` envelope mechanism.
+  - All MCP tool names / shapes unchanged. Clients calling
+    `index_enrichment`, `intelligence_enrichments`,
+    `knowledge_verify_l2`, `knowledge_verify_l3` via MCP for the first
+    time may have been previously hitting the unknown-tool catch-all;
+    they now succeed with the documented HTTP-equivalent shapes.
+  - `POST /api/index/compact` callers without the `include` param see
+    no change.
+  - The `arcade_history_builds` config field is optional; missing it
+    defaults to 10.
+
+## [0.3.6 – Build 159] — 2026-04-27 — Multi-defimpl Phase 2: function fan-out across all sibling impls
+
+`defimpl X, for: [T1, T2, T3]` previously emitted N module entries
+(Phase 1, v0.3.0) but did not duplicate the protocol-impl function
+set across each sibling — only the first sibling was attributed in
+`function_info`. Phase 2 ensures each sibling impl module's function
+set is fully populated for graph parity, so dependents queries
+(`Knowledge.Store.dependents/2`, `find_unprotected_hubs/1`,
+`pre_impact_check`) return identical results regardless of which
+sibling is queried.
+
+## [0.3.5 – Build 159] — 2026-04-27 — Topology rolls up Pass 7-11 edges; Graph Explorer isolates panel
+
+`/api/knowledge/topology` previously used `all_dependencies/1` which
+filters to module↔module edges only. Pass 7-11 (protocol_impl,
+behaviour_impl, router_dispatch, mfa_ref, capture_ref, apply_ref,
+use_import_ref) all emit module→function or function→function edges,
+so module-level visualizations dropped them silently — defimpls of
+project protocols, controller actions, MFA-tuple-dispatched modules,
+and macro-injected import targets all rendered as isolated nodes even
+though `dead_code` correctly counted them as live.
+
+New `Giulia.Knowledge.Store.all_dependencies_with_rollup/1` walks
+every edge in the graph and projects function endpoints to their
+parent module via vertex labels. Self-loops introduced by intra-module
+rollup (e.g., a defimpl whose body recurses into its own protocol via
+its own helper) are dropped; function endpoints that don't map to any
+project module are skipped. The topology endpoint switched to the
+rollup variant.
+
+`graph.html`: isolated nodes are pulled off the canvas into a
+right-side sidebar split into "External boundaries" (complexity == 0:
+GenServer, etc.) and "Truly isolated" categories so the main canvas
+stays readable on large graphs.
+
+## [0.3.4 – Build 159] — 2026-04-27 — Warm-restored projects bypass the not_indexed 409 gate
+
+Projects warm-restored from L2 CubDB on daemon startup were
+previously gated as `:not_indexed` by `Helpers.scan_state/1` despite
+having a complete graph in L1 ETS — every scan-dependent endpoint
+returned 409 Conflict until the user manually triggered a rescan. The
+gate's intent was "block reads against an empty index," but it
+predated `Persistence.WarmRestore` which populates a real graph
+without going through `:scan_complete`.
+
+`Giulia.Context.Indexer.register_warm_restored/2` is now invoked by
+`WarmRestore` after restoring the L1 graph from L2. It registers the
+project with `status: :idle`, `last_scan: nil`, `file_count: <known>`
+so `scan_state/1` correctly classifies it as `:ready`. Scan-dependent
+endpoints (`/api/knowledge/*`, `/api/index/complexity`, etc.) serve
+warm-restored projects immediately on daemon restart.
+
 ## [0.3.3 – Build 159] — 2026-04-27 — Indexer post-scan pipeline non-blocking; new `:building` state
 
 Reliability fix. `Indexer.handle_cast({:scan_complete, ...})` previously

@@ -298,6 +298,46 @@ The mechanism is in `Giulia.Context.ScanConfig.mix_exs_roots/1` — entirely aut
 
 If you find that another path is a universal Elixir project convention (e.g., a future common test layout), add it to `source_roots`. Per the universal-defaults principle, only add entries that are valid for **every** Mix project — don't add entries that only apply to a specific codebase.
 
+### `enrichment_payload_roots`
+
+Allowlist of directories from which `POST /api/index/enrichment` will accept a `payload_path`. Anything outside is rejected with HTTP 422 (prevents the endpoint from becoming an arbitrary-file-read primitive).
+
+```json
+"enrichment_payload_roots": [
+  "/tmp",
+  "/var/tmp",
+  "tmp",
+  "_build"
+]
+```
+
+| Default entry | Resolution | Rationale |
+|---|---|---|
+| `/tmp` | Absolute | Universal scratch dir for CI artifacts |
+| `/var/tmp` | Absolute | Persistent scratch on Linux |
+| `tmp` | Project-relative | Phoenix / Mix convention; Credo + Dialyzer often write here |
+| `_build` | Project-relative | Compile output; PLT files for Dialyzer live here |
+
+Project-relative entries are resolved against the caller's `project` value before the validation runs. Symlink resolution is intentionally NOT performed — the allowlist applies to the raw caller-supplied path, so a malicious symlink in `/tmp` cannot smuggle in `/etc/passwd`.
+
+### `arcade_history_builds`
+
+Number of historical builds to retain in ArcadeDB before pruning by `Giulia.Storage.Arcade.Consolidator`. The Consolidator runs on a 30-min timer plus on-demand via `POST /api/index/compact?include=arcade`, and deletes `CALLS` + `DEPENDS_ON` edges where `build_id < (max - retention)`.
+
+```json
+"arcade_history_builds": 10
+```
+
+| Aspect | Behavior |
+|---|---|
+| Default | `10` |
+| Minimum | Clamped to `3` even if config sets it lower |
+| Why ≥3 | Drift / coupling / hotspot detectors require ≥3 builds of history per module to detect monotonic trends |
+| Effect on `verify_l3` | Without retention, `count_parity.status == "l3_exceeds_l1"` accumulates forever as scans repeat. With `N=10`, count_parity remains `match` regardless of how many prior builds exist |
+| Effect on disk | Each retained build keeps its CALLS edge set in ArcadeDB; on a 1500-edge project with N=10, that's ~15k edges |
+
+Read by `Giulia.Context.ScanConfig.arcade_history_builds/0`.
+
 ---
 
 ## Operator quick reference
