@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 160 · v0.3.7 · 2026-04-29
+> **Document version**: Build 161 · v0.3.8 · 2026-04-29
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -82,8 +82,9 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 ```
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
-scanning, property graph construction, semantic embeddings), the inference engine
-(OODA loop with LLM providers), and serves all 85 API endpoints. Memory limit: 4GB.
+scanning, property graph construction, semantic embeddings) and serves all 85
+API endpoints. Memory limit: 4GB. (A legacy local-chat inference subsystem also
+loads under TIER 3 — deprecated as of v0.3.8, see Section 18 / Document History.)
 
 **Monitor** (`giulia-monitor`): A lightweight observer node. Connects to the worker
 via distributed Erlang on startup (AutoConnect GenServer). Its job is runtime
@@ -124,7 +125,7 @@ Giulia.Supervisor (:one_for_one)
 |   |-- Intelligence.EmbeddingServing (Bumblebee + all-MiniLM-L6-v2)
 |   +-- Intelligence.SemanticIndex (cosine similarity search)
 |
-|-- TIER 3: Inference (skipped when GIULIA_ROLE=monitor)
+|-- TIER 3: Inference (DEPRECATED as of v0.3.8; skipped when GIULIA_ROLE=monitor)
 |   |-- Provider.Supervisor (DynamicSupervisor for LLM connections)
 |   |-- Inference.Trace (debug storage for inference runs)
 |   |-- Inference.Events (SSE event broadcaster)
@@ -150,8 +151,8 @@ Giulia.Supervisor (:one_for_one)
 ```
 
 After the supervisor starts successfully, `Giulia.Monitor.Telemetry.attach/0` hooks
-`:telemetry` handlers for the cognitive flight recording system (7 events across the
-OODA pipeline).
+`:telemetry` handlers for the cognitive flight recording system (7 events across
+the inference pipeline — deprecated subsystem, see Section 18).
 
 
 ## 4. Storage Architecture
@@ -252,15 +253,43 @@ External multi-model graph database for cross-build analysis. Not on the hot pat
   and snapshots the entire L1 graph into ArcadeDB after every successful build.
 
 - **Consolidator**: `Giulia.Storage.Arcade.Consolidator` runs on a 30-minute
-  schedule (or on-demand). Executes three algorithms across historical snapshots:
-  `complexity_drift`, `coupling_drift` (fan-in/fan-out), and `hotspot` detection.
-  Results are stored as `Insight` vertices.
+  schedule (or on-demand via `POST /api/index/compact?include=arcade`).
+  Until v0.3.7 this was a Build-137 skeleton — the timer fired but did
+  nothing; v0.3.7 wired it to real pruning (`prune_old_builds/2`) and
+  three cross-build analyses: `complexity_drift`, `coupling_drift`
+  (fan-in/fan-out), and `hotspot` detection. Retention window controlled
+  by `arcade_history_builds` in `priv/config/scan_defaults.json` (default
+  `10`, clamped ≥3 — drift / coupling / hotspot detectors require ≥3
+  builds of history). Analysis results stored as `Insight` vertices.
 
 - **Purpose**: ETS + libgraph stays L1 for real-time queries. ArcadeDB is for
   history -- trend analysis, regression detection, cross-build comparisons. Typical
   warm query latency is ~100ms, acceptable for L2/L3 but not the hot path.
 
-### Configuration surface
+## 5. Configuration Surface
+
+Tunable behaviour lives in JSON, not in module attributes. The contract:
+
+- **Edit + restart, no recompile.** Daemon restart picks up changes in
+  seconds; the BEAM and ETS state aren't rebuilt.
+- **`:persistent_term` cache.** Each loader reads its file once at boot
+  and stores the parsed structure in `:persistent_term`. Reads are free
+  (no copy, no message-passing).
+- **CodeDigest envelope tracking.** Config files are part of the digest
+  that decides whether L2 caches survive a restart. Edit a config file,
+  the next warm-start invalidates derived metrics so they're recomputed
+  against the new values.
+- **Universal defaults.** The shipped values must produce correct output
+  on every codebase, no per-project opt-in. Tightening a default that's
+  wrong somewhere is a release-gating bug, not a "user can override" out.
+- **Fail-loud on missing/malformed.** Loaders raise at boot rather than
+  silently degrade — a typo in JSON should crash the daemon at startup,
+  not produce wrong-but-running analysis hours later.
+
+This pattern is why v0.3.x extracted four module-attribute datasets to
+JSON across multiple releases (scoring constants in v0.3.0, dispatch
+patterns in v0.3.x, dispatch invariants and relevance buckets in v0.3.8).
+The architectural commitment is "configuration is data, not code."
 
 Five JSON files in `priv/config/` control behaviour that should be tunable
 without recompilation:
@@ -281,10 +310,16 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the per-variable
 reference and operator workflow.
 
 
-## 5. AST + Runtime Fusion
+## 6. AST + Runtime Fusion
 
-The key differentiator of Giulia's architecture is the fusion of static code analysis
-with live runtime data from the BEAM VM.
+Giulia merges two views of the project that most analysis tools keep
+separate: a static call graph extracted from source via Sourceror, and a
+live BEAM-runtime feed (process counts, message-queue lengths, reduction
+deltas, memory) collected by the monitor node. The Knowledge layer reads
+both and answers questions like "this hub function has 47 callers AND its
+process accumulated 200k reductions in the last burst" in one query — the
+caller-count comes from the AST graph, the burst signal comes from the
+runtime collector, the join happens at the function-vertex level.
 
 ### Static Analysis Pipeline
 
@@ -330,7 +365,7 @@ Burst detection                 spike in reductions/memory triggers
 Performance profiling           function-level trace during burst window
 ```
 
-### External Tool Enrichment Pipeline
+## 7. External Tool Enrichment
 
 Two sources ship today: **Credo** (JSON, 5-entry severity map) and
 **Dialyzer** (text, 47-entry severity map covering dialyxir's full warning
@@ -439,7 +474,7 @@ The `/api/runtime/hot_spots` endpoint is the fusion point. It:
 The Observer (running on the monitor node) pushes snapshots to the worker via HTTP.
 The worker finalizes each snapshot with static+runtime correlation.
 
-### Knowledge Graph Internals
+## 8. Knowledge Graph
 
 The Knowledge layer is not a single module. `Knowledge.Store` is the GenServer
 coordinator, but the actual logic is split across purpose-built modules:
@@ -494,7 +529,7 @@ computation to the pure modules above, and caches results in its state map. The
 all_functions, all_dependencies) that reads directly from ETS without going through
 the GenServer mailbox.
 
-### Intelligence Layer
+## 9. Intelligence Layer
 
 Beyond embedding and search, the Intelligence layer provides four briefing and
 validation modules used by the API:
@@ -506,7 +541,12 @@ validation modules used by the API:
 | `Intelligence.SurgicalBriefing` | Layer 1+2 preprocessing: semantic search + knowledge graph enrichment |
 | `Intelligence.PlanValidator` | Graph-aware validation for code change plans (cycles, hub risk, blast radius) |
 
-### MCP Layer (Build 155)
+## 10. MCP Layer (Build 155)
+
+**Canonical LLM integration path.** Giulia is the eyes; the LLM lives in the
+client. External clients (Claude Code, Claude Desktop, or anything speaking
+MCP / REST) call Giulia for read-only data; reasoning happens client-side.
+This supersedes the legacy local-chat inference subsystem (Section 18 / TIER 3).
 
 Giulia exposes a native Model Context Protocol (MCP) server alongside the REST API.
 MCP enables AI assistants like Claude Code to discover and call Giulia's tools
@@ -515,7 +555,7 @@ directly as structured tool calls, without constructing HTTP requests.
 | Module | Responsibility |
 |--------|---------------|
 | `MCP.Server` | Anubis MCP server — handles `tools/call`, `tools/list`, `resources/read` |
-| `MCP.ToolSchema` | Auto-generates 71 MCP tool definitions from `@skill` annotations on sub-routers (74 skills minus 3 non-MCP-compatible HTML/SSE monitor endpoints) |
+| `MCP.ToolSchema` | Auto-generates 71 MCP tool definitions from `@skill` annotations on sub-routers (74 skills minus 3 non-MCP-compatible monitor endpoints: `GET /api/monitor` and `GET /api/monitor/graph` are HTML dashboards, `GET /api/monitor/stream` is an SSE event stream) |
 | `MCP.ResourceProvider` | 5 resource templates (`giulia://projects/`, `giulia://modules/`, `giulia://graph/`, `giulia://skills/`, `giulia://status`) |
 | `Daemon.Plugs.McpAuth` | Bearer token authentication via `GIULIA_MCP_KEY` env var (constant-time comparison) |
 | `Daemon.Plugs.McpForward` | Runtime forwarder to Anubis StreamableHTTP transport (defers init to avoid persistent_term race) |
@@ -539,7 +579,7 @@ Client configuration (`.mcp.json`):
 }
 ```
 
-### Runtime Layer
+## 11. Runtime Layer
 
 The Runtime subsystem has grown beyond the core Inspector + Collector pair:
 
@@ -555,7 +595,7 @@ The Runtime subsystem has grown beyond the core Inspector + Collector pair:
 | `Runtime.Monitor` | Monitor lifecycle orchestrator (BOOT -> CONNECT -> WATCH -> PROFILING) |
 
 
-## 6. Request Flow
+## 12. Request Flow
 
 A typical API request follows this path:
 
@@ -622,7 +662,7 @@ Core routes that remain in Endpoint.ex (not forwarded):
 - `GET /favicon.ico` -- static favicon
 
 
-## 7. Sub-Router Architecture (Build 94)
+## 13. Sub-Router Architecture (Build 94)
 
 Before Build 94, Endpoint.ex was 1,331 lines containing all route handlers. The
 refactoring split it into 9 domain-specific sub-routers, reducing Endpoint
@@ -676,7 +716,7 @@ Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
 `Routers.Intelligence` as aliases.
 
 
-## 8. Semantic Search
+## 14. Semantic Search
 
 Giulia embeds module and function descriptions into a vector space for semantic
 similarity search.
@@ -701,7 +741,7 @@ their current task. Graceful degradation: if EmbeddingServing is unavailable (mo
 failed to load, or running on monitor node), `suggested_tools` returns an empty list.
 
 
-## 9. Path Translation
+## 15. Path Translation
 
 Giulia runs inside Docker but receives file paths from clients on the host machine.
 Two modules handle path security and translation.
@@ -740,7 +780,7 @@ This prevents the LLM from requesting reads of `/etc/passwd`, `~/.ssh/config`, o
 any file outside the project boundary, regardless of how the path is constructed.
 
 
-## 10. Visual Dashboards (Build 95, 151, 152)
+## 16. Visual Dashboards (Build 95, 151, 152)
 
 Giulia ships two browser-based dashboards, both served as static HTML from the
 daemon's `/api/monitor` prefix.
@@ -790,7 +830,7 @@ Both dashboards share a navigation bar for switching between Monitor and Graph
 Explorer views.
 
 
-## 11. Correctness-Floor Invariants
+## 17. Correctness-Floor Invariants
 
 Giulia enforces cross-store sync and extraction-output stability through three
 test-surface layers that ship alongside the code. Each catches a different
@@ -844,4 +884,127 @@ bang names, default args, moduledoc variants, framework callbacks, protocols
 produces a visible diff against the frozen `.expected.exs` that the reviewer
 must ratify. Regeneration: `GOLDEN_UPDATE=1 mix test test/giulia/ast/golden_
 fixtures_test.exs`.
+
+
+## 18. Known Blind Spots
+
+Static analysis cannot see everything that happens at runtime. The
+11-pass builder + the dispatch-patterns config close most of the gap;
+this section names what remains, deliberately, so consumers know where
+"this looks dead" is a tool limitation rather than a real finding.
+
+### What the AST passes structurally cannot resolve
+
+| Pattern | Example | Why it's invisible | Mitigation |
+|---|---|---|---|
+| Variable-bound module dispatch | `mod = pick_provider(); mod.run(args)` | The callee module is a runtime value, not a literal `__aliases__` AST node | Out of scope — the call graph cannot be sound here |
+| `Module.concat/1,2` runtime construction | `apply(Module.concat([prefix, suffix]), :run, [])` | The atom is composed at runtime from arbitrary inputs | Out of scope |
+| Telemetry handler attachment | `:telemetry.attach(:id, [:event], &Mod.fn/4, _)` | Captures are stored in `:telemetry`'s ETS table at runtime; the static walker sees the `&Mod.fn/4` capture (Pass 10 picks it up as `:capture_ref`) but not the activation site | Pass 10 covers the capture; activation invisible by design |
+| Mox / dynamic mocks | `Mox.defmock(MockedX, for: X); MockedX.fn()` | Mock modules are defined at compile time of the test file, only exist in `:test` env, and are routed via Mox at runtime | Tests are excluded from the scan; `:test_only` category surfaces residuals when a function is referenced from tests but called nowhere else |
+| `apply/2,3` with a computed atom argument | `apply(@modules, mod, args)` | Pass 10 handles literal `apply(M, :f, [_, _])` but not when `M` is a variable | Out of scope — covered by `library_public_api` / `genuine` classification when residuals surface |
+| Macro-injected calls outside known behaviours | A library's `__using__/1` injects `def x, do: ...` plus calls into another library not in `MacroMap` | The injected definition isn't in the source AST; the call site is also injected | `priv/config/dispatch_invariants.json` (`known_behaviour_callbacks`) covers ~24 stdlib/ecosystem behaviours; library-specific macros need a project-side `@dead_code_ignore` or a `dispatch_patterns.json` entry |
+| Runtime-registered routes | `Phoenix.Router` macros are AST-visible (Pass 9 covers them); custom routers building routes from a config map at boot time are not | The route table is data computed at runtime | Out of scope; manual `dispatch_patterns.json` entry if the project uses one |
+
+### How residuals get classified
+
+After detection, every dead-code candidate is routed through
+`Giulia.Knowledge.DeadCodeClassifier`. Categories in precedence order:
+
+1. **`:test_only`** — referenced from `*_test.exs` files. Tests are
+   excluded from the scan, so the function is reachable from tests
+   but unreached from production code.
+2. **`:library_public_api`** — `def` (public, not `defp`) on a project
+   whose `mix.exs` has no `application/0 :mod` entry (i.e. a library,
+   not an OTP app). Public functions in a library are exported for
+   downstream consumers the analyzer cannot see.
+3. **`:genuine`** — none of the above. Most likely real dead code.
+4. **`:uncategorized`** — reserved. Future signals (variable-bound
+   dispatch detectors, etc.) can land additively.
+
+The `?relevance=high|medium|all` filter (v0.3.8+) on `/api/knowledge/dead_code`
+maps directly: `high` = `:genuine` only; `medium` = `:genuine + :uncategorized`
+(matches the `actionable` rollup); `all` = unfiltered.
+
+### Canonical residual baseline (2026-04-29)
+
+Reference points captured during the empirical-refactor loop. These
+are the residuals the tool considers irreducible against well-known
+codebases — useful as smoke-test signal that a new detector pass
+hasn't regressed:
+
+| Codebase | Residuals | Categorized as |
+|---|---|---|
+| Plausible CE (analytics-master) | 3 | 2 true positives + 1 SiteEncrypt accept |
+| AlexClaw | 0 | — |
+| Plug 1.19.1 | 1 | 1 `:library_public_api` |
+| Bandit 1.10.4 | 2 | 2 `:library_public_api` |
+
+A new detector or scoring change that moves these numbers warrants a
+slice-skeptical sanity check (per the empirical-refactor loop in
+`GIULIA.md`) before being declared an improvement.
+
+### Project-side escape hatches
+
+- **`@dead_code_ignore true`** module attribute — opt-out for an entire
+  module, used when the static analyzer demonstrably cannot resolve a
+  project-specific runtime dispatch pattern. Used sparingly — the
+  default is to extend `dispatch_patterns.json` with a universal pattern
+  rather than per-module suppression.
+- **`?suppress=rule:Mod1,Mod2;rule2:Mod3`** on `/api/knowledge/conventions` —
+  per-rule per-module suppression for conventions that legitimately
+  don't apply (e.g. `process_dictionary:Auth.Context` for code that
+  has documented reasons to use it).
+- **`GIULIA.md`** in the project root — the project constitution. Used
+  by the indexer for project-root detection and as a free-form notes
+  surface for human/agent context that doesn't fit any of the above.
+
+### Deprecated subsystem: legacy local-chat inference (v0.3.8+)
+
+Early Giulia (v0.x) shipped a self-hosted inference subsystem — Giulia
+itself ran an internal Observe-Orient-Decide-Act loop, calling out to
+LLM providers (LM Studio, Anthropic, Gemini, Groq, Ollama) and
+dispatching write-tools (`patch_function`, `bulk_replace`,
+`rename_mfa`) behind interactive approval gates. Entry point:
+`POST /api/command` and `POST /api/command/stream`.
+
+That model is **deprecated as of v0.3.8.** Giulia's canonical role is
+the read-only data surface (REST + MCP); the LLM is somebody else's
+problem (Claude Code, Claude Desktop, any MCP/REST client). The
+subsystem still loads and the endpoints still respond — for backwards
+compatibility — but no new work goes there.
+
+**Modules in the deprecation set** (will be removed in v0.4.0):
+
+- `lib/giulia/inference/` — 32 modules (`Inference.Pool`, `Inference.Approval`,
+  `Inference.Events`, `Inference.Trace`, `Inference.Supervisor`,
+  `Inference.ContextBuilder`, `Inference.ToolDispatch`,
+  `Inference.Transaction`, `Inference.Escalation`,
+  `Inference.RenameMFA`, `Inference.BulkReplace`,
+  `Inference.Verification`, …)
+- `lib/giulia/provider/` — 6 LLM provider modules (Anthropic, Gemini,
+  Groq, LM Studio, Ollama, Router)
+- `lib/giulia/tools/{patch_function, bulk_replace, rename_mfa}.ex` —
+  write-tools only ever invoked through the inference dispatcher
+- HTTP endpoints `POST /api/command`, `POST /api/command/stream`,
+  `/api/approval/*`, `/api/transaction/*`
+- MCP tools under `approval_*` and `transaction_*` prefixes
+- Compose env vars `LM_STUDIO_URL`, `ANTHROPIC_API_KEY`,
+  `GROQ_API_KEY`, `GEMINI_API_KEY`
+
+Why deprecated rather than removed today: the cleanup is a half-day
+of cross-cutting work (24 test files, supervision-tree changes,
+endpoint removals, env-var cleanup, CHANGELOG breaking-change entry).
+v0.4.0 cuts it.
+
+
+## Document History
+
+One-line per release listing what changed in this document. The codebase
+itself is the source of truth; this is a navigation aid for readers
+returning after a few releases.
+
+| Doc version | Date | Highlights |
+|---|---|---|
+| Build 161 / v0.3.8 | 2026-04-29 | Configuration surface table grew to 5 entries (`dispatch_invariants.json`, `relevance.json` added). Section 5 split: `External Tool Enrichment`, `Knowledge Graph`, `Intelligence Layer`, `MCP Layer`, and `Runtime Layer` promoted from H3 to H2. New `Configuration Surface` H2 (lifted from a Section 4 subsection with brief design-philosophy framing). New `Known Blind Spots` H2 listing what the AST passes structurally cannot see and the residual taxonomy. Consolidator framing corrected: doc now acknowledges it was a skeleton until v0.3.7. The 3 non-MCP-compatible endpoints named inline. **Inference / local-chat subsystem (TIER 3, OODA-loop pipeline, `POST /api/command`, write-tools, LLM provider tree) marked deprecated** — canonical LLM integration is now external clients calling Giulia over MCP / REST. Removal scheduled for v0.4.0. |
+| Build 160 / v0.3.7 | 2026-04-29 | Doc baseline alongside the 2026-04-29 trio (orchestration lift, self-scan SIGSEGV fix, verifier parity). |
 

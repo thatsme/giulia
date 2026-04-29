@@ -70,6 +70,40 @@ audited for precondition violations against prod state and corrected:
 Test ritual collapsed from 4 steps (pre-flight, stop prod, run, teardown)
 to 3 (pre-flight, run, teardown). Prod stays up during tests.
 
+### Deprecated
+
+The early-v0.x local-chat inference subsystem is **deprecated as of v0.3.8**
+and will be removed in v0.4.0. Giulia's canonical role is the read-only
+data surface (REST + MCP); the LLM lives in the client (Claude Code,
+Claude Desktop, anything that speaks REST or MCP). The internal
+Observe-Orient-Decide-Act loop, LLM-provider tree, and write-tool
+dispatch were appropriate for early-v0.x's local-chat mode but no
+longer the product.
+
+The deprecation set (still loads, still responds — backwards compatible
+for any user who wired a workflow against the legacy endpoints):
+
+- `lib/giulia/inference/` — 32 modules (`Inference.Pool`,
+  `Inference.Approval`, `Inference.Events`, `Inference.Trace`,
+  `Inference.Supervisor`, `Inference.ContextBuilder`,
+  `Inference.ToolDispatch`, `Inference.Transaction`,
+  `Inference.Escalation`, `Inference.RenameMFA`,
+  `Inference.BulkReplace`, `Inference.Verification`, …)
+- `lib/giulia/provider/` — 6 LLM provider modules
+  (Anthropic, Gemini, Groq, LM Studio, Ollama, Router)
+- HTTP endpoints `POST /api/command`, `POST /api/command/stream`,
+  `/api/approval/*`, `/api/transaction/*`
+- MCP tools under `approval_*` and `transaction_*` prefixes
+- Write-tools `lib/giulia/tools/{patch_function,bulk_replace,rename_mfa}.ex`
+- Compose env vars `LM_STUDIO_URL`, `ANTHROPIC_API_KEY`,
+  `GROQ_API_KEY`, `GEMINI_API_KEY`
+
+Documentation aligned: README.md repositioned ("Giulia is the eyes,
+not the brain"); ARCHITECTURE.md TIER 3 marked deprecated, OODA-loop
+references removed, Section 18 (Known Blind Spots) gains a deprecated-
+subsystem note, Section 10 (MCP Layer) opens with the canonical
+external-client integration model.
+
 ## [0.3.7 – Build 160] — 2026-04-29 — Protocol-shim discipline, self-scan SIGSEGV fix, verifier parity
 
 Three independent slices in one release. Each closes a class of
