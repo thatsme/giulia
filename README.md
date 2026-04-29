@@ -114,7 +114,7 @@ Claude Code / CLI Client
 |---|---|
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow, 11 graph-builder passes |
-| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Per-variable reference for `priv/config/*.json` (scoring, dispatch patterns, scan roots) and the cache-invalidation contract |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Per-variable reference for `priv/config/*.json` (scoring, dispatch patterns, scan roots, dispatch invariants, relevance buckets) and the cache-invalidation contract |
 | [API.md](API.md) | REST API and MCP reference (83+ endpoints across 10 categories) |
 | [docs/REPORT_RULES.md](docs/REPORT_RULES.md) | Standard report-generation procedure for AI agents and humans |
 | [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
@@ -165,7 +165,7 @@ Highlights from the self-analysis:
 - **Graph synthesis**: 11 builder passes from AST to graph. Passes 7-11 synthesize edges for runtime-dispatched call sites the static walker can't resolve directly (defprotocol/defimpl, behaviour callbacks, Phoenix router actions, MFA tuples, `&` captures, `apply/3`, `Task.start_link(M, F, A)` form, and unqualified calls resolved through `use M`-injected imports). Universal mechanisms — no project-specific allowlists
 - **Dead-code categorization**: every `dead_code` entry classified (`genuine | test_only | library_public_api | template_pending | uncategorized`) so consumers see actionable vs irreducible residuals at a glance
 - **External tool enrichment**: pluggable ingestion of Credo and Dialyzer output (47-warning catalogue covered) attached to graph vertices and surfaced inline in `pre_impact_check` and `dead_code`. Decoupled from source-extraction lifecycle
-- **Tunability**: Heatmap and change_risk scoring constants live in [`priv/config/scoring.json`](priv/config/scoring.json); runtime-dispatch patterns in [`priv/config/dispatch_patterns.json`](priv/config/dispatch_patterns.json); source-roots in [`priv/config/scan_defaults.json`](priv/config/scan_defaults.json); enrichment sources + per-tool severity maps in [`priv/config/enrichment_sources.json`](priv/config/enrichment_sources.json). All four trigger automatic L2 metric-cache invalidation when edited (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
+- **Tunability**: Heatmap and change_risk scoring constants live in [`priv/config/scoring.json`](priv/config/scoring.json); runtime-dispatch patterns in [`priv/config/dispatch_patterns.json`](priv/config/dispatch_patterns.json); source-roots in [`priv/config/scan_defaults.json`](priv/config/scan_defaults.json); enrichment sources + per-tool severity maps in [`priv/config/enrichment_sources.json`](priv/config/enrichment_sources.json); project-root markers, OTP/framework implicit functions, known-behaviour callback signatures, and Phoenix HTTP verbs in [`priv/config/dispatch_invariants.json`](priv/config/dispatch_invariants.json) (v0.3.8+); `?relevance=high|medium|all` bucket boundaries for `dead_code`/`conventions`/`duplicates` in [`priv/config/relevance.json`](priv/config/relevance.json) (v0.3.8+). All trigger automatic L2 metric-cache invalidation when edited (see [docs/CONFIGURATION.md](docs/CONFIGURATION.md))
 
 ## License
 

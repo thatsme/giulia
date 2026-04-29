@@ -262,16 +262,18 @@ External multi-model graph database for cross-build analysis. Not on the hot pat
 
 ### Configuration surface
 
-Three JSON files in `priv/config/` control behaviour that should be tunable
+Five JSON files in `priv/config/` control behaviour that should be tunable
 without recompilation:
 
 | File | Loader | Controls |
 |---|---|---|
 | `scoring.json` | `Knowledge.ScoringConfig` | Heatmap weights/normalization/zones, change_risk weights, god_modules weights, unprotected_hubs thresholds |
 | `dispatch_patterns.json` | `Knowledge.DispatchPatterns` | Runtime-dispatch patterns the AST walker can't see (Mix Release shell overlays, ExMachina factories, the Phoenix-style `__using__/apply` idiom) |
-| `scan_defaults.json` | `Context.ScanConfig` | Universal source-root list for Mix projects (`lib`, `test/support`, `test/test_helper.exs`) |
+| `scan_defaults.json` | `Context.ScanConfig` | Universal source-root list for Mix projects (`lib`, `test/support`, `test/test_helper.exs`); ArcadeDB history retention |
+| `dispatch_invariants.json` | `Config.DispatchInvariants` | Project-root markers, OTP/framework implicit functions, known external behaviour callback signatures, Phoenix HTTP verbs (v0.3.8+) |
+| `relevance.json` | `Config.Relevance` | Bucket boundaries for `?relevance=high\|medium\|all` on `dead_code` / `conventions` / `duplicates` (v0.3.8+) |
 
-All three are loaded once at daemon startup, cached in `:persistent_term`,
+All are loaded once at daemon startup, cached in `:persistent_term`,
 and tracked by the CodeDigest envelope (see L2 section above). Edits
 propagate via daemon restart + automatic cache invalidation on warm-restore.
 
