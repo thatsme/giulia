@@ -115,32 +115,7 @@ defmodule Giulia.Daemon.Routers.Index do
     category: "index"
   }
   get "/status" do
-    status =
-      case resolve_project_path(conn) do
-        nil -> Giulia.Context.Indexer.status()
-        resolved -> Giulia.Context.Indexer.status(resolved)
-      end
-
-    # Enrich with cache status
-    cache_status =
-      case status.project_path do
-        nil ->
-          %{cache_status: "no_project"}
-
-        project_path ->
-          merkle_root =
-            case Giulia.Persistence.Loader.cached_merkle_root(project_path) do
-              {:ok, hash} -> String.slice(Base.encode16(hash, case: :lower), 0, 12)
-              :not_cached -> nil
-            end
-
-          %{
-            cache_status: if(merkle_root, do: "warm", else: "cold"),
-            merkle_root: merkle_root
-          }
-      end
-
-    send_json(conn, 200, Map.merge(status, cache_status))
+    send_json(conn, 200, Giulia.Context.Indexer.status_with_cache(conn.query_params["path"]))
   end
 
   # -------------------------------------------------------------------
@@ -217,45 +192,38 @@ defmodule Giulia.Daemon.Routers.Index do
     tool = conn.body_params["tool"]
     project = conn.body_params["project"]
     payload_path = conn.body_params["payload_path"]
-    resolved_project = Giulia.Core.PathMapper.resolve_path(project)
 
-    cond do
-      not is_binary(tool) or tool == "" ->
+    case Giulia.Enrichment.Ingest.run_with_validation(tool, project, payload_path) do
+      {:ok, summary} ->
+        send_json(conn, 200, summary)
+
+      {:error, {:invalid_tool, _}} ->
         send_json(conn, 422, %{error: "Missing or invalid :tool"})
 
-      not is_binary(resolved_project) or resolved_project == "" ->
-        send_json(conn, 422, %{error: "Missing or invalid :project", received: project})
-
-      not File.dir?(resolved_project) ->
+      {:error, {:invalid_project, received}} ->
         send_json(conn, 422, %{
-          error: "Project path does not exist or is not a directory",
-          path: resolved_project
+          error: "Missing or invalid :project (must resolve to an existing directory)",
+          received: received
         })
 
-      not is_binary(payload_path) or payload_path == "" ->
+      {:error, {:invalid_payload_path, _}} ->
         send_json(conn, 422, %{error: "Missing or invalid :payload_path"})
 
-      Giulia.Context.ScanConfig.validate_enrichment_payload_path(
-        payload_path,
-        resolved_project
-      ) != :ok ->
+      {:error, {:payload_path_not_under_root, received}} ->
         send_json(conn, 422, %{
           error: "payload_path not under any allowed root",
           allowed_roots: Giulia.Context.ScanConfig.enrichment_payload_roots(),
-          received: payload_path
+          received: received
         })
 
-      not File.regular?(payload_path) ->
+      {:error, {:payload_not_regular_file, received}} ->
         send_json(conn, 422, %{
           error: "payload_path is not a regular file",
-          received: payload_path
+          received: received
         })
 
-      true ->
-        case Giulia.Enrichment.Ingest.run(tool, resolved_project, payload_path) do
-          {:ok, summary} -> send_json(conn, 200, summary)
-          {:error, reason} -> send_json(conn, 422, %{error: inspect(reason)})
-        end
+      {:error, reason} ->
+        send_json(conn, 422, %{error: inspect(reason)})
     end
   end
 
@@ -272,40 +240,8 @@ defmodule Giulia.Daemon.Routers.Index do
   post "/verify" do
     path = conn.body_params["path"]
     resolved_path = Giulia.Core.PathMapper.resolve_path(path)
-
-    case Giulia.Persistence.Store.get_db(resolved_path) do
-      {:ok, db} ->
-        case CubDB.get(db, {:merkle, :tree}) do
-          nil ->
-            send_json(conn, 200, %{status: "no_cache", verified: false})
-
-          tree ->
-            case Giulia.Persistence.Merkle.verify(tree) do
-              :ok ->
-                send_json(conn, 200, %{
-                  status: "ok",
-                  verified: true,
-                  root:
-                    String.slice(
-                      Base.encode16(Giulia.Persistence.Merkle.root_hash(tree), case: :lower),
-                      0,
-                      12
-                    ),
-                  leaf_count: tree.leaf_count
-                })
-
-              {:error, :corrupted} ->
-                send_json(conn, 200, %{
-                  status: "corrupted",
-                  verified: false,
-                  leaf_count: tree.leaf_count
-                })
-            end
-        end
-
-      {:error, _reason} ->
-        send_json(conn, 200, %{status: "no_cache", verified: false})
-    end
+    {:ok, report} = Giulia.Persistence.Store.verify_cache(resolved_path)
+    send_json(conn, 200, report)
   end
 
   # -------------------------------------------------------------------
@@ -344,22 +280,14 @@ defmodule Giulia.Daemon.Routers.Index do
         conn
 
       {:ok, conn, project_path} ->
-        module_filter = conn.query_params["module"]
-        min_complexity = parse_int(conn.query_params["min"], 0)
-        result_limit = parse_int(conn.query_params["limit"], 50)
+        result =
+          Giulia.Context.Store.Query.functions_by_complexity(project_path,
+            module: conn.query_params["module"],
+            min: parse_int(conn.query_params["min"], 0),
+            limit: parse_int(conn.query_params["limit"], 50)
+          )
 
-        functions =
-          Giulia.Context.Store.Query.list_functions(project_path, module_filter)
-          |> Enum.filter(fn f -> f.complexity >= min_complexity end)
-          |> Enum.sort_by(& &1.complexity, :desc)
-          |> Enum.take(result_limit)
-
-        send_json(conn, 200, %{
-          functions: functions,
-          count: length(functions),
-          module: module_filter,
-          min_complexity: min_complexity
-        })
+        send_json(conn, 200, result)
     end
   end
 

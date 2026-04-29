@@ -1,6 +1,7 @@
 defmodule Giulia.MCP.ToolSchema do
   @moduledoc """
-  Maps Giulia REST skills to MCP tool definitions.
+  Maps Giulia REST skills to MCP tool definitions and resolves tool
+  invocations to their dispatch handlers.
 
   Iterates all domain sub-routers, calls `__skills__/0` on each, filters out
   non-MCP-compatible endpoints (HTML pages, SSE streams), and converts each
@@ -10,7 +11,39 @@ defmodule Giulia.MCP.ToolSchema do
   Tool names are derived from the endpoint path:
     "GET /api/knowledge/stats" → "knowledge_stats"
     "POST /api/runtime/connect" → "runtime_connect"
+
+  ## Dispatch resolution
+
+  `handler_for/1` resolves a tool name to a `{module, function}` MFA in
+  `Giulia.MCP.Dispatch.<Category>`. Single source of truth replacing the
+  per-prefix `defp dispatch_<cat>` clauses that previously lived in
+  `Giulia.MCP.Server`. Unhandled tools (declared via `@skill` but with
+  no matching dispatch function) surface via `unhandled_tools/0`, which
+  the MCP server logs at boot.
   """
+
+  alias Giulia.MCP.Dispatch
+
+  @category_modules %{
+    "knowledge_" => Dispatch.Knowledge,
+    "index_" => Dispatch.Index,
+    "search_" => Dispatch.Search,
+    "runtime_" => Dispatch.Runtime,
+    "intelligence_" => Dispatch.Intelligence,
+    "transaction_" => Dispatch.Transaction,
+    "approval_" => Dispatch.Approval,
+    "monitor_" => Dispatch.Monitor,
+    "discovery_" => Dispatch.Discovery
+  }
+
+  # Tools whose name does NOT split as `<category>_<fun>` because the
+  # endpoint path used a top-level segment (`/api/briefing/...`) instead
+  # of nesting under the owning category. Map: tool name → MFA.
+  @special_prefix_handlers %{
+    "briefing_" => Dispatch.Intelligence,
+    "brief_" => Dispatch.Intelligence,
+    "plan_" => Dispatch.Intelligence
+  }
 
   @routers [
     Giulia.Daemon.Routers.Discovery,
@@ -49,6 +82,76 @@ defmodule Giulia.MCP.ToolSchema do
   @doc "Return the list of router modules used for tool discovery."
   @spec routers() :: [module()]
   def routers, do: @routers
+
+  @doc """
+  Resolve a tool name to its dispatch MFA, or `:no_handler` if no
+  matching `Giulia.MCP.Dispatch.<Category>` function exists.
+
+  The resolver tries the special-prefix table first (handles
+  intelligence-family routes whose endpoint paths don't nest under
+  `/api/intelligence/...`), then the regular `<category>_<fun>` split.
+  In both cases it confirms via `function_exported?/3` that the target
+  function actually exists — atoms-from-strings is unsafe, so the
+  function-name lookup uses `String.to_existing_atom/1` and treats
+  ArgumentError as `:no_handler`.
+  """
+  @spec handler_for(String.t()) :: {module(), atom()} | :no_handler
+  def handler_for(tool_name) when is_binary(tool_name) do
+    with :no_match <- match_special_prefix(tool_name),
+         :no_match <- match_category_prefix(tool_name) do
+      :no_handler
+    end
+  end
+
+  @doc """
+  Return the list of MCP-compatible tool names that have no resolvable
+  dispatch handler. Empty list = every declared tool is invocable.
+  Used by `MCP.Server` at boot to log the gap before Tier 3 closes it
+  permanently with a fail-loud invariant.
+  """
+  @spec unhandled_tools() :: [String.t()]
+  def unhandled_tools do
+    all_tools()
+    |> Enum.filter(fn tool -> handler_for(tool.name) == :no_handler end)
+    |> Enum.map(& &1.name)
+  end
+
+  defp match_special_prefix(tool_name) do
+    Enum.find_value(@special_prefix_handlers, :no_match, fn {prefix, module} ->
+      if String.starts_with?(tool_name, prefix) do
+        resolve_function(module, tool_name)
+      else
+        nil
+      end
+    end)
+  end
+
+  defp match_category_prefix(tool_name) do
+    Enum.find_value(@category_modules, :no_match, fn {prefix, module} ->
+      if String.starts_with?(tool_name, prefix) do
+        sub = String.replace_prefix(tool_name, prefix, "")
+        resolve_function(module, sub)
+      else
+        nil
+      end
+    end)
+  end
+
+  defp resolve_function(module, fun_str) do
+    fun_atom = String.to_existing_atom(fun_str)
+
+    # Code.ensure_loaded?/1 forces the BEAM to load the module before
+    # the function-exported check — without it, `function_exported?/3`
+    # returns false for any module that hasn't been referenced yet
+    # (cold-start, isolated test cases).
+    if Code.ensure_loaded?(module) and function_exported?(module, fun_atom, 1) do
+      {module, fun_atom}
+    else
+      :no_match
+    end
+  rescue
+    ArgumentError -> :no_match
+  end
 
   # --- Conversion ---
 

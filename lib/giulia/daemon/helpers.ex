@@ -60,20 +60,6 @@ defmodule Giulia.Daemon.Helpers do
     end
   end
 
-  @doc "Format a behaviour fracture map for JSON output."
-  @spec format_fracture(map()) :: map()
-  def format_fracture(frac) do
-    fmt = fn list -> Enum.map(list, fn {name, arity} -> "#{name}/#{arity}" end) end
-
-    %{
-      implementer: frac.implementer,
-      missing: fmt.(Map.get(frac, :missing, [])),
-      injected: fmt.(Map.get(frac, :injected, [])),
-      optional_omitted: fmt.(Map.get(frac, :optional_omitted, [])),
-      heuristic_injected: fmt.(Map.get(frac, :heuristic_injected, []))
-    }
-  end
-
   @doc "Parse an integer query param with a default fallback."
   @spec parse_int_param(String.t() | nil, integer()) :: integer()
   def parse_int_param(nil, default), do: default

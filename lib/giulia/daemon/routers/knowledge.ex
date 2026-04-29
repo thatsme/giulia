@@ -20,10 +20,15 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/stats" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         stats = Giulia.Knowledge.Store.stats(project_path)
-        hubs = Enum.map(stats.hubs || [], fn {name, degree} -> %{module: name, degree: degree} end)
+
+        hubs =
+          Enum.map(stats.hubs || [], fn {name, degree} -> %{module: name, degree: degree} end)
+
         send_json(conn, 200, %{stats | hubs: hubs})
     end
   end
@@ -40,7 +45,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/dependents" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
@@ -70,7 +77,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/dependencies" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
@@ -100,7 +109,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/centrality" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module = conn.query_params["module"]
 
@@ -130,7 +141,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/impact" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         module = conn.query_params["module"]
         depth = parse_int_param(conn.query_params["depth"], 2)
@@ -140,10 +153,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
             {:ok, result} ->
               upstream = Enum.map(result.upstream, fn {v, d} -> %{module: v, depth: d} end)
               downstream = Enum.map(result.downstream, fn {v, d} -> %{module: v, depth: d} end)
-              func_edges = Enum.map(result.function_edges, fn {name, targets} ->
-                %{function: name, calls: targets}
-              end)
-              send_json(conn, 200, %{result | upstream: upstream, downstream: downstream, function_edges: func_edges})
+
+              func_edges =
+                Enum.map(result.function_edges, fn {name, targets} ->
+                  %{function: name, calls: targets}
+                end)
+
+              send_json(conn, 200, %{
+                result
+                | upstream: upstream,
+                  downstream: downstream,
+                  function_edges: func_edges
+              })
 
             {:error, {:not_found, _, suggestions, graph_info}} ->
               send_json(conn, 404, %{
@@ -171,25 +192,12 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/integrity" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
-        case Giulia.Knowledge.Store.check_all_behaviours(project_path) do
-          {:ok, :consistent} ->
-            send_json(conn, 200, %{status: "consistent", fractures: []})
-
-          {:error, fractures} when is_map(fractures) ->
-            formatted =
-              Enum.map(fractures, fn {behaviour, impl_fractures} ->
-                %{
-                  behaviour: behaviour,
-                  fractures: Enum.map(impl_fractures, fn frac ->
-                    format_fracture(frac)
-                  end)
-                }
-              end)
-
-            send_json(conn, 200, %{status: "fractured", fractures: formatted})
-        end
+        {:ok, report} = Giulia.Knowledge.Store.integrity_report(project_path)
+        send_json(conn, 200, report)
     end
   end
 
@@ -206,11 +214,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/dead_code" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_dead_code(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "dead_code failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "dead_code failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -231,11 +244,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/cycles" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_cycles(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "cycles failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "cycles failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -256,11 +274,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/god_modules" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_god_modules(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "god_modules failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "god_modules failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -281,11 +304,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/orphan_specs" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_orphan_specs(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "orphan_specs failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "orphan_specs failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -306,11 +334,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/fan_in_out" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_fan_in_out(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "fan_in_out failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "fan_in_out failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -331,11 +364,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/coupling" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.find_coupling(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "coupling failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "coupling failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -355,7 +393,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/api_surface" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         case Giulia.Knowledge.Store.find_api_surface(project_path) do
           {:ok, result} -> send_json(conn, 200, result)
@@ -376,11 +416,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/change_risk" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           case Giulia.Knowledge.Store.change_risk_score(project_path) do
-            {:ok, result} -> send_json(conn, 200, result)
-            {:error, reason} -> send_json(conn, 500, %{error: "change_risk failed", detail: inspect(reason)})
+            {:ok, result} ->
+              send_json(conn, 200, result)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "change_risk failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -400,7 +445,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/path" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         from = conn.query_params["from"]
         to = conn.query_params["to"]
@@ -434,7 +481,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/logic_flow" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         from = conn.query_params["from"]
         to = conn.query_params["to"]
@@ -442,16 +491,29 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         if from && to do
           case Giulia.Knowledge.Store.logic_flow(project_path, from, to) do
             {:ok, :no_path} ->
-              send_json(conn, 200, %{from: from, to: to, steps: nil, hop_count: 0, message: "No path found"})
+              send_json(conn, 200, %{
+                from: from,
+                to: to,
+                steps: nil,
+                hop_count: 0,
+                message: "No path found"
+              })
 
             {:ok, steps} ->
-              send_json(conn, 200, %{from: from, to: to, steps: steps, hop_count: max(length(steps) - 1, 0)})
+              send_json(conn, 200, %{
+                from: from,
+                to: to,
+                steps: steps,
+                hop_count: max(length(steps) - 1, 0)
+              })
 
             {:error, {:not_found, vertex}} ->
               send_json(conn, 404, %{error: "MFA vertex not found in graph", vertex: vertex})
           end
         else
-          send_json(conn, 400, %{error: "Missing required query params: from, to (MFA format: Module.func/arity)"})
+          send_json(conn, 400, %{
+            error: "Missing required query params: from, to (MFA format: Module.func/arity)"
+          })
         end
     end
   end
@@ -468,7 +530,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/style_oracle" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         query = conn.query_params["q"]
 
@@ -480,7 +544,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
               send_json(conn, 200, result)
 
             {:error, "Semantic search unavailable" <> _} ->
-              send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+              send_json(conn, 503, %{
+                error: "Semantic search unavailable. EmbeddingServing not loaded."
+              })
 
             {:error, reason} ->
               send_json(conn, 500, %{error: inspect(reason)})
@@ -531,7 +597,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
           send_json(conn, 404, %{error: "Vertex not found in graph", vertex: vertex})
 
         {:error, {:unknown_action, act}} ->
-          send_json(conn, 400, %{error: "Unknown action: #{act}. Use: rename_function, remove_function, rename_module"})
+          send_json(conn, 400, %{
+            error: "Unknown action: #{act}. Use: rename_function, remove_function, rename_module"
+          })
 
         {:error, {:invalid_target, target}} ->
           send_json(conn, 400, %{error: "Invalid target format: #{target}. Use: func_name/arity"})
@@ -556,7 +624,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/heatmap" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         case Giulia.Knowledge.Store.heatmap(project_path) do
           {:ok, result} ->
@@ -580,13 +650,17 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/unprotected_hubs" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         hub_threshold = parse_int_param(conn.query_params["hub_threshold"], 3)
         spec_threshold = parse_float_param(conn.query_params["spec_threshold"], 0.5)
 
         case Giulia.Knowledge.Store.find_unprotected_hubs(project_path,
-               hub_threshold: hub_threshold, spec_threshold: spec_threshold) do
+               hub_threshold: hub_threshold,
+               spec_threshold: spec_threshold
+             ) do
           {:ok, result} -> send_json(conn, 200, result)
           {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
         end
@@ -605,7 +679,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/struct_lifecycle" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         struct_filter = conn.query_params["struct"]
 
@@ -628,18 +704,24 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/duplicates" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
         threshold = parse_float_param(conn.query_params["threshold"], 0.85)
         max_clusters = parse_int_param(conn.query_params["max"], 20)
 
         case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path,
-               threshold: threshold, max: max_clusters) do
+               threshold: threshold,
+               max: max_clusters
+             ) do
           {:ok, result} ->
             send_json(conn, 200, result)
 
           {:error, "Semantic search unavailable" <> _} ->
-            send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+            send_json(conn, 503, %{
+              error: "Semantic search unavailable. EmbeddingServing not loaded."
+            })
 
           {:error, reason} ->
             send_json(conn, 500, %{error: reason})
@@ -651,7 +733,8 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   # GET /api/knowledge/audit — Unified audit (all 4 Principal Consultant features)
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Run unified audit (unprotected hubs + struct lifecycle + duplicates + behaviour integrity)",
+    intent:
+      "Run unified audit (unprotected hubs + struct lifecycle + duplicates + behaviour integrity)",
     endpoint: "GET /api/knowledge/audit",
     params: %{path: :required},
     returns: "JSON comprehensive audit with all 4 analysis results",
@@ -659,55 +742,12 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   }
   get "/audit" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
-        unprotected_hubs =
-          case Giulia.Knowledge.Store.find_unprotected_hubs(project_path) do
-            {:ok, result} -> result
-            {:error, _} -> %{modules: [], count: 0, severity_counts: %{red: 0, yellow: 0}}
-          end
-
-        struct_lifecycle =
-          case Giulia.Knowledge.Store.struct_lifecycle(project_path) do
-            {:ok, result} -> result
-            {:error, _} -> %{structs: [], count: 0}
-          end
-
-        semantic_duplicates =
-          case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path) do
-            {:ok, result} -> result
-            {:error, _} -> %{clusters: [], count: 0, note: "Semantic search unavailable"}
-          end
-
-        behaviour_integrity =
-          case Giulia.Knowledge.Store.check_all_behaviours(project_path) do
-            {:ok, :consistent} ->
-              %{status: "consistent", fractures: []}
-
-            {:error, fractures} when is_map(fractures) ->
-              formatted =
-                Enum.map(fractures, fn {behaviour, impl_fractures} ->
-                  %{
-                    behaviour: behaviour,
-                    fractures: Enum.map(impl_fractures, fn frac ->
-                      format_fracture(frac)
-                    end)
-                  }
-                end)
-
-              %{status: "fractured", fractures: formatted}
-
-            _ ->
-              %{status: "unknown", fractures: []}
-          end
-
-        send_json(conn, 200, %{
-          audit_version: "build_90",
-          unprotected_hubs: unprotected_hubs,
-          struct_lifecycle: struct_lifecycle,
-          semantic_duplicates: semantic_duplicates,
-          behaviour_integrity: behaviour_integrity
-        })
+        {:ok, audit} = Giulia.Knowledge.Store.audit(project_path)
+        send_json(conn, 200, audit)
     end
   end
 
@@ -718,65 +758,18 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent: "Get full module dependency graph in Cytoscape.js-ready format (nodes + edges)",
     endpoint: "GET /api/knowledge/topology",
     params: %{path: :required},
-    returns: "JSON with nodes (id, fan_in, fan_out, score, zone) and edges (source, target, label)",
+    returns:
+      "JSON with nodes (id, fan_in, fan_out, score, zone) and edges (source, target, label)",
     category: "knowledge"
   }
   get "/topology" do
     case resolve_and_check_ready(conn) do
-      {:halt, conn} -> conn
+      {:halt, conn} ->
+        conn
+
       {:ok, conn, project_path} ->
-        # Use the rolled-up edge set so synthesized edges from Builder
-        # Passes 7-11 (protocol_impl, behaviour_impl, router_dispatch,
-        # mfa_ref, capture_ref, apply_ref, use_import_ref) are visible
-        # at module level. Without rollup, defimpls of project protocols,
-        # controller actions, and macro-injected import targets render
-        # as isolated nodes even though dead_code analysis correctly
-        # treats them as live.
-        {:ok, edges} = Giulia.Knowledge.Store.all_dependencies_with_rollup(project_path)
-
-        # Get heatmap for node scores
-        {:ok, heatmap} = Giulia.Knowledge.Store.heatmap(project_path)
-        heatmap_map = Map.new(heatmap.modules, fn m -> {m.module, m} end)
-
-        # Get fan_in_out for centrality
-        {:ok, fan_data} = Giulia.Knowledge.Store.find_fan_in_out(project_path)
-        fan_map = Map.new(fan_data.modules, fn m -> {m.module, m} end)
-
-        # Build Cytoscape nodes
-        all_modules =
-          Enum.uniq(Enum.map(heatmap.modules, & &1.module) ++
-           Enum.flat_map(edges, fn {s, t, _} -> [s, t] end))
-
-        nodes = Enum.map(all_modules, fn mod ->
-          h = Map.get(heatmap_map, mod, %{})
-          f = Map.get(fan_map, mod, %{})
-          breakdown = Map.get(h, :breakdown, %{})
-
-          %{
-            data: %{
-              id: mod,
-              label: mod |> String.split(".") |> Enum.slice(-2..-1) |> Enum.join("."),
-              score: Map.get(h, :score, 0),
-              zone: Map.get(h, :zone, "green"),
-              fan_in: Map.get(f, :fan_in, 0),
-              fan_out: Map.get(f, :fan_out, 0),
-              complexity: Map.get(breakdown, :complexity, 0),
-              has_test: Map.get(breakdown, :has_test, false)
-            }
-          }
-        end)
-
-        # Build Cytoscape edges
-        cy_edges = Enum.map(edges, fn {source, target, label} ->
-          %{data: %{source: source, target: target, label: to_string(label)}}
-        end)
-
-        send_json(conn, 200, %{
-          nodes: nodes,
-          edges: cy_edges,
-          node_count: length(nodes),
-          edge_count: length(cy_edges)
-        })
+        {:ok, view} = Giulia.Knowledge.Store.topology_view(project_path)
+        send_json(conn, 200, view)
     end
   end
 
@@ -784,7 +777,8 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   # GET /api/knowledge/conventions — Coding convention violations
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Detect coding convention violations (error handling, OTP, atoms, pipes, docs) with optional per-rule per-module suppression",
+    intent:
+      "Detect coding convention violations (error handling, OTP, atoms, pipes, docs) with optional per-rule per-module suppression",
     endpoint: "GET /api/knowledge/conventions",
     params: %{path: :required, module: :optional, suppress: :optional},
     returns: "JSON violations grouped by severity, category, and file with convention references",
@@ -793,7 +787,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   get "/conventions" do
     try do
       case resolve_and_check_ready(conn) do
-        {:halt, conn} -> conn
+        {:halt, conn} ->
+          conn
+
         {:ok, conn, project_path} ->
           module_filter = conn.query_params["module"]
           suppress = parse_suppress(conn.query_params["suppress"])
@@ -802,8 +798,11 @@ defmodule Giulia.Daemon.Routers.Knowledge do
           opts = if module_filter, do: Keyword.put(opts, :module, module_filter), else: opts
 
           case Giulia.Knowledge.Store.find_conventions(project_path, opts) do
-            {:ok, data} -> send_json(conn, 200, data)
-            {:error, reason} -> send_json(conn, 500, %{error: "conventions failed", detail: inspect(reason)})
+            {:ok, data} ->
+              send_json(conn, 200, data)
+
+            {:error, reason} ->
+              send_json(conn, 500, %{error: "conventions failed", detail: inspect(reason)})
           end
       end
     rescue
@@ -815,10 +814,12 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   # GET /api/knowledge/verify_l2 — Round-trip checks L1 ETS ↔ L2 CubDB
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Verify L1 (ETS) matches L2 (CubDB) for the graph, AST, and/or metrics payloads after serialization round-trip. Parity + stratified sample identity per payload.",
+    intent:
+      "Verify L1 (ETS) matches L2 (CubDB) for the graph, AST, and/or metrics payloads after serialization round-trip. Parity + stratified sample identity per payload.",
     endpoint: "GET /api/knowledge/verify_l2",
     params: %{path: :required, check: :optional, sample_per_label: :optional},
-    returns: "JSON report with per-payload checks and an overall pass/fail. `check` ∈ graph | ast | metrics | all (default all).",
+    returns:
+      "JSON report with per-payload checks and an overall pass/fail. `check` ∈ graph | ast | metrics | all (default all).",
     category: "knowledge"
   }
   get "/verify_l2" do
@@ -830,51 +831,13 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         sample = parse_int(conn.query_params["sample_per_label"], 10)
         check = conn.query_params["check"] || "all"
 
-        results = run_l2_checks(project_path, check, sample)
-        status = if Enum.any?(results, fn {_, r} -> r[:overall] == :fail end), do: "fail", else: "pass"
+        {:ok, report} =
+          Giulia.Persistence.Verifier.verify_l2(project_path,
+            sample_per_label: sample,
+            check: check
+          )
 
-        send_json(conn, 200, %{project: project_path, overall: status, checks: Map.new(results)})
-    end
-  end
-
-  defp run_l2_checks(project, "graph", sample) do
-    [{:graph, run_graph(project, sample)}]
-  end
-
-  defp run_l2_checks(project, "ast", sample) do
-    [{:ast, run_ast(project, sample)}]
-  end
-
-  defp run_l2_checks(project, "metrics", _sample) do
-    [{:metrics, run_metrics(project)}]
-  end
-
-  defp run_l2_checks(project, _all, sample) do
-    [
-      {:graph, run_graph(project, sample)},
-      {:ast, run_ast(project, sample)},
-      {:metrics, run_metrics(project)}
-    ]
-  end
-
-  defp run_graph(project, sample) do
-    case Giulia.Persistence.Verifier.verify_graph(project, sample_per_label: sample) do
-      {:ok, r} -> r
-      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
-    end
-  end
-
-  defp run_ast(project, sample) do
-    case Giulia.Persistence.Verifier.verify_ast(project, sample_size: sample) do
-      {:ok, r} -> r
-      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
-    end
-  end
-
-  defp run_metrics(project) do
-    case Giulia.Persistence.Verifier.verify_metrics(project) do
-      {:ok, r} -> r
-      {:error, reason} -> %{overall: :fail, error: inspect(reason)}
+        send_json(conn, 200, report)
     end
   end
 
@@ -891,7 +854,8 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   # GET /api/knowledge/verify_l3 — Sample-identity check L1→L3 CALLS
   # -------------------------------------------------------------------
   @skill %{
-    intent: "Verify function-level :calls edges round-trip from L1 (libgraph) to L3 (ArcadeDB). Stratified sample across resolution-path buckets; surfaces silent mismatches between stores.",
+    intent:
+      "Verify function-level :calls edges round-trip from L1 (libgraph) to L3 (ArcadeDB). Stratified sample across resolution-path buckets; surfaces silent mismatches between stores.",
     endpoint: "GET /api/knowledge/verify_l3",
     params: %{path: :required, sample_per_bucket: :optional},
     returns: "JSON report with per-bucket {ok, missing, errors} counts and overall pass/fail",
@@ -916,9 +880,13 @@ defmodule Giulia.Daemon.Routers.Knowledge do
           end
 
         case Giulia.Storage.Arcade.Verifier.verify(project_path,
-               sample_per_bucket: sample_per_bucket) do
-          {:ok, report} -> send_json(conn, 200, report)
-          {:error, reason} -> send_json(conn, 500, %{error: "verify failed", detail: inspect(reason)})
+               sample_per_bucket: sample_per_bucket
+             ) do
+          {:ok, report} ->
+            send_json(conn, 200, report)
+
+          {:error, reason} ->
+            send_json(conn, 500, %{error: "verify failed", detail: inspect(reason)})
         end
     end
   end
@@ -934,7 +902,9 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     |> Enum.reduce(%{}, fn entry, acc ->
       case String.split(entry, ":", parts: 2) do
         [rule, modules] ->
-          module_list = modules |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+          module_list =
+            modules |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
+
           if module_list != [], do: Map.put(acc, rule, module_list), else: acc
 
         _ ->

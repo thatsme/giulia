@@ -356,6 +356,65 @@ defmodule Giulia.Persistence.Verifier do
     {:ok, Map.put(report, :overall, overall) |> Map.put(:project, project_path)}
   end
 
+  @doc """
+  Composite L1↔L2 verification across one or more payloads.
+
+  `check` selects the payload set:
+
+    * `"graph"` → graph round-trip only
+    * `"ast"` → AST cache round-trip only
+    * `"metrics"` → metrics cache round-trip only
+    * `"all"` (default) → all three
+
+  Returns a single overall pass/fail computed from the per-payload
+  outcomes plus the per-payload reports keyed by `:graph | :ast | :metrics`.
+  Both HTTP `GET /api/knowledge/verify_l2` and the MCP `knowledge_verify_l2`
+  tool reduce to a single call here — orchestration must not live in
+  the protocol layer.
+  """
+  @spec verify_l2(String.t(), keyword()) ::
+          {:ok, %{project: String.t(), overall: String.t(), checks: %{atom() => map()}}}
+  def verify_l2(project_path, opts \\ []) do
+    sample = Keyword.get(opts, :sample_per_label, @default_sample_per_label)
+    check = Keyword.get(opts, :check, "all")
+
+    results = run_checks(project_path, check, sample)
+
+    overall =
+      if Enum.any?(results, fn {_, r} -> Map.get(r, :overall) == :fail end),
+        do: "fail",
+        else: "pass"
+
+    {:ok, %{project: project_path, overall: overall, checks: Map.new(results)}}
+  end
+
+  defp run_checks(project, "graph", sample), do: [{:graph, run_graph(project, sample)}]
+  defp run_checks(project, "ast", sample), do: [{:ast, run_ast(project, sample)}]
+  defp run_checks(project, "metrics", _sample), do: [{:metrics, run_metrics(project)}]
+
+  defp run_checks(project, _all, sample) do
+    [
+      {:graph, run_graph(project, sample)},
+      {:ast, run_ast(project, sample)},
+      {:metrics, run_metrics(project)}
+    ]
+  end
+
+  defp run_graph(project, sample) do
+    {:ok, report} = verify_graph(project, sample_per_label: sample)
+    report
+  end
+
+  defp run_ast(project, sample) do
+    {:ok, report} = verify_ast(project, sample_size: sample)
+    report
+  end
+
+  defp run_metrics(project) do
+    {:ok, report} = verify_metrics(project)
+    report
+  end
+
   defp read_l1_metrics(project_path) do
     case :ets.lookup(:giulia_knowledge_graphs, {:metrics, project_path}) do
       [{_, metrics}] -> metrics

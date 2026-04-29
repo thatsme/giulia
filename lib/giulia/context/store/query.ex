@@ -13,7 +13,15 @@ defmodule Giulia.Context.Store.Query do
   @type file_path :: String.t()
   @type module_name :: String.t()
   @type module_entry :: %{name: String.t(), file: String.t(), line: non_neg_integer()}
-  @type function_entry :: %{module: String.t(), name: atom(), arity: non_neg_integer(), type: atom(), file: String.t(), line: non_neg_integer(), complexity: non_neg_integer()}
+  @type function_entry :: %{
+          module: String.t(),
+          name: atom(),
+          arity: non_neg_integer(),
+          type: atom(),
+          file: String.t(),
+          line: non_neg_integer(),
+          complexity: non_neg_integer()
+        }
 
   # ETS table name — same as Store's @table
   @table Giulia.Context.Store
@@ -38,6 +46,7 @@ defmodule Giulia.Context.Store.Query do
     all_asts(project_path)
     |> Enum.flat_map(fn {path, ast_data} ->
       modules = ast_data[:modules] || []
+
       Enum.map(modules, fn mod ->
         %{
           name: mod.name,
@@ -53,10 +62,12 @@ defmodule Giulia.Context.Store.Query do
   Find a specific module by name within a project.
   Returns {:ok, %{file: path, ast_data: data}} or :not_found.
   """
-  @spec find_module(project_path(), module_name()) :: {:ok, %{file: file_path(), ast_data: map()}} | :not_found
+  @spec find_module(project_path(), module_name()) ::
+          {:ok, %{file: file_path(), ast_data: map()}} | :not_found
   def find_module(project_path, module_name) do
     Enum.find_value(all_asts(project_path), :not_found, fn {path, ast_data} ->
       modules = ast_data[:modules] || []
+
       if Enum.any?(modules, &(&1.name == module_name)) do
         {:ok, %{file: path, ast_data: ast_data}}
       else
@@ -69,15 +80,19 @@ defmodule Giulia.Context.Store.Query do
   Find the primary module defined in a file path within a project.
   Returns {:ok, %{name: module_name}} or :not_found.
   """
-  @spec find_module_by_file(project_path(), file_path()) :: {:ok, %{name: module_name()}} | :not_found
+  @spec find_module_by_file(project_path(), file_path()) ::
+          {:ok, %{name: module_name()}} | :not_found
   def find_module_by_file(project_path, file_path) do
     # Normalize path separators for matching
     normalized = String.replace(file_path, "\\", "/")
 
     Enum.find_value(all_asts(project_path), :not_found, fn {path, ast_data} ->
       path_normalized = String.replace(path, "\\", "/")
-      if String.ends_with?(path_normalized, normalized) or String.ends_with?(normalized, path_normalized) do
+
+      if String.ends_with?(path_normalized, normalized) or
+           String.ends_with?(normalized, path_normalized) do
         modules = ast_data[:modules] || []
+
         case modules do
           [first | _] -> {:ok, %{name: first.name}}
           _ -> nil
@@ -136,10 +151,49 @@ defmodule Giulia.Context.Store.Query do
   end
 
   @doc """
+  Functions ranked by cognitive complexity descending. Replaces the
+  inline `list_functions |> filter |> sort |> take` chain that
+  previously duplicated between `Giulia.Daemon.Routers.Index` and the
+  MCP `index_complexity` dispatch.
+
+  Options:
+    * `:module` — filter to a single module (default: all modules)
+    * `:min` — minimum complexity threshold (default: 0)
+    * `:limit` — maximum results returned (default: 50)
+  """
+  @spec functions_by_complexity(project_path(), keyword()) :: %{
+          functions: [function_entry()],
+          count: non_neg_integer(),
+          module: module_name() | nil,
+          min_complexity: non_neg_integer()
+        }
+  def functions_by_complexity(project_path, opts \\ []) do
+    module_filter = Keyword.get(opts, :module)
+    min_complexity = Keyword.get(opts, :min, 0)
+    result_limit = Keyword.get(opts, :limit, 50)
+
+    functions =
+      project_path
+      |> list_functions(module_filter)
+      |> Enum.filter(fn f -> f.complexity >= min_complexity end)
+      |> Enum.sort_by(& &1.complexity, :desc)
+      |> Enum.take(result_limit)
+
+    %{
+      functions: functions,
+      count: length(functions),
+      module: module_filter,
+      min_complexity: min_complexity
+    }
+  end
+
+  @doc """
   Find a specific function by name (optionally with arity) within a project.
   Returns a list of matches across all modules.
   """
-  @spec find_function(project_path(), atom() | String.t(), non_neg_integer() | nil) :: [function_entry()]
+  @spec find_function(project_path(), atom() | String.t(), non_neg_integer() | nil) :: [
+          function_entry()
+        ]
   def find_function(project_path, function_name, arity) do
     Enum.filter(list_functions(project_path, nil), fn func ->
       name_match = to_string(func.name) == to_string(function_name)
@@ -160,10 +214,12 @@ defmodule Giulia.Context.Store.Query do
     Enum.flat_map(all_asts(project_path), fn {path, ast_data} ->
       types = ast_data[:types] || []
       modules = ast_data[:modules] || []
-      module_name = case modules do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
+
+      module_name =
+        case modules do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(types, fn type ->
@@ -183,10 +239,12 @@ defmodule Giulia.Context.Store.Query do
     Enum.flat_map(all_asts(project_path), fn {path, ast_data} ->
       specs = ast_data[:specs] || []
       modules = ast_data[:modules] || []
-      module_name = case modules do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
+
+      module_name =
+        case modules do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(specs, fn spec ->
@@ -201,7 +259,8 @@ defmodule Giulia.Context.Store.Query do
   @doc """
   Get spec for a specific function.
   """
-  @spec get_spec(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
+  @spec get_spec(project_path(), module_name(), atom() | String.t(), non_neg_integer()) ::
+          map() | nil
   def get_spec(project_path, module_name, function_name, arity) do
     Enum.find(list_specs(project_path, module_name), fn spec ->
       to_string(spec.function) == to_string(function_name) and spec.arity == arity
@@ -220,10 +279,12 @@ defmodule Giulia.Context.Store.Query do
     Enum.flat_map(all_asts(project_path), fn {path, ast_data} ->
       callbacks = ast_data[:callbacks] || []
       modules = ast_data[:modules] || []
-      module_name = case modules do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
+
+      module_name =
+        case modules do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(callbacks, fn cb ->
@@ -240,7 +301,9 @@ defmodule Giulia.Context.Store.Query do
   """
   @spec list_optional_callbacks(project_path(), module_name() | nil) :: [map()]
   def list_optional_callbacks(project_path, module_filter) do
-    Enum.filter(list_callbacks(project_path, module_filter), fn cb -> Map.get(cb, :optional, false) == true end)
+    Enum.filter(list_callbacks(project_path, module_filter), fn cb ->
+      Map.get(cb, :optional, false) == true
+    end)
   end
 
   # ============================================================================
@@ -254,6 +317,7 @@ defmodule Giulia.Context.Store.Query do
   def list_structs(project_path) do
     Enum.flat_map(all_asts(project_path), fn {path, ast_data} ->
       structs = ast_data[:structs] || []
+
       Enum.map(structs, fn struct ->
         Map.put(struct, :file, path)
       end)
@@ -280,10 +344,12 @@ defmodule Giulia.Context.Store.Query do
     Enum.flat_map(all_asts(project_path), fn {path, ast_data} ->
       docs = ast_data[:docs] || []
       modules = ast_data[:modules] || []
-      module_name = case modules do
-        [%{name: name} | _] -> name
-        _ -> "Unknown"
-      end
+
+      module_name =
+        case modules do
+          [%{name: name} | _] -> name
+          _ -> "Unknown"
+        end
 
       if module_filter == nil or module_name == module_filter do
         Enum.map(docs, fn doc ->
@@ -298,7 +364,8 @@ defmodule Giulia.Context.Store.Query do
   @doc """
   Get @doc for a specific function.
   """
-  @spec get_function_doc(project_path(), module_name(), atom() | String.t(), non_neg_integer()) :: map() | nil
+  @spec get_function_doc(project_path(), module_name(), atom() | String.t(), non_neg_integer()) ::
+          map() | nil
   def get_function_doc(project_path, module_name, function_name, arity) do
     Enum.find(list_docs(project_path, module_name), fn doc ->
       to_string(doc.function) == to_string(function_name) and doc.arity == arity
@@ -313,6 +380,7 @@ defmodule Giulia.Context.Store.Query do
     case find_module(project_path, module_name) do
       {:ok, %{ast_data: ast_data}} ->
         modules = ast_data[:modules] || []
+
         case Enum.find(modules, &(&1.name == module_name)) do
           %{moduledoc: doc} when is_binary(doc) -> {:ok, doc}
           _ -> :not_found

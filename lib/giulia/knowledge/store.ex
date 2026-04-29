@@ -48,8 +48,16 @@ defmodule Giulia.Knowledge.Store do
           type_counts: map(),
           hubs: [{vertex_id(), non_neg_integer()}]
         }
-  @type centrality_info :: %{in_degree: non_neg_integer(), out_degree: non_neg_integer(), dependents: [vertex_id()]}
-  @type test_targets :: %{direct: String.t() | nil, dependents: [{vertex_id(), String.t()}], all_paths: [String.t()]}
+  @type centrality_info :: %{
+          in_degree: non_neg_integer(),
+          out_degree: non_neg_integer(),
+          dependents: [vertex_id()]
+        }
+  @type test_targets :: %{
+          direct: String.t() | nil,
+          dependents: [{vertex_id(), String.t()}],
+          all_paths: [String.t()]
+        }
 
   # ============================================================================
   # Client API — Writes (GenServer)
@@ -106,16 +114,20 @@ defmodule Giulia.Knowledge.Store do
   @spec stats(project_path()) :: graph_stats()
   defdelegate stats(project_path), to: Reader
 
-  @spec centrality(project_path(), vertex_id()) :: {:ok, centrality_info()} | {:error, {:not_found, vertex_id()}}
+  @spec centrality(project_path(), vertex_id()) ::
+          {:ok, centrality_info()} | {:error, {:not_found, vertex_id()}}
   defdelegate centrality(project_path, module), to: Reader
 
-  @spec dependents(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
+  @spec dependents(project_path(), vertex_id()) ::
+          {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate dependents(project_path, module), to: Reader
 
-  @spec dependencies(project_path(), vertex_id()) :: {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
+  @spec dependencies(project_path(), vertex_id()) ::
+          {:ok, [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate dependencies(project_path, module), to: Reader
 
-  @spec trace_path(project_path(), vertex_id(), vertex_id()) :: {:ok, :no_path | [vertex_id()]} | {:error, {:not_found, vertex_id()}}
+  @spec trace_path(project_path(), vertex_id(), vertex_id()) ::
+          {:ok, :no_path | [vertex_id()]} | {:error, {:not_found, vertex_id()}}
   defdelegate trace_path(project_path, from, to), to: Reader
 
   @spec find_cycles(project_path()) :: {:ok, map()}
@@ -148,7 +160,8 @@ defmodule Giulia.Knowledge.Store do
   @spec get_test_targets(project_path(), vertex_id()) :: {:ok, test_targets()} | {:error, term()}
   defdelegate get_test_targets(project_path, module), to: Reader
 
-  @spec check_behaviour_integrity(project_path(), vertex_id()) :: {:ok, :consistent} | {:error, :not_found | [map()]}
+  @spec check_behaviour_integrity(project_path(), vertex_id()) ::
+          {:ok, :consistent} | {:error, :not_found | [map()]}
   defdelegate check_behaviour_integrity(project_path, behaviour), to: Reader
 
   @spec check_all_behaviours(project_path()) :: {:ok, :consistent} | {:error, map()}
@@ -184,12 +197,14 @@ defmodule Giulia.Knowledge.Store do
   defdelegate pre_impact_check(project_path, params), to: Reader
 
   # Default-arg wrappers (defdelegate can't express defaults)
-  @spec impact_map(project_path(), vertex_id(), non_neg_integer()) :: {:ok, impact_map()} | {:error, {:not_found, vertex_id(), [vertex_id()], map()}}
+  @spec impact_map(project_path(), vertex_id(), non_neg_integer()) ::
+          {:ok, impact_map()} | {:error, {:not_found, vertex_id(), [vertex_id()], map()}}
   def impact_map(project_path, vertex_id, depth \\ 2) do
     Reader.impact_map(project_path, vertex_id, depth)
   end
 
-  @spec style_oracle(project_path(), String.t(), non_neg_integer()) :: {:ok, map()} | {:error, term()}
+  @spec style_oracle(project_path(), String.t(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()}
   def style_oracle(project_path, query, top_k \\ 3) do
     Reader.style_oracle(project_path, query, top_k)
   end
@@ -217,6 +232,177 @@ defmodule Giulia.Knowledge.Store do
 
   @spec find_conventions(project_path(), String.t() | keyword()) :: {:ok, map()}
   defdelegate find_conventions(project_path, module_filter_or_opts), to: Reader
+
+  # ============================================================================
+  # Composite read operations — single source of truth.
+  #
+  # The protocol surfaces (`Giulia.Daemon.Routers.*` and
+  # `Giulia.MCP.Dispatch.*`) MUST reduce to a single call into one of
+  # these functions for the corresponding tool/endpoint. Multi-step
+  # orchestration must not live in the protocol layer; otherwise the
+  # same logical operation drifts between HTTP and MCP surfaces.
+  # ============================================================================
+
+  @doc """
+  Composite project audit: unprotected hubs + struct lifecycle + semantic
+  duplicates + behaviour integrity in one payload. Each subsystem returns
+  a documented empty-shape on its own error so the audit response is
+  always well-formed.
+  """
+  @spec audit(project_path()) ::
+          {:ok,
+           %{
+             audit_version: String.t(),
+             unprotected_hubs: map(),
+             struct_lifecycle: map(),
+             semantic_duplicates: map(),
+             behaviour_integrity: map()
+           }}
+  def audit(project_path) do
+    unprotected_hubs =
+      case find_unprotected_hubs(project_path) do
+        {:ok, result} -> result
+        {:error, _} -> %{modules: [], count: 0, severity_counts: %{red: 0, yellow: 0}}
+      end
+
+    struct_lifecycle =
+      case struct_lifecycle(project_path) do
+        {:ok, result} -> result
+        {:error, _} -> %{structs: [], count: 0}
+      end
+
+    semantic_duplicates =
+      case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path) do
+        {:ok, result} -> result
+        {:error, _} -> %{clusters: [], count: 0, note: "Semantic search unavailable"}
+      end
+
+    behaviour_integrity =
+      case check_all_behaviours(project_path) do
+        {:ok, :consistent} ->
+          %{status: "consistent", fractures: []}
+
+        {:error, fractures} when is_map(fractures) ->
+          %{status: "fractured", fractures: format_fracture_map(fractures)}
+
+        _ ->
+          %{status: "unknown", fractures: []}
+      end
+
+    {:ok,
+     %{
+       audit_version: "build_90",
+       unprotected_hubs: unprotected_hubs,
+       struct_lifecycle: struct_lifecycle,
+       semantic_duplicates: semantic_duplicates,
+       behaviour_integrity: behaviour_integrity
+     }}
+  end
+
+  @doc """
+  Behaviour integrity report — `check_all_behaviours/1` plus consistent
+  serialization shape for the `consistent` and `fractured` cases.
+  """
+  @spec integrity_report(project_path()) ::
+          {:ok, %{status: String.t(), fractures: [map()]}}
+  def integrity_report(project_path) do
+    case check_all_behaviours(project_path) do
+      {:ok, :consistent} ->
+        {:ok, %{status: "consistent", fractures: []}}
+
+      {:error, fractures} when is_map(fractures) ->
+        {:ok, %{status: "fractured", fractures: format_fracture_map(fractures)}}
+    end
+  end
+
+  @doc """
+  Cytoscape-shaped topology view: nodes (with heatmap zone + fan-in/out
+  + complexity + has_test) and edges from the rolled-up dependency set
+  (synthesized Pass 7-11 edges visible at module level).
+  """
+  @spec topology_view(project_path()) ::
+          {:ok,
+           %{
+             nodes: [map()],
+             edges: [map()],
+             node_count: non_neg_integer(),
+             edge_count: non_neg_integer()
+           }}
+  def topology_view(project_path) do
+    {:ok, edges} = all_dependencies_with_rollup(project_path)
+    {:ok, heatmap} = heatmap(project_path)
+    {:ok, fan_data} = find_fan_in_out(project_path)
+
+    heatmap_map = Map.new(heatmap.modules, fn m -> {m.module, m} end)
+    fan_map = Map.new(fan_data.modules, fn m -> {m.module, m} end)
+
+    all_modules =
+      Enum.uniq(
+        Enum.map(heatmap.modules, & &1.module) ++
+          Enum.flat_map(edges, fn {s, t, _} -> [s, t] end)
+      )
+
+    nodes =
+      Enum.map(all_modules, fn mod ->
+        h = Map.get(heatmap_map, mod, %{})
+        f = Map.get(fan_map, mod, %{})
+        breakdown = Map.get(h, :breakdown, %{})
+
+        %{
+          data: %{
+            id: mod,
+            label: mod |> String.split(".") |> Enum.slice(-2..-1) |> Enum.join("."),
+            score: Map.get(h, :score, 0),
+            zone: Map.get(h, :zone, "green"),
+            fan_in: Map.get(f, :fan_in, 0),
+            fan_out: Map.get(f, :fan_out, 0),
+            complexity: Map.get(breakdown, :complexity, 0),
+            has_test: Map.get(breakdown, :has_test, false)
+          }
+        }
+      end)
+
+    cy_edges =
+      Enum.map(edges, fn {source, target, label} ->
+        %{data: %{source: source, target: target, label: to_string(label)}}
+      end)
+
+    {:ok,
+     %{
+       nodes: nodes,
+       edges: cy_edges,
+       node_count: length(nodes),
+       edge_count: length(cy_edges)
+     }}
+  end
+
+  # Behaviour-fracture serialization. Single source of truth for both
+  # `audit/1` and `integrity_report/1`; no other module should re-implement
+  # this shape. (Old call sites in `Daemon.Helpers` and
+  # `Giulia.MCP.Dispatch.Knowledge` removed in the same slice.)
+  #
+  # Each callback list (`missing`, `injected`, `optional_omitted`,
+  # `heuristic_injected`) contains `{name, arity}` tuples internally;
+  # the outward JSON shape is `"name/arity"` strings. Matches the
+  # canonical contract HTTP clients have always seen.
+  @spec format_fracture(map()) :: map()
+  def format_fracture(frac) do
+    fmt = fn list -> Enum.map(list, fn {name, arity} -> "#{name}/#{arity}" end) end
+
+    %{
+      implementer: frac.implementer,
+      missing: fmt.(Map.get(frac, :missing, [])),
+      injected: fmt.(Map.get(frac, :injected, [])),
+      optional_omitted: fmt.(Map.get(frac, :optional_omitted, [])),
+      heuristic_injected: fmt.(Map.get(frac, :heuristic_injected, []))
+    }
+  end
+
+  defp format_fracture_map(fractures) do
+    Enum.map(fractures, fn {behaviour, impl_fractures} ->
+      %{behaviour: behaviour, fractures: Enum.map(impl_fractures, &format_fracture/1)}
+    end)
+  end
 
   # ============================================================================
   # Server Callbacks
@@ -253,7 +439,10 @@ defmodule Giulia.Knowledge.Store do
   def handle_cast({:graph_ready, project_path, graph}, state) do
     vertex_count = Graph.num_vertices(graph)
     edge_count = Graph.num_edges(graph)
-    Logger.info("Knowledge graph rebuilt for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
+
+    Logger.info(
+      "Knowledge graph rebuilt for #{project_path}: #{vertex_count} vertices, #{edge_count} edges"
+    )
 
     ets_put_graph(project_path, graph)
     # Don't clear metrics here — keep serving old cache until new metrics are ready.
@@ -310,7 +499,10 @@ defmodule Giulia.Knowledge.Store do
   def handle_call({:restore_graph, project_path, graph}, _from, state) do
     vertex_count = Graph.num_vertices(graph)
     edge_count = Graph.num_edges(graph)
-    Logger.info("Knowledge graph restored from cache for #{project_path}: #{vertex_count} vertices, #{edge_count} edges")
+
+    Logger.info(
+      "Knowledge graph restored from cache for #{project_path}: #{vertex_count} vertices, #{edge_count} edges"
+    )
 
     ets_put_graph(project_path, graph)
 
@@ -318,7 +510,9 @@ defmodule Giulia.Knowledge.Store do
   end
 
   def handle_call({:restore_metrics, project_path, metrics}, _from, state) do
-    Logger.info("Metric cache restored from disk for #{project_path}: #{Enum.join(Map.keys(metrics), ", ")}")
+    Logger.info(
+      "Metric cache restored from disk for #{project_path}: #{Enum.join(Map.keys(metrics), ", ")}"
+    )
 
     ets_put_metrics(project_path, metrics)
 

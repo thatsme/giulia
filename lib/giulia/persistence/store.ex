@@ -97,6 +97,55 @@ defmodule Giulia.Persistence.Store do
     end
   end
 
+  @doc """
+  Verify the persisted Merkle tree for a project. Returns one of three
+  documented payload shapes:
+
+    * `%{status: "no_cache", verified: false}` — DB missing or no Merkle
+      tree persisted yet.
+    * `%{status: "ok", verified: true, root: <hex12>, leaf_count: N}` —
+      tree verifies clean.
+    * `%{status: "corrupted", verified: false, leaf_count: N}` — tree
+      structure detects mismatch.
+
+  Single source of truth for both the HTTP `POST /api/index/verify`
+  endpoint and the MCP `index_verify` tool.
+  """
+  @spec verify_cache(String.t()) :: {:ok, map()}
+  def verify_cache(project_path) do
+    case get_db(project_path) do
+      {:ok, db} ->
+        case CubDB.get(db, {:merkle, :tree}) do
+          nil ->
+            {:ok, %{status: "no_cache", verified: false}}
+
+          tree ->
+            case Giulia.Persistence.Merkle.verify(tree) do
+              :ok ->
+                root_hex =
+                  tree
+                  |> Giulia.Persistence.Merkle.root_hash()
+                  |> Base.encode16(case: :lower)
+                  |> String.slice(0, 12)
+
+                {:ok,
+                 %{
+                   status: "ok",
+                   verified: true,
+                   root: root_hex,
+                   leaf_count: tree.leaf_count
+                 }}
+
+              {:error, :corrupted} ->
+                {:ok, %{status: "corrupted", verified: false, leaf_count: tree.leaf_count}}
+            end
+        end
+
+      {:error, _} ->
+        {:ok, %{status: "no_cache", verified: false}}
+    end
+  end
+
   # Server Callbacks
 
   @impl true

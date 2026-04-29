@@ -2,8 +2,10 @@ defmodule Giulia.Daemon.HelpersTest do
   @moduledoc """
   Tests for Daemon.Helpers — shared utility functions for all routers (degree 12).
 
-  Pure functions: parse_int_param, parse_float_param, format_fracture.
+  Pure functions: parse_int_param, parse_float_param.
   Plug-dependent: send_json, resolve_project_path, parse_node_param.
+  Behaviour-fracture serialization moved to `Giulia.Knowledge.Store`
+  (single source of truth across HTTP + MCP); covered there.
   """
   use ExUnit.Case, async: true
   import Plug.Test
@@ -60,52 +62,6 @@ defmodule Giulia.Daemon.HelpersTest do
 
     test "returns default for non-numeric string" do
       assert Helpers.parse_float_param("abc", 0.5) == 0.5
-    end
-  end
-
-  # ============================================================================
-  # format_fracture/1
-  # ============================================================================
-
-  describe "format_fracture/1" do
-    test "formats a full fracture map" do
-      fracture = %{
-        implementer: "MyModule",
-        missing: [{:foo, 2}, {:bar, 1}],
-        injected: [{:baz, 0}],
-        optional_omitted: [{:qux, 3}],
-        heuristic_injected: []
-      }
-
-      result = Helpers.format_fracture(fracture)
-
-      assert result.implementer == "MyModule"
-      assert "foo/2" in result.missing
-      assert "bar/1" in result.missing
-      assert "baz/0" in result.injected
-      assert "qux/3" in result.optional_omitted
-      assert result.heuristic_injected == []
-    end
-
-    test "handles empty lists gracefully" do
-      fracture = %{
-        implementer: "Empty",
-        missing: [],
-        injected: [],
-        optional_omitted: [],
-        heuristic_injected: []
-      }
-
-      result = Helpers.format_fracture(fracture)
-      assert result.missing == []
-      assert result.injected == []
-    end
-
-    test "handles missing keys with defaults" do
-      fracture = %{implementer: "Partial"}
-      result = Helpers.format_fracture(fracture)
-      assert result.implementer == "Partial"
-      assert result.missing == []
     end
   end
 
@@ -167,7 +123,7 @@ defmodule Giulia.Daemon.HelpersTest do
 
     test "converts node string to atom" do
       conn = conn(:get, "/test?node=myapp@localhost") |> fetch_query_params()
-      assert Helpers.parse_node_param(conn) == :"myapp@localhost"
+      assert Helpers.parse_node_param(conn) == :myapp@localhost
     end
   end
 end

@@ -126,6 +126,48 @@ defmodule Giulia.Context.Indexer do
   def status(project_path), do: GenServer.call(__MODULE__, {:status, project_path})
 
   @doc """
+  Status report enriched with the L2 Merkle cache_status (`"warm" |
+  "cold" | "no_project"`). Single source of truth for both the HTTP
+  `GET /api/index/status` route and the MCP `index_status` tool.
+
+  When `path` is `nil`, returns the global Indexer.status/0; when given,
+  resolves via PathMapper before consulting the Indexer + Loader cache.
+  """
+  @spec status_with_cache(String.t() | nil) :: map()
+  def status_with_cache(path) do
+    base_status =
+      case path do
+        nil ->
+          status()
+
+        raw ->
+          raw
+          |> Giulia.Core.PathMapper.resolve_path()
+          |> status()
+      end
+
+    cache_payload =
+      case base_status.project_path do
+        nil ->
+          %{cache_status: "no_project"}
+
+        project_path ->
+          merkle_root =
+            case Giulia.Persistence.Loader.cached_merkle_root(project_path) do
+              {:ok, hash} -> String.slice(Base.encode16(hash, case: :lower), 0, 12)
+              :not_cached -> nil
+            end
+
+          %{
+            cache_status: if(merkle_root, do: "warm", else: "cold"),
+            merkle_root: merkle_root
+          }
+      end
+
+    Map.merge(base_status, cache_payload)
+  end
+
+  @doc """
   Mark a project as already indexed from a prior daemon lifetime.
 
   Called by `Persistence.WarmRestore` after restoring the L1 graph from L2

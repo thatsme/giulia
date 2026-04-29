@@ -30,8 +30,87 @@ defmodule Giulia.Enrichment.Ingest do
           | {:error, term()}
 
   @doc """
+  Validate inputs and run an enrichment ingest. Single source of truth
+  for the validation cascade shared between HTTP `POST /api/index/enrichment`
+  and the MCP `index_enrichment` tool.
+
+  Returns:
+    * `{:ok, summary}` — ingest succeeded
+    * `{:error, {:invalid_tool, _}}` — tool string empty or non-binary
+    * `{:error, {:invalid_project, project}}` — project path missing or
+      didn't resolve to a directory
+    * `{:error, {:invalid_payload_path, payload_path}}` — payload path empty
+    * `{:error, {:payload_path_not_under_root, payload_path}}` — payload
+      not under any allowed root from `ScanConfig.enrichment_payload_roots/0`
+    * `{:error, {:payload_not_regular_file, payload_path}}` — path is a
+      directory or symlink to one
+    * `{:error, reason}` — underlying ingest/parse failure (passes through
+      from `run/3`)
+  """
+  @spec run_with_validation(term(), term(), term()) ::
+          result()
+          | {:error,
+             {:invalid_tool, term()}
+             | {:invalid_project, term()}
+             | {:invalid_payload_path, term()}
+             | {:payload_path_not_under_root, String.t()}
+             | {:payload_not_regular_file, String.t()}}
+  def run_with_validation(tool, project, payload_path) do
+    with :ok <- validate_tool(tool),
+         {:ok, resolved_project} <- validate_project(project),
+         :ok <- validate_payload_path(payload_path, resolved_project) do
+      run(tool, resolved_project, payload_path)
+    end
+  end
+
+  defp validate_tool(tool) when is_binary(tool) and tool != "", do: :ok
+  defp validate_tool(other), do: {:error, {:invalid_tool, other}}
+
+  defp validate_project(project) when is_binary(project) and project != "" do
+    resolved = Giulia.Core.PathMapper.resolve_path(project)
+
+    cond do
+      not is_binary(resolved) or resolved == "" ->
+        {:error, {:invalid_project, project}}
+
+      not File.dir?(resolved) ->
+        {:error, {:invalid_project, project}}
+
+      true ->
+        {:ok, resolved}
+    end
+  end
+
+  defp validate_project(other), do: {:error, {:invalid_project, other}}
+
+  defp validate_payload_path(payload_path, resolved_project) when is_binary(payload_path) do
+    cond do
+      payload_path == "" ->
+        {:error, {:invalid_payload_path, payload_path}}
+
+      Giulia.Context.ScanConfig.validate_enrichment_payload_path(
+        payload_path,
+        resolved_project
+      ) != :ok ->
+        {:error, {:payload_path_not_under_root, payload_path}}
+
+      not File.regular?(payload_path) ->
+        {:error, {:payload_not_regular_file, payload_path}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp validate_payload_path(other, _resolved_project),
+    do: {:error, {:invalid_payload_path, other}}
+
+  @doc """
   Run an enrichment ingest. Returns `{:ok, summary}` on success or
-  `{:error, reason}` on parse failure / unknown tool.
+  `{:error, reason}` on parse failure / unknown tool. **Use
+  `run_with_validation/3` from protocol layers** — it covers the full
+  input cascade. Direct callers (tests, in-process callers) may use
+  this when inputs are already trusted.
   """
   @spec run(atom() | String.t(), String.t(), String.t()) :: result()
   def run(tool, project_path, payload_path)
