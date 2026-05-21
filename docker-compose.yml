@@ -166,7 +166,12 @@ services:
       retries: 3
 
   # NOTE: ArcadeDB runs as an external standalone container (not managed here).
-  # Start it separately: docker run -d --name arcadedb -p 2480:2480 arcadedata/arcadedb:latest
+  # ArcadeDB is run separately as L3 storage:
+  # docker run -d --name arcadedb -p 2480:2480 \
+  #   -e JAVA_OPTS="-Darcadedb.server.rootPassword=playwithdata" \
+  #   arcadedata/arcadedb:26.4.2
+  # Pinned: 26.4.2 (26.5.1 has a regression in the OpenCypher write
+  # path that breaks Arcade VerifierTest; 26.6.x stable not yet released)
   # Worker reaches it via ARCADEDB_URL=http://host.docker.internal:2480
 
 volumes:
