@@ -164,7 +164,10 @@ defmodule Giulia.MixProject do
       plt_file: {:no_warn, "priv/plts/giulia.plt"},
       plt_add_apps: [:mix, :ex_unit],
       flags: [
-        :unmatched_returns,
+        # :unmatched_returns intentionally omitted — at Phase 2c it produced 50
+        # findings (27% of the Dialyzer total), almost all intentional
+        # fire-and-forget calls (Logger, GenServer.cast, telemetry, ETS writes).
+        # It fires on pattern, not risk. See docs/orders/quality-tooling/phase-2-dialyzer.md.
         :error_handling,
         :missing_return,
         :extra_return,

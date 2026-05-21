@@ -45,7 +45,7 @@ defmodule Giulia.MCP.Dispatch.Runtime do
   def history(args) do
     node_ref = resolve_node(args["node"])
     last_n = parse_int(args["last"], 20)
-    {:ok, Collector.history(node_ref, last_n)}
+    {:ok, Collector.history(node_ref, last: last_n)}
   end
 
   @spec trend(map()) :: {:ok, term()}
@@ -86,7 +86,7 @@ defmodule Giulia.MCP.Dispatch.Runtime do
   @spec profiles(map()) :: {:ok, term()}
   def profiles(args) do
     limit = parse_int(args["limit"], 20)
-    {:ok, Monitor.list_profiles(limit)}
+    {:ok, Monitor.list_profiles(limit: limit)}
   end
 
   @spec profile_latest(map()) :: {:ok, term()} | {:error, String.t()}

@@ -15,8 +15,11 @@ defmodule Giulia.MCP.Dispatch.Search do
       path = args["path"]
       resolved = if path, do: PathMapper.resolve_path(path), else: nil
       sandbox = if resolved, do: PathSandbox.new(resolved), else: nil
-      result = SearchCode.execute(pattern, sandbox)
-      {:ok, result}
+
+      case SearchCode.execute(%{"pattern" => pattern}, sandbox: sandbox) do
+        {:ok, output} -> {:ok, output}
+        {:error, :invalid_params} -> {:error, "Invalid search parameters"}
+      end
     end
   end
 
@@ -28,7 +31,8 @@ defmodule Giulia.MCP.Dispatch.Search do
 
       case SemanticIndex.search(path, concept, top_k) do
         {:ok, results} ->
-          {:ok, %{results: results, count: length(results), concept: concept}}
+          count = length(results.modules) + length(results.functions)
+          {:ok, %{results: results, count: count, concept: concept}}
 
         {:error, reason} ->
           {:error, inspect(reason)}
