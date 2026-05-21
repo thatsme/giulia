@@ -67,3 +67,7 @@ CLAUDE.md
 # Quality-tooling raw baseline logs (curated _baseline.md report is tracked)
 docs/orders/quality-tooling/_*.log
 docs/orders/quality-tooling/_*.txt
+
+# Dialyzer PLT cache (rebuilt from mix.lock; priv/plts/.gitkeep is tracked)
+priv/plts/*.plt
+priv/plts/*.plt.hash

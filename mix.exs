@@ -20,7 +20,18 @@ defmodule Giulia.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       escript: escript(),
-      releases: releases()
+      releases: releases(),
+      aliases: aliases(),
+      dialyzer: dialyzer(),
+      preferred_cli_env: [
+        check: :test,
+        "check.strict": :test,
+        "check.fast": :test,
+        credo: :test,
+        dialyzer: :dev,
+        sobelow: :dev
+      ],
+      docs: docs()
     ]
   end
 
@@ -111,7 +122,71 @@ defmodule Giulia.MixProject do
       {:anubis_mcp, "~> 1.0"},
 
       # Property-based testing (test-only)
-      {:stream_data, "~> 1.1", only: [:dev, :test], runtime: false}
+      {:stream_data, "~> 1.1", only: [:dev, :test], runtime: false},
+
+      # --- Quality tooling (dev/test only) ---
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:sobelow, "~> 0.13", only: [:dev, :test], runtime: false},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+    ]
+  end
+
+  defp aliases do
+    [
+      # Standard check — what every commit should pass
+      check: [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "test"
+      ],
+      # Strict — release gate; adds Dialyzer and Sobelow
+      "check.strict": [
+        "format --check-formatted",
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "sobelow --config",
+        "dialyzer",
+        "test --cover"
+      ],
+      # Fast feedback for the inner dev loop
+      "check.fast": [
+        "compile --warnings-as-errors",
+        "credo --strict",
+        "test --stale"
+      ]
+    ]
+  end
+
+  defp dialyzer do
+    [
+      plt_file: {:no_warn, "priv/plts/giulia.plt"},
+      plt_add_apps: [:mix, :ex_unit],
+      flags: [
+        :unmatched_returns,
+        :error_handling,
+        :missing_return,
+        :extra_return,
+        :no_improper_lists
+      ],
+      ignore_warnings: ".dialyzer_ignore.exs",
+      list_unused_filters: true
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      extras: [
+        "README.md",
+        "ARCHITECTURE.md",
+        "API.md",
+        "CONTRIBUTING.md",
+        "SECURITY.md"
+      ],
+      source_url: "https://github.com/thatsme/giulia",
+      source_ref: "v#{@version}"
     ]
   end
 end
