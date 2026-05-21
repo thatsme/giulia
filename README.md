@@ -1,6 +1,6 @@
 # Giulia
 
-> **Build 161** · v0.3.8 · 2026-04-29 · **Status**: pre-1.0 — APIs may break between minor releases until v1.0.
+> **Build 161** · v0.3.8 · 2026-05-21 · **Status**: pre-1.0 — APIs may break between minor releases until v1.0.
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
@@ -103,7 +103,7 @@ Add Giulia as an MCP server in your client config (`.mcp.json`):
 }
 ```
 
-Set `GIULIA_MCP_KEY` in your env / compose before starting; the MCP server only loads if it's set. Once wired, your LLM client sees 71 tools — every read-only Giulia endpoint becomes a tool call without HTTP plumbing.
+Set `GIULIA_MCP_KEY` in your env / compose before starting; the MCP server only loads if it's set. Once wired, your LLM client sees 75 tools — every read-only Giulia endpoint becomes a tool call without HTTP plumbing.
 
 ## Architecture
 
@@ -148,7 +148,7 @@ Claude Code / CLI Client
 | [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow, 11 graph-builder passes |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Per-variable reference for `priv/config/*.json` (scoring, dispatch patterns, scan roots, dispatch invariants, relevance buckets) and the cache-invalidation contract |
-| [API.md](API.md) | REST API and MCP reference (85 endpoints across 10 categories) |
+| [API.md](API.md) | REST API and MCP reference (88 endpoints across 10 categories) |
 | [docs/REPORT_RULES.md](docs/REPORT_RULES.md) | Standard report-generation procedure for AI agents and humans |
 | [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
@@ -195,8 +195,8 @@ Highlights from the Build 146 snapshot:
 
 ### Capabilities
 
-- **API**: 85 self-describing endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
-- **MCP**: native server exposing 71 tools + 5 resource templates, bearer-token auth
+- **API**: 88 endpoints across 10 categories (core, discovery, index, knowledge, intelligence, runtime, search, transaction, approval, monitor)
+- **MCP**: native server exposing 75 tools + 5 resource templates, bearer-token auth
 - **Storage**: three-tier (ETS L1 + CubDB L2 + ArcadeDB L3) with startup warm-restore from L2 so `/api/projects` stays populated across `docker compose restart`. L2 cache auto-invalidates on code-tier or config-file edits via the CodeDigest envelope.
 - **Containers**: dual-container (worker + monitor)
 - **Visualization**: Logic Monitor (SSE) + Graph Explorer (Cytoscape.js)

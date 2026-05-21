@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 160 · v0.3.7 · 2026-04-29
+> **Document version**: Build 161 · v0.3.8 · 2026-05-21
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -19,9 +19,9 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 ## Table of Contents
 
 1. [Core](#core) (10 endpoints)
-2. [Index](#index) (9 endpoints)
-3. [Knowledge](#knowledge) (24 endpoints)
-4. [Intelligence](#intelligence) (5 endpoints)
+2. [Index](#index) (10 endpoints)
+3. [Knowledge](#knowledge) (27 endpoints)
+4. [Intelligence](#intelligence) (6 endpoints)
 5. [Runtime](#runtime) (16 endpoints)
 6. [Search](#search) (3 endpoints)
 7. [Transaction](#transaction) (3 endpoints)
@@ -54,7 +54,7 @@ curl http://localhost:4000/health
 {
   "status": "ok",
   "node": "worker@giulia-worker",
-  "version": "0.6.0-build.137"
+  "version": "v0.3.8.161"
 }
 ```
 
@@ -668,7 +668,7 @@ curl "http://localhost:4000/api/index/complexity?path=C:/Development/GitHub/Giul
 
 ## Knowledge
 
-Property Graph topology analysis endpoints. Managed by `Giulia.Daemon.Routers.Knowledge`. This is the largest category with 23 endpoints.
+Property Graph topology analysis endpoints. Managed by `Giulia.Daemon.Routers.Knowledge`. This is the largest category with 27 endpoints.
 
 All GET endpoints require `?path=P` in the query string.
 
@@ -2979,7 +2979,7 @@ The MCP server only starts if `GIULIA_MCP_KEY` is set. Without it, `/mcp` return
 
 ### How It Works
 
-All 74 `@skill`-annotated REST endpoints are automatically exposed as MCP tools. The mapping is generated at boot by `Giulia.MCP.ToolSchema` from the same `@skill` annotations that power the Discovery API.
+The 78 `@skill`-annotated sub-router endpoints are exposed as MCP tools, minus 3 HTML/SSE endpoints (see [Excluded Endpoints](#excluded-endpoints) below) — 75 tools in total. The mapping is generated at boot by `Giulia.MCP.ToolSchema` from the same `@skill` annotations that power the Discovery API.
 
 **Tool naming convention** — endpoint path maps to tool name:
 
@@ -3035,6 +3035,8 @@ Five resource templates are available via the `giulia://` URI scheme:
 
 HTML pages (`/api/monitor`, `/api/monitor/graph`) and SSE streams (`/api/monitor/stream`) are excluded from MCP — they are not compatible with the tool call/response model.
 
+The gap between the 88 REST endpoints and the 75 MCP tools is the 10 core endpoints (defined directly in the Endpoint module, not `@skill`-annotated sub-router routes) plus these 3 HTML/SSE endpoints. The static `/favicon.ico` route is not an API endpoint and is excluded from the REST count.
+
 ---
 
 ## Quick Reference
@@ -3042,16 +3044,16 @@ HTML pages (`/api/monitor`, `/api/monitor/graph`) and SSE streams (`/api/monitor
 | Category     | Count | Prefix               |
 |--------------|-------|-----------------------|
 | Core         | 10    | `/health`, `/api/*`   |
-| Index        | 9     | `/api/index/*`        |
-| Knowledge    | 23    | `/api/knowledge/*`    |
-| Intelligence | 5     | `/api/intelligence/*`, `/api/briefing/*`, `/api/brief/*`, `/api/plan/*` |
+| Index        | 10    | `/api/index/*`        |
+| Knowledge    | 27    | `/api/knowledge/*`    |
+| Intelligence | 6     | `/api/intelligence/*`, `/api/briefing/*`, `/api/brief/*`, `/api/plan/*` |
 | Runtime      | 16    | `/api/runtime/*`      |
 | Search       | 3     | `/api/search/*`       |
 | Transaction  | 3     | `/api/transaction/*`  |
 | Approval     | 2     | `/api/approval/*`     |
-| Monitor      | 6     | `/api/monitor/*`      |
-| Discovery    | 3     | `/api/discovery/*`    |
-| MCP          | 74    | `/mcp` (tools) + `giulia://` (resources) |
-| **Total**    | **80 REST + 74 MCP tools** |                |
+| Monitor      | 7     | `/api/monitor/*`      |
+| Discovery    | 4     | `/api/discovery/*`    |
+| MCP          | 75    | `/mcp` (tools) + `giulia://` (resources) |
+| **Total**    | **88 REST + 75 MCP tools** |                |
 
-Note: The 80 REST total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 70 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API. The 74 MCP tools are auto-generated from these same skills (minus HTML/SSE endpoints).
+Note: The 88 REST total includes 10 core endpoints defined in the Endpoint module. The 9 sub-routers contribute 78 self-describing skills via the `@skill` decorator pattern, queryable at runtime through the Discovery API. The 75 MCP tools are auto-generated from these same skills (minus 3 HTML/SSE endpoints; core endpoints are not exposed via MCP).

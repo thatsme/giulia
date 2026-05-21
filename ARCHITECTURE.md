@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 161 · v0.3.8 · 2026-04-29
+> **Document version**: Build 161 · v0.3.8 · 2026-05-21
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -29,7 +29,7 @@ memory across invocations.
  +-----------------------------+
  |   giulia-worker  :4000      |
  |   (Bandit + Plug.Router)    |
- |   85 API endpoints          |
+ |   88 API endpoints          |
  |   MCP server (/mcp)         |
  +-----------------------------+
 ```
@@ -60,10 +60,10 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | - Semantic search           |    | - Burst detection         | |
 |  | - EmbeddingServing          |    | - High-frequency runtime  | |
 |  | - Inference engine          |    |   snapshots               | |
-|  | - 85 API endpoints          |    | - Performance profiling   | |
-|  | - MCP server (71 tools)     |    |                           | |
+|  | - 88 API endpoints          |    | - Performance profiling   | |
+|  | - MCP server (75 tools)     |    |                           | |
 |  | - CubDB persistence         |    | Skips:                    | |
-|  | - ArcadeDB L2 snapshots     |    |  EmbeddingServing (~90MB) | |
+|  | - ArcadeDB L3 snapshots     |    |  EmbeddingServing (~90MB) | |
 |  |                             |    |  Inference pools           | |
 |  |                             |    |  SemanticIndex             | |
 |  +-------------+---------------+    +-------------+-------------+ |
@@ -82,7 +82,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 ```
 
 **Worker** (`giulia-worker`): The primary daemon. Runs all static analysis (AST
-scanning, property graph construction, semantic embeddings) and serves all 85
+scanning, property graph construction, semantic embeddings) and serves all 88
 API endpoints. Memory limit: 4GB. (A legacy local-chat inference subsystem also
 loads under TIER 3 — deprecated as of v0.3.8, see Section 18 / Document History.)
 
@@ -153,6 +153,35 @@ Giulia.Supervisor (:one_for_one)
 After the supervisor starts successfully, `Giulia.Monitor.Telemetry.attach/0` hooks
 `:telemetry` handlers for the cognitive flight recording system (7 events across
 the inference pipeline — deprecated subsystem, see Section 18).
+
+### Restart strategy
+
+`Giulia.Supervisor` uses `:one_for_one`: a crash in one child restarts only that
+child, not its siblings. A failure in `Intelligence.SemanticIndex` does not take
+down `Knowledge.Store` or the HTTP endpoint, so the daemon stays available
+through partial failures.
+
+The trade-off is that a restarted child loses its in-memory state, and
+downstream consumers may briefly hold stale references. Two mechanisms close
+that gap, both required by the GIULIA.md "Restart-time state recovery"
+invariant:
+
+- **ETS survival via `EtsKeeper`.** ETS tables owned by `Context.Store` and
+  `Knowledge.Store` register `Giulia.EtsKeeper` as their `:heir`. When an owner
+  crashes, BEAM transfers the table to the keeper instead of deleting it; the
+  restarted owner reclaims it via `EtsKeeper.claim/1`. Cache data survives the
+  common case — an owner crash — without a rebuild.
+
+- **Lost `{:graph_ready}` messages.** `Knowledge.Store` notifies
+  `Storage.Arcade.Indexer` of completed builds with a bare `send/2` to a
+  `whereis` lookup, which drops silently if the Indexer is mid-restart.
+  `Arcade.Indexer` compensates with a 5-minute reconcile pass that walks every
+  active project and re-snapshots any whose current build is missing from
+  ArcadeDB.
+
+If `EtsKeeper` itself is restarted, its inherited tables are lost; that case is
+covered by `Persistence.WarmRestore`, which rebuilds L1 from the L2 CubDB cache
+on boot, verifying each entry against its SHA-256 content hash.
 
 
 ## 4. Storage Architecture
@@ -555,7 +584,7 @@ directly as structured tool calls, without constructing HTTP requests.
 | Module | Responsibility |
 |--------|---------------|
 | `MCP.Server` | Anubis MCP server — handles `tools/call`, `tools/list`, `resources/read` |
-| `MCP.ToolSchema` | Auto-generates 71 MCP tool definitions from `@skill` annotations on sub-routers (74 skills minus 3 non-MCP-compatible monitor endpoints: `GET /api/monitor` and `GET /api/monitor/graph` are HTML dashboards, `GET /api/monitor/stream` is an SSE event stream) |
+| `MCP.ToolSchema` | Auto-generates 75 MCP tool definitions from `@skill` annotations on sub-routers (78 skills minus 3 non-MCP-compatible monitor endpoints: `GET /api/monitor` and `GET /api/monitor/graph` are HTML dashboards, `GET /api/monitor/stream` is an SSE event stream) |
 | `MCP.ResourceProvider` | 5 resource templates (`giulia://projects/`, `giulia://modules/`, `giulia://graph/`, `giulia://skills/`, `giulia://status`) |
 | `Daemon.Plugs.McpAuth` | Bearer token authentication via `GIULIA_MCP_KEY` env var (constant-time comparison) |
 | `Daemon.Plugs.McpForward` | Runtime forwarder to Anubis StreamableHTTP transport (defers init to avoid persistent_term race) |
@@ -701,16 +730,16 @@ Sub-routers and their domains:
 
 | Prefix              | Router                 | Routes | Domain                              |
 |---------------------|------------------------|--------|-------------------------------------|
-| /api/index          | Routers.Index          | 9      | Module/function index, scan, verify, compact, complexity |
-| /api/knowledge      | Routers.Knowledge      | 25     | Graph queries, metrics, insights, topology, conventions |
-| /api/intelligence   | Routers.Intelligence   | 5      | Briefing, preflight, architect, validate, report_rules |
+| /api/index          | Routers.Index          | 10     | Module/function index, scan, verify, compact, complexity |
+| /api/knowledge      | Routers.Knowledge      | 27     | Graph queries, metrics, insights, topology, conventions |
+| /api/intelligence   | Routers.Intelligence   | 6      | Briefing, preflight, architect, validate, report_rules |
 | /api/runtime        | Routers.Runtime        | 16     | BEAM introspection, trace, connect, profiles, ingest, observations |
 | /api/search         | Routers.Search         | 3      | Text search, semantic search, semantic status |
 | /api/transaction    | Routers.Transaction    | 3      | Transactional file operations       |
 | /api/approval       | Routers.Approval       | 2      | Interactive consent gate            |
 | /api/monitor        | Routers.Monitor        | 7      | Dashboard, Graph Explorer, SSE stream, history, observe start/stop/status |
 | /api/discovery      | Routers.Discovery      | 4      | Skill introspection, search, report rules |
-| *(core endpoint)*   | Endpoint               | 11     | health, command, ping, status, projects, init, debug, trace, approvals |
+| *(core endpoint)*   | Endpoint               | 10     | health, command, ping, status, projects, init, debug, trace, approvals |
 
 Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
 `Routers.Intelligence` as aliases.

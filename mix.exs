@@ -1,3 +1,9 @@
+# Version stamp source of truth.
+# Keep the following docs in sync when bumping @version or the build counter:
+#   - README.md (header block)
+#   - ARCHITECTURE.md (Document version line)
+#   - API.md (Document version line + /health example response)
+# See docs/orders/2026-05-21-doc-reconciliation-report.md.
 defmodule Giulia.MixProject do
   use Mix.Project
 
