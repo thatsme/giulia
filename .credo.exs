@@ -31,7 +31,14 @@
           "apps/*/test/",
           "apps/*/web/"
         ],
-        excluded: [~r"/_build/", ~r"/deps/", ~r"/node_modules/"]
+        excluded: [
+          ~r"/_build/",
+          ~r"/deps/",
+          ~r"/node_modules/",
+          # Sample-code files for the AST extractor's golden tests — they
+          # intentionally contain non-idiomatic code; linting them is noise.
+          ~r"/test/fixtures/"
+        ]
       },
       #
       # Load and configure plugins here:
@@ -82,8 +89,12 @@
           # You can customize the priority of any check
           # Priority values are: `low, normal, high, higher`
           #
-          {Credo.Check.Design.AliasUsage,
-           [priority: :low, if_nested_deeper_than: 2, if_called_more_often_than: 0]},
+          # Disabled by deliberate project decision. Giulia uses fully-qualified
+          # module names inline as a stylistic convention — verified at Phase 2a:
+          # 1011 fully-qualified references vs 182 alias declarations in lib/.
+          # The 322 AliasUsage findings represent the dominant pattern, not
+          # outliers. See docs/orders/quality-tooling/phase-2-credo.md.
+          {Credo.Check.Design.AliasUsage, false},
           {Credo.Check.Design.TagFIXME, []},
           # You can also customize the exit_status of each check.
           # If you don't want TODO comments to cause `mix credo` to fail, just
