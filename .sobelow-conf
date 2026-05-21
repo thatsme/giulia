@@ -7,6 +7,10 @@
   format: "txt",
   out: "",
   threshold: "low",
-  ignore: [],
+  # Traversal.FileModule: Giulia gates all tool-driven file access through
+  # Giulia.Core.PathSandbox (see path_sandbox_adversarial_test.exs); internal
+  # subsystems use app-derived paths. Sobelow cannot trace the sandbox, so all
+  # 92 findings are false positives. See phase-2-sobelow.md.
+  ignore: ["Traversal.FileModule"],
   ignore_files: []
 ]
