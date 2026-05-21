@@ -492,3 +492,29 @@ excluded from default runs by `exclude: [:golden_fixture_drift]` in
 > had been run against one long-lived ArcadeDB container. A fresh ArcadeDB
 > 26.4.2 cleared all three (`15 tests, 0 failures` for both Verifier suites).
 > Not a code regression, and unrelated to the Item 4 tagging change.
+
+---
+
+## Known characteristics — ArcadeDB state accumulation
+
+**Observed (Item 4 verification, 2026-05-21):** three consecutive `mix test`
+runs against the *same* long-lived ArcadeDB container produced 3 `VerifierTest`
+failures (2 `Giulia.Storage.Arcade.VerifierTest` + 1 `Giulia.Persistence.VerifierTest`)
+that did **not** occur on a single run. The failure signature was Arcade write
+errors — `functions: %{error: N, ok: M}` on snapshot, leading to L3 holding
+fewer edges than L1 (`count_parity: :l3_under_l1`).
+
+**Restored by a fresh container:** stopping and recreating the ArcadeDB
+container (`arcadedata/arcadedb:26.4.2`) cleared all three — both Verifier
+suites then passed `15 tests, 0 failures`. So this is accumulated state, not a
+code regression and not an ArcadeDB version issue (26.4.2 is clean fresh).
+
+**Implication:**
+- **Local dev:** running `mix test` many times in a row against one ArcadeDB
+  container may surface intermittent `VerifierTest` failures as state piles up.
+- **CI:** unaffected — each CI job starts a fresh ArcadeDB container, so no
+  accumulation occurs across runs.
+
+**Workaround until properly fixed:** `docker restart arcadedb` between extended
+local test sessions. Proper fix (per-test/per-suite ArcadeDB teardown) is
+tracked in `docs/orders/quality-tooling/test-isolation-backlog.md`.
