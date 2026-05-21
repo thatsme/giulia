@@ -15,13 +15,8 @@ defmodule Giulia.MCP.Dispatch.Approval do
     with {:ok, approval_id} <- require_param(args, "approval_id") do
       approved = args["approved"] == true or args["approved"] == "true"
 
-      case Approval.respond(approval_id, approved) do
-        :ok ->
-          {:ok, %{status: "responded", approval_id: approval_id, approved: approved}}
-
-        {:error, :not_found} ->
-          {:error, "Approval request not found: #{approval_id}"}
-      end
+      Approval.respond(approval_id, approved)
+      {:ok, %{status: "responded", approval_id: approval_id, approved: approved}}
     end
   end
 

@@ -130,21 +130,6 @@ defmodule Giulia.Daemon.Helpers do
   end
 
   @doc """
-  Scan-state gate for a Plug handler. If the project is ready, returns
-  `{:ok, conn}`. Otherwise returns `{:halt, conn}` with a `409 Conflict`
-  already written to `conn` including the failure reason, the path that
-  was checked, and a hint pointing the caller at the next action.
-
-  Use via `with`:
-
-      with {:ok, conn} <- require_scan_ready(conn, resolved_path) do
-        # ... handler logic that assumes indexed data ...
-      end
-
-  The halt branch returns the already-responded conn so the caller can
-  just fall through.
-  """
-  @doc """
   Combined gate used by most scan-dependent read handlers. Resolves
   `?path=` from the query string AND checks scan readiness in one pass.
   Returns `{:ok, conn, resolved_path}` when ready, or `{:halt, conn}`
@@ -179,6 +164,21 @@ defmodule Giulia.Daemon.Helpers do
     end
   end
 
+  @doc """
+  Scan-state gate for a Plug handler. If the project is ready, returns
+  `{:ok, conn}`. Otherwise returns `{:halt, conn}` with a `409 Conflict`
+  already written to `conn` including the failure reason, the path that
+  was checked, and a hint pointing the caller at the next action.
+
+  Use via `with`:
+
+      with {:ok, conn} <- require_scan_ready(conn, resolved_path) do
+        # ... handler logic that assumes indexed data ...
+      end
+
+  The halt branch returns the already-responded conn so the caller can
+  just fall through.
+  """
   @spec require_scan_ready(Plug.Conn.t(), String.t() | nil) ::
           {:ok, Plug.Conn.t()} | {:halt, Plug.Conn.t()}
   def require_scan_ready(conn, project_path) do
