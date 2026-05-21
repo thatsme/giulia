@@ -462,3 +462,33 @@ without also fixing the arg order, the warnings go away but the tools stay
 broken. **Recommendation:** treat A and B as a small follow-up fix bundled with
 Warnings 3 & 4 — but that is your call, and it touches `lib/` (out of this
 order's stated scope).
+
+---
+
+## Item 4 — golden-fixture-drift tagged and excluded
+
+The 8 failing `Giulia.AST.GoldenFixturesTest` tests are loop-generated from one
+`test "golden: #{name}"` (`golden_fixtures_test.exs:51`); the module contains
+only these 8 tests. They are tagged via `@moduletag :golden_fixture_drift` and
+excluded from default runs by `exclude: [:golden_fixture_drift]` in
+`test/test_helper.exs`.
+
+- **Run them explicitly:** `mix test --include golden_fixture_drift`
+- **Regeneration worklist + acceptance criteria:** `fixture-drift-backlog.md`
+- **Acceptance for the fixture-regeneration PR:** regenerate the 8
+  `*.expected.exs` files on Elixir 1.19.5, remove the `@moduletag` and the
+  `exclude:` option, and verify all 8 pass under a plain `mix test`.
+
+**Verification (fresh ArcadeDB 26.4.2):**
+
+| Run | Result |
+|-----|--------|
+| `mix test` (default) | `2200 tests, 2 failures (8 excluded)` — 8 golden tests excluded; the 2 failures are the known-flaky `ApiAdversarialTest` indexer-warmup timeout |
+| `mix test --include golden_fixture_drift` (scoped to the file) | `8 tests, 8 failures` — tag wiring confirmed |
+
+> Diagnostic note: an interim full run showed 6 failures (2 `Arcade.VerifierTest`
+> + 1 `Persistence.VerifierTest` + 3 flaky `ApiAdversarialTest`). The Verifier
+> failures were ArcadeDB **state accumulation** — three consecutive full suites
+> had been run against one long-lived ArcadeDB container. A fresh ArcadeDB
+> 26.4.2 cleared all three (`15 tests, 0 failures` for both Verifier suites).
+> Not a code regression, and unrelated to the Item 4 tagging change.
