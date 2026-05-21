@@ -21,9 +21,9 @@ defmodule Giulia.MCP.Dispatch.Intelligence do
       concept = args["prompt"] || args["q"]
 
       if concept do
-        case SurgicalBriefing.build(path, concept) do
+        case SurgicalBriefing.build(concept, path) do
           {:ok, result} -> {:ok, result}
-          {:error, reason} -> {:error, inspect(reason)}
+          :skip -> {:error, "Briefing unavailable: semantic search disabled or no relevant results"}
         end
       else
         {:error, "Missing required parameter: prompt (or q)"}
@@ -62,10 +62,7 @@ defmodule Giulia.MCP.Dispatch.Intelligence do
          {:ok, plan} <- require_param(args, "plan") do
       path = PathMapper.resolve_path(args["path"])
 
-      case PlanValidator.validate(path, plan) do
-        {:ok, result} -> {:ok, result}
-        {:error, reason} -> {:error, inspect(reason)}
-      end
+      PlanValidator.validate(plan, path)
     end
   end
 
