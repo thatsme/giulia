@@ -42,7 +42,7 @@ if "%CONTAINER_ID%"=="" (
         -v giulia_data:/data ^
         -v "%GIULIA_PROJECTS_PATH%:/projects" ^
         -p 4369:4369 ^
-        -p 9100-9105:9100-9105 ^
+        -p 19100-19105:19100-19105 ^
         -e RELEASE_NODE=giulia@giulia-daemon ^
         -e RELEASE_COOKIE=giulia_cluster_secret ^
         -e LM_STUDIO_URL=http://host.docker.internal:1234/v1/chat/completions ^

@@ -53,7 +53,7 @@ started from that image, differentiated by the `GIULIA_ROLE` environment variabl
 |  | GIULIA_ROLE=worker          |    | GIULIA_ROLE=monitor       | |
 |  | Port 4000 (HTTP API)        |    | Port 4001 (HTTP API)      | |
 |  | Port 4369 (EPMD)            |    | Port 4369 (EPMD)          | |
-|  | Ports 9100-9105 (dist)      |    | Ports 9110-9115 (dist)    | |
+|  | Ports 19100-19105 (dist)    |    | Ports 19110-19115 (dist)  | |
 |  |                             |    |                           | |
 |  | - AST indexing              |    | - Distributed Erlang      | |
 |  | - Property Graph           |    |   connection to worker    | |

@@ -132,7 +132,7 @@ accidental exposure when the port is reachable beyond localhost.
 
 ## Distributed Erlang
 
-The worker and monitor communicate via Erlang distribution (ports 4369, 9100-9115).
+The worker and monitor communicate via Erlang distribution (ports 4369, 19100-19105, 19110-19115).
 
 Security considerations:
 
@@ -144,7 +144,7 @@ Security considerations:
 
 If you expose Giulia's ports beyond localhost (e.g., for remote development),
 use a VPN or SSH tunnel. Never expose EPMD (4369) or distribution ports
-(9100-9115) to the public internet.
+(19100-19105, 19110-19115) to the public internet.
 
 ---
 
@@ -154,7 +154,7 @@ use a VPN or SSH tunnel. Never expose EPMD (4369) or distribution ports
 - Change `GIULIA_COOKIE` from the default `giulia_dev`
 - Change the ArcadeDB root password from the default `playwithdata` — set it in both places: ArcadeDB's `JAVA_OPTS` (`-Darcadedb.server.rootPassword=...`) and Giulia's `ARCADEDB_PASSWORD` env var
 - Set `GIULIA_MCP_KEY` to a strong random value (e.g., `openssl rand -hex 24`) — do not use the default from docker-compose.yml in shared environments
-- Do not expose EPMD (4369) or distribution ports (9100-9115) publicly
+- Do not expose EPMD (4369) or distribution ports (19100-19105, 19110-19115) publicly
 - Review which LLM providers are enabled before processing sensitive code
 - ArcadeDB REST API (port 2480) has its own auth — do not expose without password
 

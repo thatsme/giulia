@@ -102,8 +102,8 @@ The worker and monitor form a two-node Erlang cluster. Both nodes must share the
 
 | Service | HTTP | EPMD (host) | Distribution Range |
 |---|---|---|---|
-| Worker | 4000 | 4369 | 9100-9105 |
-| Monitor | 4001 | 4370 (mapped from 4369) | 9110-9115 |
+| Worker | 4000 | 4369 | 19100-19105 |
+| Monitor | 4001 | 4370 (mapped from 4369) | 19110-19115 |
 
 The monitor maps EPMD to host port 4370 to avoid collision with the worker's 4369 mapping. Inside the Docker network, both containers use port 4369 in their own namespace -- no conflict.
 

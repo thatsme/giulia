@@ -54,7 +54,7 @@ start_daemon() {
         -v giulia_data:/data \
         -v "${PROJECTS_PATH}:/projects" \
         -p 4369:4369 \
-        -p 9100-9105:9100-9105 \
+        -p 19100-19105:19100-19105 \
         -e "RELEASE_NODE=giulia@giulia-daemon" \
         -e "RELEASE_COOKIE=${GIULIA_COOKIE}" \
         -e "LM_STUDIO_URL=${LM_STUDIO_URL}" \
