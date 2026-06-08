@@ -261,8 +261,10 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
     end
 
     test "dependents errors when module missing" do
-      assert {:error, "Missing required parameter: module"} =
-               Dispatch.Knowledge.dependents(%{"path" => "/projects/example"})
+      # MCP no longer pre-gates module (thin proxy); Store backstops a nil
+      # module with {:not_found}. The contract — missing required → rejected —
+      # holds; the message now comes from Store.
+      assert {:error, _} = Dispatch.Knowledge.dependents(%{"path" => "/projects/example"})
     end
 
     test "dependencies errors when path missing" do
@@ -279,8 +281,8 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
     end
 
     test "centrality errors when module missing" do
-      assert {:error, "Missing required parameter: module"} =
-               Dispatch.Knowledge.centrality(%{"path" => "/projects/example"})
+      # Thin proxy: Store backstops nil module with {:not_found}. Still rejected.
+      assert {:error, _} = Dispatch.Knowledge.centrality(%{"path" => "/projects/example"})
     end
 
     test "impact errors when module missing" do
@@ -317,12 +319,14 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
     end
 
     test "pre_impact_check errors when module missing" do
-      assert {:error, "Missing required parameter: module"} =
+      # Thin proxy: Store validates module/action and returns
+      # {:unknown_action}/{:not_found}. Still rejected; message from Store.
+      assert {:error, _} =
                Dispatch.Knowledge.pre_impact_check(%{"path" => "/projects/example"})
     end
 
     test "pre_impact_check errors when action missing (module present)" do
-      assert {:error, "Missing required parameter: action"} =
+      assert {:error, _} =
                Dispatch.Knowledge.pre_impact_check(%{
                  "path" => "/projects/example",
                  "module" => "Mod.A"
