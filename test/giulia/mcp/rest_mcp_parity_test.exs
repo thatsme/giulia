@@ -226,6 +226,36 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "search/semantic — REST/MCP parity through Search.Facade" do
+    test "valid concept: REST and MCP agree on the canonical shape (was divergent)" do
+      rest_conn =
+        conn(:get, "/api/search/semantic?path=#{@project_path}&concept=graph+traversal")
+        |> Endpoint.call(@opts)
+
+      mcp = Dispatch.Search.semantic(%{"path" => @project_path, "concept" => "graph traversal"})
+
+      # Convergence: before the facade, REST reshaped + count=functions-only while
+      # MCP emitted raw structs + count=total — different shape AND count. Now both
+      # render the one canonical shape (reshaped modules/functions, count = total).
+      case mcp do
+        {:ok, body} ->
+          assert rest_conn.status == 200
+          decoded = Jason.decode!(rest_conn.resp_body)
+          assert decoded == body |> Jason.encode!() |> Jason.decode!()
+          # the count bugfix: total, not functions-only
+          assert body.count == length(body.modules) + length(body.functions)
+
+        {:error, _} ->
+          assert rest_conn.status in [404, 500, 503]
+      end
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Search.semantic(%{"path" => @unscanned, "concept" => "x"})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do
     test "same path + suppress: identical result (one parse_suppress, both protocols)" do
       suppress = "process_dictionary:Giulia.Knowledge.Store"

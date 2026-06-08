@@ -53,62 +53,37 @@ defmodule Giulia.Daemon.Routers.Search do
     category: "search"
   }
   get "/semantic" do
-    concept = conn.query_params["concept"] || conn.query_params["q"]
+    # Resolution + readiness via the shared edge; coercion + canonical result
+    # shape (modules/functions reshaped, count = total) live in Search.Facade,
+    # shared with MCP. concept gate is in the facade (handles the q alias once).
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
 
-    if concept do
-      case resolve_and_check_ready(conn) do
-        {:halt, conn} ->
-          conn
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
 
-        {:ok, conn, project_path} ->
-          top_k = parse_int_param(conn.query_params["top_k"], 5)
+      {:ok, project_path} ->
+        case Giulia.Search.Facade.semantic(project_path, conn.query_params) do
+          {:ok, result} ->
+            send_json(conn, 200, result)
 
-          case Giulia.Intelligence.SemanticIndex.search(project_path, concept, top_k) do
-            {:ok, %{modules: modules, functions: functions}} ->
-              mod_json =
-                Enum.map(modules, fn m ->
-                  %{
-                    module: m.id,
-                    score: m.score,
-                    moduledoc: m.metadata[:moduledoc] || ""
-                  }
-                end)
+          {:error, :missing_concept} ->
+            send_json(conn, 400, %{error: "Missing required query param: concept (or q)"})
 
-              func_json =
-                Enum.map(functions, fn f ->
-                  %{
-                    module: f.metadata.module,
-                    function: f.metadata.function,
-                    arity: f.metadata.arity,
-                    score: f.score,
-                    file: f.metadata.file,
-                    line: f.metadata.line
-                  }
-                end)
+          {:error, "Semantic search unavailable" <> _} ->
+            send_json(conn, 503, %{
+              error: "Semantic search unavailable. EmbeddingServing not loaded."
+            })
 
-              send_json(conn, 200, %{
-                concept: concept,
-                modules: mod_json,
-                functions: func_json,
-                count: length(func_json)
-              })
+          {:error, "No embeddings" <> _} ->
+            send_json(conn, 404, %{
+              error: "No embeddings for this project. Run POST /api/index/scan first."
+            })
 
-            {:error, "Semantic search unavailable" <> _} ->
-              send_json(conn, 503, %{
-                error: "Semantic search unavailable. EmbeddingServing not loaded."
-              })
-
-            {:error, "No embeddings" <> _} ->
-              send_json(conn, 404, %{
-                error: "No embeddings for this project. Run POST /api/index/scan first."
-              })
-
-            {:error, reason} ->
-              send_json(conn, 500, %{error: reason})
-          end
-      end
-    else
-      send_json(conn, 400, %{error: "Missing required query param: concept (or q)"})
+          {:error, reason} ->
+            send_json(conn, 500, %{error: reason})
+        end
     end
   end
 

@@ -25,18 +25,24 @@ defmodule Giulia.MCP.Dispatch.Search do
 
   @spec semantic(map()) :: {:ok, map()} | {:error, String.t()}
   def semantic(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, concept} <- require_param(args, "concept") do
-      top_k = parse_int(args["top_k"], 5)
+    # Readiness via the shared edge; coercion + the canonical result shape live
+    # in Search.Facade, shared with REST. This adopts the reshaped agent-facing
+    # form (modules/functions with file/line/score, count = total) — replacing
+    # the raw-struct shape MCP emitted before.
+    case Giulia.Daemon.Edge.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
 
-      case SemanticIndex.search(path, concept, top_k) do
-        {:ok, results} ->
-          count = length(results.modules) + length(results.functions)
-          {:ok, %{results: results, count: count, concept: concept}}
+      {:not_ready, info} ->
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
 
-        {:error, reason} ->
-          {:error, inspect(reason)}
-      end
+      {:ok, path} ->
+        case Giulia.Search.Facade.semantic(path, args) do
+          {:ok, result} -> {:ok, result}
+          {:error, :missing_concept} -> {:error, "Missing required parameter: concept (or q)"}
+          {:error, reason} when is_binary(reason) -> {:error, reason}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
     end
   end
 

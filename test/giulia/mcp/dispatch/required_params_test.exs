@@ -42,9 +42,12 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
       assert {:error, "Missing required parameter: path"} = Dispatch.Search.semantic(%{})
     end
 
-    test "semantic errors when concept missing (path present)" do
-      assert {:error, "Missing required parameter: concept"} =
-               Dispatch.Search.semantic(%{"path" => "/projects/example"})
+    test "semantic errors for an unindexed path (readiness before the concept gate)" do
+      # Post-facade: readiness checked first (parity with REST). Unscanned path
+      # returns not-ready, not the concept gate. concept gate (load-bearing —
+      # SemanticIndex embeds it) fires on a READY project — parity suite covers it.
+      assert {:error, msg} = Dispatch.Search.semantic(%{"path" => "/projects/example"})
+      assert is_binary(msg)
     end
 
     test "semantic_status errors when path missing" do
