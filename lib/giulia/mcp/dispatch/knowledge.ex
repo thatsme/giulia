@@ -183,9 +183,10 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec pre_impact_check(map()) :: {:ok, term()} | {:error, String.t()}
   def pre_impact_check(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, _module} <- require_param(args, "module"),
-         {:ok, _action} <- require_param(args, "action") do
+    # Thin proxy: forward the param map to Store, which validates module/action
+    # and returns {:unknown_action}/{:not_found}/{:invalid_target}. MCP does not
+    # re-implement the required-ness gate; REST keeps its own 400 edge.
+    with {:ok, path} <- require_path(args) do
       case Store.pre_impact_check(path, args) do
         {:ok, result} ->
           {:ok, result}

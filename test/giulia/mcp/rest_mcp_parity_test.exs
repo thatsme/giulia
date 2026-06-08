@@ -22,6 +22,7 @@ defmodule Giulia.MCP.RestMcpParityTest do
   """
   use ExUnit.Case, async: false
   import Plug.Test
+  import Plug.Conn
 
   alias Giulia.Daemon.Endpoint
   alias Giulia.MCP.Dispatch
@@ -81,9 +82,59 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "pre_impact_check — REST/MCP input parity (POST body)" do
+    test "valid input: response bodies identical except REST's :schema_version stamp" do
+      body = %{
+        "path" => @project_path,
+        "module" => "Giulia.Knowledge.Store",
+        "action" => "remove_function",
+        "target" => "stats/1"
+      }
+
+      rest = rest_post("/api/knowledge/pre_impact_check", body)
+      assert {:ok, mcp} = Dispatch.Knowledge.pre_impact_check(body)
+
+      # MCP forwards the same map to Store; REST stamps :schema_version AFTER
+      # Store returns. So the Store call is identical and the bodies match once
+      # the (deferred-to-facade) stamp is removed. Normalize MCP atom keys via a
+      # JSON round-trip to compare against the decoded REST JSON.
+      rest_core = Map.delete(rest, "schema_version")
+      mcp_core = mcp |> Jason.encode!() |> Jason.decode!()
+
+      assert Map.has_key?(rest, "schema_version"),
+             "guard: REST is expected to stamp schema_version until the facade folds it in"
+
+      assert rest_core == mcp_core
+    end
+
+    test "missing action: both paths reject (required-ness survives gate deletion)" do
+      body = %{"path" => @project_path, "module" => "Giulia.Knowledge.Store"}
+
+      assert rest_post_status("/api/knowledge/pre_impact_check", body) == 400
+      assert {:error, _} = Dispatch.Knowledge.pre_impact_check(body)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp rest_post(path, body) do
+    conn(:post, path, Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> Endpoint.call(@opts)
+    |> then(fn conn ->
+      assert conn.status == 200, "expected 200, got #{conn.status}: #{conn.resp_body}"
+      Jason.decode!(conn.resp_body)
+    end)
+  end
+
+  defp rest_post_status(path, body) do
+    conn(:post, path, Jason.encode!(body))
+    |> put_req_header("content-type", "application/json")
+    |> Endpoint.call(@opts)
+    |> Map.fetch!(:status)
+  end
 
   defp rest_get(path, params) do
     query = URI.encode_query(params)
