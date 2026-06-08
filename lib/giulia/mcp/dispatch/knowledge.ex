@@ -52,8 +52,11 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec centrality(map()) :: {:ok, map()} | {:error, String.t()}
   def centrality(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, module} <- require_param(args, "module") do
+    # Thin proxy: Store.centrality backstops a nil module with {:not_found}
+    # (topology.ex has_vertex? guard). Required-ness is the REST edge's job.
+    with {:ok, path} <- require_path(args) do
+      module = args["module"]
+
       case Store.centrality(path, module) do
         {:ok, result} -> {:ok, Map.put(result, :module, module)}
         {:error, {:not_found, _}} -> {:error, "Module not found in graph: #{module}"}

@@ -61,6 +61,26 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "centrality — REST/MCP input parity" do
+    test "valid module: both paths reach Store with identical args (identical result)" do
+      module = "Giulia.Knowledge.Store"
+
+      rest = rest_get("/api/knowledge/centrality", path: @project_path, module: module)
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.centrality(%{"path" => @project_path, "module" => module})
+
+      assert rest["module"] == mcp.module
+      assert rest["in_degree"] == mcp.in_degree
+      assert rest["out_degree"] == mcp.out_degree
+    end
+
+    test "missing module: both paths reject (required-ness survives gate deletion)" do
+      assert rest_status("/api/knowledge/centrality", path: @project_path) == 400
+      assert {:error, _} = Dispatch.Knowledge.centrality(%{"path" => @project_path})
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
