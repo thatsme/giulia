@@ -186,6 +186,42 @@ defmodule Giulia.MCP.ToolSchemaTest do
       assert {:required, :string, _} = schema["path"]
       assert {:string, _} = schema["depth"]
     end
+
+    # INTEGRATION NAIL — the residual flagged before backfill: does Anubis 1.0.0
+    # actually emit "enum" and "required" from our tuple form, or silently drop a
+    # shape it doesn't recognise? Round-trips build_input_schema/1 through the real
+    # converter (Anubis.Server.Component.Schema.to_json_schema/1) and asserts the
+    # emitted JSON Schema. This is the half that unblocks the other 76 blocks.
+    test "enriched map params round-trip through Anubis to JSON Schema (enum + required + folded default)" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{
+            params: %{
+              path: %{required: true, in: "query", doc: "Absolute project path"},
+              relevance: %{
+                required: false,
+                in: "query",
+                values: ~w(high medium all),
+                default: "all",
+                doc: "filter"
+              }
+            }
+          })
+        )
+
+      json = Anubis.Server.Component.Schema.to_json_schema(schema)
+
+      # required-ness survives the converter
+      assert "path" in json["required"]
+      refute "relevance" in (json["required"] || [])
+
+      # `values` is emitted as JSON Schema `enum`
+      assert json["properties"]["relevance"]["enum"] == ~w(high medium all)
+
+      # `default` is NOT a structured field (Anubis drops it) — it rides in the description
+      assert json["properties"]["relevance"]["description"] =~ "default all"
+      refute Map.has_key?(json["properties"]["relevance"], "default")
+    end
   end
 
   describe "mcp_compatible?/1 — specific known cases from AlexClaw/Giulia" do
