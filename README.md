@@ -1,6 +1,6 @@
 # Giulia
 
-> **Build 161** · v0.3.8 · 2026-05-21 · **Status**: pre-1.0 — APIs may break between minor releases until v1.0.
+> **Build 162** · v0.3.8 · 2026-05-21 · **Status**: pre-1.0 — APIs may break between minor releases until v1.0.
 
 ![Giulia Logic Monitor](docs/screenshot/giulia_monitor.jpg)
 
@@ -189,7 +189,7 @@ Highlights from the Build 146 snapshot:
 
 ### Status
 
-- **Version**: v0.3.8 (Build 161)
+- **Version**: v0.3.8 (Build 162)
 - **Stability**: pre-1.0 — API contracts may break between minor releases until v1.0.
 - **Tests**: 1000+ unit/integration tests across `ast/`, `knowledge/`, `persistence/`, `context/`, `tools/`, `enrichment/` subsets, plus 13 StreamData property tests and 7 golden-fixture tests for extraction output.
 

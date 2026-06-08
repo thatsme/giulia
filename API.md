@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 161 · v0.3.8 · 2026-05-21
+> **Document version**: Build 162 · v0.3.8 · 2026-05-21
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -54,7 +54,7 @@ curl http://localhost:4000/health
 {
   "status": "ok",
   "node": "worker@giulia-worker",
-  "version": "v0.3.8.161"
+  "version": "v0.3.8.162"
 }
 ```
 
