@@ -212,6 +212,20 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "unprotected_hubs — REST/MCP parity through facade" do
+    test "ready: identical body (one threshold-default pair, both protocols)" do
+      rest = rest_get("/api/knowledge/unprotected_hubs", path: @project_path)
+      assert {:ok, mcp} = Dispatch.Knowledge.unprotected_hubs(%{"path" => @project_path})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.unprotected_hubs(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do
     test "same path + suppress: identical result (one parse_suppress, both protocols)" do
       suppress = "process_dictionary:Giulia.Knowledge.Store"

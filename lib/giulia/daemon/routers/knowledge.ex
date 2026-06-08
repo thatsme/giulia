@@ -711,18 +711,15 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/unprotected_hubs" do
-    case resolve_and_check_ready(conn) do
-      {:halt, conn} ->
-        conn
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
 
-      {:ok, conn, project_path} ->
-        hub_threshold = parse_int_param(conn.query_params["hub_threshold"], 3)
-        spec_threshold = parse_float_param(conn.query_params["spec_threshold"], 0.5)
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
 
-        case Giulia.Knowledge.Store.find_unprotected_hubs(project_path,
-               hub_threshold: hub_threshold,
-               spec_threshold: spec_threshold
-             ) do
+      {:ok, project_path} ->
+        case Giulia.Knowledge.Facade.unprotected_hubs(project_path, conn.query_params) do
           {:ok, result} -> send_json(conn, 200, result)
           {:error, reason} -> send_json(conn, 500, %{error: inspect(reason)})
         end

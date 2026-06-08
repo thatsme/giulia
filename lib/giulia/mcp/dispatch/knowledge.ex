@@ -223,17 +223,20 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec unprotected_hubs(map()) :: {:ok, term()} | {:error, String.t()}
   def unprotected_hubs(args) do
-    with {:ok, path} <- require_path(args) do
-      hub_threshold = parse_int(args["hub_threshold"], 3)
-      spec_threshold = parse_float(args["spec_threshold"], 0.5)
+    # Readiness via the shared edge; threshold coercion lives in the facade.
+    # No required param beyond path (both thresholds default).
+    case Giulia.Daemon.Edge.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
 
-      case Store.find_unprotected_hubs(path,
-             hub_threshold: hub_threshold,
-             spec_threshold: spec_threshold
-           ) do
-        {:ok, result} -> {:ok, result}
-        {:error, reason} -> {:error, inspect(reason)}
-      end
+      {:not_ready, info} ->
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
+
+      {:ok, path} ->
+        case Giulia.Knowledge.Facade.unprotected_hubs(path, args) do
+          {:ok, result} -> {:ok, result}
+          {:error, reason} -> {:error, inspect(reason)}
+        end
     end
   end
 

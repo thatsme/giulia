@@ -80,4 +80,21 @@ defmodule Giulia.Knowledge.Facade do
     top_k = Helpers.parse_int_param(params["top_k"], 3)
     Store.style_oracle(path, params["q"], top_k)
   end
+
+  # ===========================================================================
+  # unprotected_hubs — hubs with weak spec/doc coverage
+  # ===========================================================================
+
+  @doc """
+  Unprotected hubs. Owns the `hub_threshold` (3) and `spec_threshold` (0.5)
+  defaults (were triplicated). No required param beyond `path` — both thresholds
+  default, so no nil reaches `Store` and there is no edge gate to keep.
+  """
+  @spec unprotected_hubs(String.t(), map()) :: {:ok, term()} | {:error, term()}
+  def unprotected_hubs(path, params) do
+    Store.find_unprotected_hubs(path,
+      hub_threshold: Helpers.parse_int_param(params["hub_threshold"], 3),
+      spec_threshold: Helpers.parse_float_param(params["spec_threshold"], 0.5)
+    )
+  end
 end
