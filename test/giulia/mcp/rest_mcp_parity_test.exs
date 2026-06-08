@@ -15,10 +15,11 @@ defmodule Giulia.MCP.RestMcpParityTest do
       still reject — the param did not silently become optional. REST keeps its
       own 400-at-the-edge gate (deliberate: edge validation stays at the edge).
 
-  Note: this asserts the INPUT side (typed args reaching Store), NOT identical
-  final responses — REST stamps `:schema_version` on `pre_impact_check` and MCP
-  does not (a known shape divergence deferred to the facade commit). Comparing
-  full responses would flag that, which is not what these tests guard.
+  Primarily asserts the INPUT side (typed args reaching Store). Where an endpoint
+  has no protocol-specific response shaping, it also asserts full-body equality.
+  The former `:schema_version` divergence on `pre_impact_check` (REST-only stamp)
+  is now closed — the stamp is single-sourced in `Knowledge.Facade`, so both
+  protocols carry it and the bodies match. Zero known REST/MCP divergences.
   """
   use ExUnit.Case, async: false
   import Plug.Test
@@ -114,17 +115,11 @@ defmodule Giulia.MCP.RestMcpParityTest do
       rest = rest_post("/api/knowledge/pre_impact_check", body)
       assert {:ok, mcp} = Dispatch.Knowledge.pre_impact_check(body)
 
-      # MCP forwards the same map to Store; REST stamps :schema_version AFTER
-      # Store returns. So the Store call is identical and the bodies match once
-      # the (deferred-to-facade) stamp is removed. Normalize MCP atom keys via a
-      # JSON round-trip to compare against the decoded REST JSON.
-      rest_core = Map.delete(rest, "schema_version")
-      mcp_core = mcp |> Jason.encode!() |> Jason.decode!()
-
-      assert Map.has_key?(rest, "schema_version"),
-             "guard: REST is expected to stamp schema_version until the facade folds it in"
-
-      assert rest_core == mcp_core
+      # Convergence: :schema_version is now stamped once in Knowledge.Facade, so
+      # both protocols carry it and the FULL bodies match. (Was: REST-only stamp,
+      # MCP lacked it — the last known divergence, now closed.)
+      assert Map.has_key?(rest, "schema_version")
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
     end
 
     test "missing action: both paths reject (required-ness survives gate deletion)" do

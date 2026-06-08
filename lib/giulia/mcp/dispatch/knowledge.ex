@@ -202,7 +202,7 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
     # and returns {:unknown_action}/{:not_found}/{:invalid_target}. MCP does not
     # re-implement the required-ness gate; REST keeps its own 400 edge.
     with {:ok, path} <- require_path(args) do
-      case Store.pre_impact_check(path, args) do
+      case Giulia.Knowledge.Facade.pre_impact_check(path, args) do
         {:ok, result} ->
           {:ok, result}
 

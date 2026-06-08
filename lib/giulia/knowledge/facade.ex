@@ -52,6 +52,31 @@ defmodule Giulia.Knowledge.Facade do
     end
   end
 
+  # ===========================================================================
+  # pre_impact_check — RESPONSE-path schema_version stamp (single source)
+  # ===========================================================================
+
+  @doc """
+  Rename/remove risk analysis. This is a RESPONSE-shape addition only: the raw
+  param map is forwarded to `Store.pre_impact_check/2` unchanged — Store owns the
+  action enum and the module/target validation (no re-coerce, no re-gate here) —
+  and `:schema_version` is stamped onto the `{:ok}` result so BOTH protocols
+  inherit it from one place (was REST-only, hand-written). The stamp lets
+  refactor-safety loops compare against a known-complete extractor/graph-builder
+  version (v8, the graph-completeness fix; see CHANGELOG v0.2.2). Error tuples
+  pass through untouched for each protocol to render.
+  """
+  @spec pre_impact_check(String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def pre_impact_check(path, params) do
+    case Store.pre_impact_check(path, params) do
+      {:ok, result} ->
+        {:ok, Map.put(result, :schema_version, Giulia.Persistence.Store.schema_version())}
+
+      other ->
+        other
+    end
+  end
+
   defp normalize_impact(result) do
     %{
       result
