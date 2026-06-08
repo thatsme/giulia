@@ -101,8 +101,12 @@ defmodule Giulia.Intelligence.SemanticIndex do
   @impl true
   @spec handle_cast(term(), map()) :: {:noreply, map()}
   def handle_cast({:embed_project, project_path}, state) do
-    if EmbeddingServing.available?() and not MapSet.member?(state.embedding_in_progress, project_path) do
-      new_state = %{state | embedding_in_progress: MapSet.put(state.embedding_in_progress, project_path)}
+    if EmbeddingServing.available?() and
+         not MapSet.member?(state.embedding_in_progress, project_path) do
+      new_state = %{
+        state
+        | embedding_in_progress: MapSet.put(state.embedding_in_progress, project_path)
+      }
 
       Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
         do_embed_project(project_path)
@@ -126,12 +130,14 @@ defmodule Giulia.Intelligence.SemanticIndex do
       case Store.get_embeddings(project_path, type) do
         {:ok, entries} ->
           Giulia.Persistence.Writer.persist_embeddings(project_path, type, entries)
+
         :error ->
           :ok
       end
     end
 
-    {:noreply, %{state | embedding_in_progress: MapSet.delete(state.embedding_in_progress, project_path)}}
+    {:noreply,
+     %{state | embedding_in_progress: MapSet.delete(state.embedding_in_progress, project_path)}}
   end
 
   @impl true
@@ -408,6 +414,7 @@ defmodule Giulia.Intelligence.SemanticIndex do
 
     Enum.map(Enum.zip(top_indices_list, top_values_list), fn {idx, score} ->
       entry = Enum.at(entries, trunc(idx))
+
       %{
         id: entry.id,
         score: Float.round(score, 4),
@@ -484,12 +491,30 @@ defmodule Giulia.Intelligence.SemanticIndex do
     end
   end
 
-  defp extract_similar_pairs(similarity_matrix, _entries, n, threshold) do
-    for i <- 0..(n - 2),
-        j <- (i + 1)..(n - 1),
-        reduce: [] do
+  # Upper-triangle (i < j) pairs whose similarity is >= threshold, as
+  # `[{i, j, rounded_score}]`.
+  #
+  # The original called `Nx.to_number/1` once per cell — n*(n-1)/2 separate
+  # device->host scalar extractions (~2.26M at n=2126; the >60s timeout). A
+  # row-at-a-time rewrite cut that to n bulk transfers but still paid n (~1171)
+  # Nx-op dispatch overheads (~23s measured live). This pulls the matrix ONCE as
+  # a compact f32 binary (a single transfer; 5.5MB at n=1171, vs a 33MB boxed
+  # list) and scans it in pure Elixir with `binary_part` — O(1) sub-binary slices,
+  # ZERO Nx calls in the loop. `>=` matches the original (NOT strict `>`). `//1`
+  # keeps the range empty (not descending) when n < 2. Proven pair-for-pair
+  # equivalent to the original loop in SemanticIndexTest (incl. the exact-threshold
+  # boundary and the native-endian f32 decode).
+  #
+  # @doc false — public only so the equivalence test can exercise it directly.
+  @doc false
+  @spec extract_similar_pairs(Nx.Tensor.t(), term(), non_neg_integer(), float()) ::
+          [{non_neg_integer(), non_neg_integer(), float()}]
+  def extract_similar_pairs(similarity_matrix, _entries, n, threshold) do
+    bin = Nx.to_binary(similarity_matrix)
+
+    for i <- 0..(n - 2)//1, j <- (i + 1)..(n - 1)//1, reduce: [] do
       acc ->
-        score = Nx.to_number(similarity_matrix[i][j])
+        <<score::float-32-native>> = binary_part(bin, (i * n + j) * 4, 4)
 
         if score >= threshold do
           [{i, j, Float.round(score, 4)} | acc]
@@ -515,38 +540,42 @@ defmodule Giulia.Intelligence.SemanticIndex do
     # Build cluster info
     pair_scores = Map.new(pairs, fn {i, j, score} -> {{i, j}, score} end)
 
-    Enum.filter(Enum.map(components, fn component ->
-      members =
-        component
-        |> Enum.sort()
-        |> Enum.map(fn idx ->
-          entry = Enum.at(entries, idx)
-          %{id: entry.id, metadata: entry.metadata}
-        end)
+    Enum.filter(
+      Enum.map(components, fn component ->
+        members =
+          component
+          |> Enum.sort()
+          |> Enum.map(fn idx ->
+            entry = Enum.at(entries, idx)
+            %{id: entry.id, metadata: entry.metadata}
+          end)
 
-      # Compute avg similarity within cluster
-      component_list = Enum.sort(component)
-      sim_scores =
-        for i <- component_list,
-            j <- component_list,
-            i < j do
-          key = {min(i, j), max(i, j)}
-          Map.get(pair_scores, key, 0.0)
-        end
+        # Compute avg similarity within cluster
+        component_list = Enum.sort(component)
 
-      avg_sim =
-        if sim_scores == [] do
-          0.0
-        else
-          Float.round(Enum.sum(sim_scores) / length(sim_scores), 4)
-        end
+        sim_scores =
+          for i <- component_list,
+              j <- component_list,
+              i < j do
+            key = {min(i, j), max(i, j)}
+            Map.get(pair_scores, key, 0.0)
+          end
 
-      %{
-        members: members,
-        size: length(members),
-        avg_similarity: avg_sim
-      }
-    end), fn c -> c.size >= 2 end)
+        avg_sim =
+          if sim_scores == [] do
+            0.0
+          else
+            Float.round(Enum.sum(sim_scores) / length(sim_scores), 4)
+          end
+
+        %{
+          members: members,
+          size: length(members),
+          avg_similarity: avg_sim
+        }
+      end),
+      fn c -> c.size >= 2 end
+    )
   end
 
   defp bfs_components(adjacency, all_nodes) do
@@ -589,20 +618,22 @@ defmodule Giulia.Intelligence.SemanticIndex do
     unless EmbeddingServing.available?() do
       {:error, "EmbeddingServing not available"}
     else
-      skills = Enum.flat_map(@skill_routers, fn router ->
-        try do
-          router.__skills__()
-        rescue
-          _ -> []
-        end
-      end)
+      skills =
+        Enum.flat_map(@skill_routers, fn router ->
+          try do
+            router.__skills__()
+          rescue
+            _ -> []
+          end
+        end)
 
       if skills == [] do
         {:ok, []}
       else
-        texts = Enum.map(skills, fn skill ->
-          "#{skill.intent} — #{skill.endpoint}"
-        end)
+        texts =
+          Enum.map(skills, fn skill ->
+            "#{skill.intent} — #{skill.endpoint}"
+          end)
 
         vectors = embed_batch(texts)
 
