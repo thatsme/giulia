@@ -68,6 +68,17 @@ is available via `GET /api/index/complexity` and is included in `/api/index/func
 Use per-function complexity in God Modules drill-downs (Section 5) to pinpoint WHERE complexity
 concentrates within a module.
 
+- **Name the algorithm on EVERY complexity figure (MANDATORY)**: these are two genuinely different
+  metrics computed by two functions — module-level **control-flow** complexity
+  (`Analysis.estimate_complexity/1`, used by heatmap / change_risk / god_modules) and per-function
+  **cognitive** complexity (`Complexity.compute_all/1` / `cognitive_complexity/1`, used by
+  `/api/index/complexity`, consolidation, and the per-function field in `analyze`). The SAME module
+  carries DIFFERENT complexity numbers depending on which endpoint produced them. The report must
+  NEVER print a bare `complexity: N` — every complexity figure names its algorithm, e.g.
+  "complexity (module control-flow): 47" or "complexity (cognitive, per-function): 12". An unlabeled
+  figure is a malformed report: the reader cannot reconcile a heatmap score against a
+  complexity-endpoint number without knowing they are different metrics.
+
 This is a multiplicative formula — a module with high centrality AND high function
 count AND high complexity will have an exponentially higher score than one with only
 one factor elevated. This is intentional: the risk of modifying a module compounds
@@ -716,3 +727,4 @@ pattern matching in Elixir — STOP. Delete it. Rewrite in Elixir terms.**
 12. **Don't trust `has_test` as coverage** — it is file existence, not assertions. Apply the assertion floor (Section 2). A test file that asserts nothing is nominal coverage, and the heatmap is crediting it 25 points it didn't earn.
 13. **Don't report L2 graph edges without the L3 delta** — print L2 and L3 (ArcadeDB CALLS) edge counts side by side with the delta (Section 1 + Section 13). The report runs off L2, the agent queries L3; a divergence is the line that must scream, given the CALLS-downgrade history. If L3 is down, say "L3 UNAVAILABLE" — never omit it.
 14. **Don't let convention errors evaporate** — Section 15 is mandatory and error-tier violations (`runtime_atom_creation`, `silent_rescue`, `try_rescue_flow_control`) escalate to P0/P1 in Section 16. They are correctness/security bugs the project's own conventions forbid, not style nits.
+15. **Don't print a bare `complexity: N`** — name the algorithm on every complexity figure (module control-flow via `estimate_complexity` vs per-function cognitive via `Complexity.compute_all`). They are different metrics; the same module's heatmap complexity and its complexity-endpoint number disagree, and an unlabeled figure can't be reconciled (see Key Scoring Formulas).
