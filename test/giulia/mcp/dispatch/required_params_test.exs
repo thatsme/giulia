@@ -272,8 +272,8 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
     end
 
     test "dependencies errors when module missing" do
-      assert {:error, "Missing required parameter: module"} =
-               Dispatch.Knowledge.dependencies(%{"path" => "/projects/example"})
+      # Thin proxy: Store backstops nil module with {:not_found}. Still rejected.
+      assert {:error, _} = Dispatch.Knowledge.dependencies(%{"path" => "/projects/example"})
     end
 
     test "centrality errors when path missing" do

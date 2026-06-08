@@ -41,8 +41,12 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec dependencies(map()) :: {:ok, map()} | {:error, String.t()}
   def dependencies(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, module} <- require_param(args, "module") do
+    # Thin proxy: Store.dependencies backstops a nil module with {:not_found}
+    # (topology.ex:94 has_vertex? guard — same path as dependents). Required-ness
+    # is the REST edge's job.
+    with {:ok, path} <- require_path(args) do
+      module = args["module"]
+
       case Store.dependencies(path, module) do
         {:ok, deps} -> {:ok, %{module: module, dependencies: deps, count: length(deps)}}
         {:error, {:not_found, _}} -> {:error, "Module not found in graph: #{module}"}

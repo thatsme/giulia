@@ -62,6 +62,26 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "dependencies — REST/MCP input parity" do
+    test "valid module: both paths reach Store with identical args (identical result)" do
+      module = "Giulia.Knowledge.Store"
+
+      rest = rest_get("/api/knowledge/dependencies", path: @project_path, module: module)
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.dependencies(%{"path" => @project_path, "module" => module})
+
+      assert rest["module"] == mcp.module
+      assert rest["count"] == mcp.count
+      assert Enum.sort(rest["dependencies"]) == Enum.sort(mcp.dependencies)
+    end
+
+    test "missing module: both paths reject (required-ness survives gate deletion)" do
+      assert rest_status("/api/knowledge/dependencies", path: @project_path) == 400
+      assert {:error, _} = Dispatch.Knowledge.dependencies(%{"path" => @project_path})
+    end
+  end
+
   describe "centrality — REST/MCP input parity" do
     test "valid module: both paths reach Store with identical args (identical result)" do
       module = "Giulia.Knowledge.Store"
