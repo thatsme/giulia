@@ -94,37 +94,4 @@ defmodule Giulia.MCP.Dispatch.Helpers do
 
   def parse_float(val, _default) when is_float(val), do: val
   def parse_float(_, default), do: default
-
-  @doc """
-  Parse a `conventions` `suppress` parameter: `"rule1:Mod.A,Mod.B;rule2:Mod.C"`.
-
-  Returns `%{rule_name => [module_string, ...]}`. Empty / malformed
-  segments are silently dropped — the suppress flag is ergonomic, not a
-  validated input.
-  """
-  @spec parse_suppress(term()) :: map()
-  def parse_suppress(nil), do: %{}
-  def parse_suppress(""), do: %{}
-
-  def parse_suppress(raw) when is_binary(raw) do
-    raw
-    |> String.split(";")
-    |> Enum.reduce(%{}, fn entry, acc ->
-      case String.split(entry, ":", parts: 2) do
-        [rule, modules] ->
-          module_list =
-            modules
-            |> String.split(",")
-            |> Enum.map(&String.trim/1)
-            |> Enum.reject(&(&1 == ""))
-
-          if module_list != [], do: Map.put(acc, rule, module_list), else: acc
-
-        _ ->
-          acc
-      end
-    end)
-  end
-
-  def parse_suppress(_), do: %{}
 end

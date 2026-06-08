@@ -1031,28 +1031,6 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     end
   end
 
-  # Parse suppress param: "rule:Mod1,Mod2;rule2:Mod3,Mod4" -> %{"rule" => ["Mod1","Mod2"], ...}
-  @spec parse_suppress(String.t() | nil) :: map()
-  defp parse_suppress(nil), do: %{}
-  defp parse_suppress(""), do: %{}
-
-  defp parse_suppress(raw) do
-    raw
-    |> String.split(";")
-    |> Enum.reduce(%{}, fn entry, acc ->
-      case String.split(entry, ":", parts: 2) do
-        [rule, modules] ->
-          module_list =
-            modules |> String.split(",") |> Enum.map(&String.trim/1) |> Enum.reject(&(&1 == ""))
-
-          if module_list != [], do: Map.put(acc, rule, module_list), else: acc
-
-        _ ->
-          acc
-      end
-    end)
-  end
-
   match _ do
     send_json(conn, 404, %{error: "not found"})
   end

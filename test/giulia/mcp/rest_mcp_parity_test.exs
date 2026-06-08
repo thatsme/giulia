@@ -115,6 +115,20 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "conventions — REST/MCP input parity (shared parse_suppress)" do
+    test "same path + suppress: identical result (one parse_suppress, both protocols)" do
+      suppress = "process_dictionary:Giulia.Knowledge.Store"
+
+      rest = rest_get("/api/knowledge/conventions", path: @project_path, suppress: suppress)
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.conventions(%{"path" => @project_path, "suppress" => suppress})
+
+      # No schema_version on conventions — full bodies must match.
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------

@@ -274,7 +274,7 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
   @spec conventions(map()) :: {:ok, term()} | {:error, String.t()}
   def conventions(args) do
     with {:ok, path} <- require_path(args) do
-      suppress = parse_suppress(args["suppress"])
+      suppress = Giulia.Daemon.Helpers.parse_suppress(args["suppress"])
       opts = [suppress: suppress, relevance: args["relevance"]]
       opts = if args["module"], do: Keyword.put(opts, :module, args["module"]), else: opts
 

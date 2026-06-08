@@ -82,6 +82,40 @@ defmodule Giulia.Daemon.Helpers do
     end
   end
 
+  @doc ~S"""
+  Parse a `conventions` `suppress` param: `"rule1:Mod.A,Mod.B;rule2:Mod.C"`
+  into `%{rule_name => [module_string, ...]}`.
+
+  Single source for both protocols (REST router + MCP dispatch). Empty /
+  malformed segments are silently dropped — the suppress flag is ergonomic,
+  not a validated input.
+  """
+  @spec parse_suppress(term()) :: map()
+  def parse_suppress(nil), do: %{}
+  def parse_suppress(""), do: %{}
+
+  def parse_suppress(raw) when is_binary(raw) do
+    raw
+    |> String.split(";")
+    |> Enum.reduce(%{}, fn entry, acc ->
+      case String.split(entry, ":", parts: 2) do
+        [rule, modules] ->
+          module_list =
+            modules
+            |> String.split(",")
+            |> Enum.map(&String.trim/1)
+            |> Enum.reject(&(&1 == ""))
+
+          if module_list != [], do: Map.put(acc, rule, module_list), else: acc
+
+        _ ->
+          acc
+      end
+    end)
+  end
+
+  def parse_suppress(_), do: %{}
+
   # ============================================================================
   # Scan-state contract
   # ============================================================================

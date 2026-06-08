@@ -126,4 +126,54 @@ defmodule Giulia.Daemon.HelpersTest do
       assert Helpers.parse_node_param(conn) == :myapp@localhost
     end
   end
+
+  # ============================================================================
+  # parse_suppress/1 — single source for REST router + MCP dispatch
+  # ============================================================================
+
+  describe "parse_suppress/1" do
+    test "nil → empty map" do
+      assert %{} == Helpers.parse_suppress(nil)
+    end
+
+    test "empty string → empty map" do
+      assert %{} == Helpers.parse_suppress("")
+    end
+
+    test "single rule with single module" do
+      assert %{"rule_a" => ["Mod.A"]} == Helpers.parse_suppress("rule_a:Mod.A")
+    end
+
+    test "single rule with multiple comma-separated modules" do
+      assert %{"rule_a" => ["Mod.A", "Mod.B", "Mod.C"]} ==
+               Helpers.parse_suppress("rule_a:Mod.A,Mod.B,Mod.C")
+    end
+
+    test "multiple rules separated by semicolons" do
+      assert %{"r1" => ["A"], "r2" => ["B", "C"]} ==
+               Helpers.parse_suppress("r1:A;r2:B,C")
+    end
+
+    test "trims whitespace inside module list" do
+      assert %{"r" => ["A", "B"]} == Helpers.parse_suppress("r: A , B ")
+    end
+
+    test "drops segments without `:`" do
+      # "noop" lacks a colon — silently dropped, the other valid entry
+      # still parses. Strict here would break ergonomic copy-paste from
+      # docs that include trailing semicolons.
+      assert %{"r" => ["A"]} == Helpers.parse_suppress("noop;r:A")
+    end
+
+    test "drops rules whose module list is empty after trimming" do
+      assert %{} == Helpers.parse_suppress("r:")
+      assert %{} == Helpers.parse_suppress("r: , , ")
+    end
+
+    test "non-binary input → empty map (defensive)" do
+      assert %{} == Helpers.parse_suppress(%{})
+      assert %{} == Helpers.parse_suppress([:a, :b])
+      assert %{} == Helpers.parse_suppress(123)
+    end
+  end
 end
