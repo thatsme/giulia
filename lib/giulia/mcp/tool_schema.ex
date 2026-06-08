@@ -204,9 +204,14 @@ defmodule Giulia.MCP.ToolSchema do
     |> Map.new()
   end
 
-  # Map clause first, then the legacy atom/binary clauses, `_` fallback LAST —
-  # the shapes are disjoint, but order is load-bearing during the coexistence
-  # window so an unmatched map can never fall through to required?(_) -> false.
+  # Param shapes are disjoint: map (enriched, the current format), :required/
+  # :optional atoms (legacy), and binary (discovery prose). All @skill blocks
+  # use maps now, but the atom/binary clauses are a PERMANENT GUARD — not a
+  # coexistence path to delete. Without them, a future param written with
+  # muscle-memory `:required` would fall through to required?(_) -> false and
+  # lose its required-ness silently in the MCP schema (the exact failure this
+  # design hunts). Map clause first, atom/binary next, `_` fallback LAST —
+  # order is load-bearing.
   defp required?(%{required: r}) when is_boolean(r), do: r
   defp required?(:required), do: true
 
