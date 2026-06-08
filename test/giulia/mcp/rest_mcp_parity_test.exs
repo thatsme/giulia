@@ -252,8 +252,13 @@ defmodule Giulia.MCP.RestMcpParityTest do
   end
 
   describe "duplicates — REST/MCP parity, two readiness dimensions" do
-    # Three cases, one endpoint: scan-readiness (edge) and embedding-availability
-    # (facade) are orthogonal not-ready dimensions; the third is the happy path.
+    # Two orthogonal not-ready dimensions (scan-readiness via the edge,
+    # embedding-availability via the facade) + the results path. All three use
+    # CONTROLLED embedding state — never the project's real (large, shared)
+    # embedding set: find_duplicates is O(n^2) over function embeddings, so
+    # running it on ~2000+ functions made this test slow and flaky. Seed a
+    # bounded fixture for the results path; clear for the unavailable path.
+
     test "not-scanned: both signal scan-readiness with the scan hint" do
       rest =
         conn(:get, "/api/knowledge/duplicates?path=#{@unscanned}")
@@ -266,25 +271,31 @@ defmodule Giulia.MCP.RestMcpParityTest do
       assert msg =~ "scan"
     end
 
-    test "scanned project: both agree (results when embedded; query-worker signal otherwise)" do
-      rest_conn =
+    test "scanned + bounded embeddings: REST and MCP return identical clusters" do
+      # Three function embeddings: two with identical vectors (cluster), one
+      # orthogonal (does not). Deterministic single cluster of size 2.
+      seed_function_embeddings(@project_path, bounded_function_embeddings())
+
+      rest = rest_get("/api/knowledge/duplicates", path: @project_path, max: 5)
+      assert {:ok, mcp} = Dispatch.Knowledge.duplicates(%{"path" => @project_path, "max" => "5"})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+      assert mcp.count == 1
+      assert [%{size: 2}] = mcp.clusters
+    end
+
+    test "scanned + no embeddings: both signal embedding-unavailable (query the worker)" do
+      clear_and_restore_embeddings(@project_path)
+
+      rest =
         conn(:get, "/api/knowledge/duplicates?path=#{@project_path}")
         |> Endpoint.call(@opts)
 
-      mcp = Dispatch.Knowledge.duplicates(%{"path" => @project_path})
+      assert rest.status == 503
+      assert Jason.decode!(rest.resp_body)["error"] =~ "query the worker"
 
-      case mcp do
-        {:ok, body} ->
-          # both ready → results
-          assert rest_conn.status == 200
-          assert Jason.decode!(rest_conn.resp_body) == body |> Jason.encode!() |> Jason.decode!()
-
-        {:error, msg} ->
-          # scanned-but-no-embedding → the actionable query-worker signal on both
-          assert rest_conn.status == 503
-          assert msg =~ "query the worker"
-          assert Jason.decode!(rest_conn.resp_body)["error"] =~ "query the worker"
-      end
+      assert {:error, msg} = Dispatch.Knowledge.duplicates(%{"path" => @project_path})
+      assert msg =~ "query the worker"
     end
   end
 
@@ -305,6 +316,49 @@ defmodule Giulia.MCP.RestMcpParityTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  # Bounded, deterministic function-embedding fixture: two identical 384-d unit
+  # vectors (cosine 1.0 -> cluster) + one orthogonal (cosine 0 -> no cluster).
+  # find_duplicates over these 3 is instant — vs O(n^2) over the real ~2000.
+  defp bounded_function_embeddings do
+    a = [1.0 | List.duplicate(0.0, 383)]
+    c = [0.0, 1.0 | List.duplicate(0.0, 382)]
+
+    [
+      fixture_embedding("Fix.dup_a/0", "Fix", "dup_a", a),
+      fixture_embedding("Fix.dup_b/0", "Fix", "dup_b", a),
+      fixture_embedding("Fix.solo/0", "Fix", "solo", c)
+    ]
+  end
+
+  defp fixture_embedding(id, mod, func, vec) do
+    %{
+      id: id,
+      vector: Nx.to_binary(Nx.tensor(vec, type: :f32)),
+      metadata: %{module: mod, function: func, arity: 0, file: "#{mod}.ex", line: 1}
+    }
+  end
+
+  # Overwrite the project's function embeddings with a fixture for the duration
+  # of one test; restore the original state on exit (readiness still passes since
+  # the project is really scanned — only the embedding set is swapped).
+  defp seed_function_embeddings(path, entries) do
+    saved = Giulia.Context.Store.get_embeddings(path, :function)
+    Giulia.Context.Store.put_embeddings(path, :function, entries)
+    on_exit(fn -> restore_function_embeddings(path, saved) end)
+  end
+
+  defp clear_and_restore_embeddings(path) do
+    saved = Giulia.Context.Store.get_embeddings(path, :function)
+    Giulia.Context.Store.clear_embeddings(path)
+    on_exit(fn -> restore_function_embeddings(path, saved) end)
+  end
+
+  defp restore_function_embeddings(path, {:ok, entries}),
+    do: Giulia.Context.Store.put_embeddings(path, :function, entries)
+
+  defp restore_function_embeddings(path, :error),
+    do: Giulia.Context.Store.clear_embeddings(path)
 
   defp rest_post(path, body) do
     conn(:post, path, Jason.encode!(body))
