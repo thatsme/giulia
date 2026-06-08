@@ -103,6 +103,18 @@ defmodule Giulia.Config.Relevance do
     end
   end
 
+  # Closed set of dead_code :category atoms, as compile-time literals here so they
+  # exist regardless of whether the classifier module has loaded yet — String.to_atom
+  # would be load-order-fragile (the relevance config can build before the classifier
+  # mints :genuine), and String.to_existing_atom would then RAISE at first use.
+  @dead_code_categories %{
+    "genuine" => :genuine,
+    "uncategorized" => :uncategorized,
+    "test_only" => :test_only,
+    "library_public_api" => :library_public_api,
+    "template_pending" => :template_pending
+  }
+
   defp decode_atoms!(raw, key, bucket) do
     list = raw |> Map.fetch!(key) |> Map.fetch!(bucket)
 
@@ -110,7 +122,10 @@ defmodule Giulia.Config.Relevance do
       raise "Relevance: #{key}.#{bucket} must be a list of strings, got #{inspect(list)}"
     end
 
-    Enum.map(list, &String.to_atom/1)
+    Enum.map(list, fn s ->
+      Map.get(@dead_code_categories, s) ||
+        raise("Relevance: unknown dead_code category #{inspect(s)} in #{key}.#{bucket}")
+    end)
   end
 
   defp fetch_strings!(raw, key, bucket) do

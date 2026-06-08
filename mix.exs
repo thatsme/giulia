@@ -61,7 +61,9 @@ defmodule Giulia.MixProject do
       giulia: [
         include_executables_for: [:unix],
         applications: [runtime_tools: :permanent],
-        cookie: String.to_atom(System.get_env("GIULIA_COOKIE", "giulia_dev")),
+        # Build-time release default; the runtime cookie comes from RELEASE_COOKIE
+        # via rel/vm.args.eex. Mix accepts a string here — no atom needed.
+        cookie: System.get_env("GIULIA_COOKIE", "giulia_dev"),
         steps: [:assemble],
         rel_templates_path: "rel"
       ],

@@ -132,18 +132,28 @@ defmodule Giulia.Enrichment.Registry do
         case entry do
           %{"tool" => tool, "module" => module_str}
           when is_binary(tool) and is_binary(module_str) ->
-            tool_atom = String.to_atom(tool)
             mod = Module.concat([module_str])
+            cfg = entry |> Map.delete("tool") |> Map.delete("module")
 
-            cfg =
-              entry
-              |> Map.delete("tool")
-              |> Map.delete("module")
+            # Key by the source module's OWN tool_name/0 literal — the canonical
+            # atom (the same one ingest.ex uses), minting nothing. String.to_atom
+            # on the config string would create an atom; to_existing_atom would be
+            # load-order-fragile (mod may be unloaded). Skip malformed sources.
+            if Code.ensure_loaded?(mod) and function_exported?(mod, :tool_name, 0) do
+              tool_atom = mod.tool_name()
 
-            %{
-              modules: Map.put(acc.modules, tool_atom, mod),
-              configs: Map.put(acc.configs, tool_atom, cfg)
-            }
+              %{
+                modules: Map.put(acc.modules, tool_atom, mod),
+                configs: Map.put(acc.configs, tool_atom, cfg)
+              }
+            else
+              Logger.warning(
+                "Giulia.Enrichment.Registry: #{module_str} (tool #{inspect(tool)}) " <>
+                  "missing tool_name/0 — skipping"
+              )
+
+              acc
+            end
 
           _ ->
             acc

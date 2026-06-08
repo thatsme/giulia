@@ -122,6 +122,10 @@ defmodule Giulia.Enrichment.Consumer do
   end
 
   defp normalize_severity(s) when is_atom(s), do: s
-  defp normalize_severity(s) when is_binary(s), do: String.to_atom(s)
+  defp normalize_severity("error"), do: :error
+  defp normalize_severity("warning"), do: :warning
+  defp normalize_severity("info"), do: :info
+  # External tool output (Credo/Dialyzer) is open-ended — explicit allow-list with
+  # an :info fallback, never String.to_atom on arbitrary strings (atom-table DoS).
   defp normalize_severity(_), do: :info
 end
