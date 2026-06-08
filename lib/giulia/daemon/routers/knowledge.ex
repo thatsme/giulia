@@ -783,26 +783,22 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/duplicates" do
-    case resolve_and_check_ready(conn) do
-      {:halt, conn} ->
-        conn
+    # Two readiness dimensions: scan-readiness via the shared edge (409), and
+    # embedding-availability inside the facade (503 + "query the worker" hint).
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
 
-      {:ok, conn, project_path} ->
-        threshold = parse_float_param(conn.query_params["threshold"], 0.85)
-        max_clusters = parse_int_param(conn.query_params["max"], 20)
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
 
-        case Giulia.Intelligence.SemanticIndex.find_duplicates(project_path,
-               threshold: threshold,
-               max: max_clusters,
-               relevance: conn.query_params["relevance"]
-             ) do
+      {:ok, project_path} ->
+        case Giulia.Knowledge.Facade.duplicates(project_path, conn.query_params) do
           {:ok, result} ->
             send_json(conn, 200, result)
 
-          {:error, "Semantic search unavailable" <> _} ->
-            send_json(conn, 503, %{
-              error: "Semantic search unavailable. EmbeddingServing not loaded."
-            })
+          {:error, :embedding_unavailable} ->
+            send_json(conn, 503, %{error: Giulia.Knowledge.Facade.embedding_unavailable_message()})
 
           {:error, reason} ->
             send_json(conn, 500, %{error: reason})

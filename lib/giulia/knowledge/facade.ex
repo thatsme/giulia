@@ -22,6 +22,7 @@ defmodule Giulia.Knowledge.Facade do
   """
 
   alias Giulia.Daemon.Helpers
+  alias Giulia.Intelligence.{EmbeddingServing, SemanticIndex}
   alias Giulia.Knowledge.Store
 
   # ===========================================================================
@@ -96,5 +97,51 @@ defmodule Giulia.Knowledge.Facade do
       hub_threshold: Helpers.parse_int_param(params["hub_threshold"], 3),
       spec_threshold: Helpers.parse_float_param(params["spec_threshold"], 0.5)
     )
+  end
+
+  # ===========================================================================
+  # duplicates — semantic dedup (SECOND readiness dimension: embeddings)
+  # ===========================================================================
+
+  @doc """
+  Actionable message for the embedding-availability dimension. Distinct from
+  scan-readiness (`Daemon.Edge`): embeddings can be absent even on a scanned
+  project — e.g. the monitor role doesn't load `EmbeddingServing`. Tells the
+  agent WHERE to go rather than leaving an unexplained empty/error.
+  """
+  @spec embedding_unavailable_message() :: String.t()
+  def embedding_unavailable_message do
+    "EmbeddingServing not loaded for this role — query the worker on :4000"
+  end
+
+  @doc """
+  Semantic duplicate clusters. Owns the `threshold` (0.85) / `max` (20) defaults
+  and a SECOND, orthogonal readiness check: embedding availability. Scan
+  readiness is the edge's job (`Daemon.Edge`); embeddings are this endpoint's
+  dependency, so the check lives here — a clean `EmbeddingServing.available?()`
+  predicate (registry presence, not exception-translation; verified). On
+  unavailable, or when the project has no embeddings, returns
+  `{:error, :embedding_unavailable}` so each protocol renders the actionable
+  "query the worker" signal instead of an unexplained empty/"not loaded".
+  """
+  @spec duplicates(String.t(), map()) ::
+          {:ok, term()} | {:error, :embedding_unavailable} | {:error, term()}
+  def duplicates(path, params) do
+    if EmbeddingServing.available?() do
+      opts = [
+        threshold: Helpers.parse_float_param(params["threshold"], 0.85),
+        max: Helpers.parse_int_param(params["max"], 20),
+        relevance: params["relevance"]
+      ]
+
+      case SemanticIndex.find_duplicates(path, opts) do
+        {:ok, result} -> {:ok, result}
+        {:error, "Semantic search unavailable" <> _} -> {:error, :embedding_unavailable}
+        {:error, "No embeddings" <> _} -> {:error, :embedding_unavailable}
+        {:error, reason} -> {:error, reason}
+      end
+    else
+      {:error, :embedding_unavailable}
+    end
   end
 end

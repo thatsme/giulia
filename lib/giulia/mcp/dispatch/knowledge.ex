@@ -4,13 +4,13 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   The largest dispatch surface — wraps `Giulia.Knowledge.Store` analytics
   (graph traversal, dead-code, heatmap, behaviour integrity, change risk,
-  topology, conventions, etc.) plus a couple of cross-cutting calls into
-  `Giulia.Intelligence.SemanticIndex` for duplicate detection.
+  topology, conventions, etc.). The bucket-3 endpoints (impact, style_oracle,
+  unprotected_hubs, duplicates) route through `Giulia.Knowledge.Facade` for
+  shared resolution/readiness/coercion.
   """
 
   import Giulia.MCP.Dispatch.Helpers
 
-  alias Giulia.Intelligence.SemanticIndex
   alias Giulia.Knowledge.Store
   alias Giulia.Persistence.Verifier, as: L2Verifier
   alias Giulia.Storage.Arcade.Verifier, as: ArcadeVerifier
@@ -254,24 +254,30 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec duplicates(map()) :: {:ok, term()} | {:error, String.t()}
   def duplicates(args) do
-    with {:ok, path} <- require_path(args) do
-      threshold = parse_float(args["threshold"], 0.85)
-      max_clusters = parse_int(args["max"], 20)
+    # Two readiness dimensions: scan-readiness via the shared edge, and
+    # embedding-availability inside the facade. The embedding-unavailable signal
+    # reaches the agent as the actionable "query the worker" message (binary).
+    case Giulia.Daemon.Edge.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
 
-      case SemanticIndex.find_duplicates(path,
-             threshold: threshold,
-             max: max_clusters,
-             relevance: args["relevance"]
-           ) do
-        {:ok, result} ->
-          {:ok, result}
+      {:not_ready, info} ->
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
 
-        {:error, "Semantic search unavailable" <> _} ->
-          {:error, "Semantic search unavailable. EmbeddingServing not loaded."}
+      {:ok, path} ->
+        case Giulia.Knowledge.Facade.duplicates(path, args) do
+          {:ok, result} ->
+            {:ok, result}
 
-        {:error, reason} ->
-          {:error, inspect(reason)}
-      end
+          {:error, :embedding_unavailable} ->
+            {:error, Giulia.Knowledge.Facade.embedding_unavailable_message()}
+
+          {:error, reason} when is_binary(reason) ->
+            {:error, reason}
+
+          {:error, reason} ->
+            {:error, inspect(reason)}
+        end
     end
   end
 

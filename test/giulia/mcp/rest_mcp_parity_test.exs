@@ -256,6 +256,43 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "duplicates — REST/MCP parity, two readiness dimensions" do
+    # Three cases, one endpoint: scan-readiness (edge) and embedding-availability
+    # (facade) are orthogonal not-ready dimensions; the third is the happy path.
+    test "not-scanned: both signal scan-readiness with the scan hint" do
+      rest =
+        conn(:get, "/api/knowledge/duplicates?path=#{@unscanned}")
+        |> Endpoint.call(@opts)
+
+      assert rest.status == 409
+      assert Jason.decode!(rest.resp_body)["hint"] =~ "scan"
+
+      assert {:error, msg} = Dispatch.Knowledge.duplicates(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+
+    test "scanned project: both agree (results when embedded; query-worker signal otherwise)" do
+      rest_conn =
+        conn(:get, "/api/knowledge/duplicates?path=#{@project_path}")
+        |> Endpoint.call(@opts)
+
+      mcp = Dispatch.Knowledge.duplicates(%{"path" => @project_path})
+
+      case mcp do
+        {:ok, body} ->
+          # both ready → results
+          assert rest_conn.status == 200
+          assert Jason.decode!(rest_conn.resp_body) == body |> Jason.encode!() |> Jason.decode!()
+
+        {:error, msg} ->
+          # scanned-but-no-embedding → the actionable query-worker signal on both
+          assert rest_conn.status == 503
+          assert msg =~ "query the worker"
+          assert Jason.decode!(rest_conn.resp_body)["error"] =~ "query the worker"
+      end
+    end
+  end
+
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do
     test "same path + suppress: identical result (one parse_suppress, both protocols)" do
       suppress = "process_dictionary:Giulia.Knowledge.Store"
