@@ -26,8 +26,12 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec dependents(map()) :: {:ok, map()} | {:error, String.t()}
   def dependents(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, module} <- require_param(args, "module") do
+    # Thin proxy: forward to Store, which backstops a missing/nil module with
+    # {:not_found}. The required-ness gate is the REST edge's job (400); MCP
+    # does not re-implement it. See docs/orders/*proxy*.
+    with {:ok, path} <- require_path(args) do
+      module = args["module"]
+
       case Store.dependents(path, module) do
         {:ok, deps} -> {:ok, %{module: module, dependents: deps, count: length(deps)}}
         {:error, {:not_found, _}} -> {:error, "Module not found in graph: #{module}"}
