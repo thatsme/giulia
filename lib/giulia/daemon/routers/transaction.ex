@@ -13,7 +13,7 @@ defmodule Giulia.Daemon.Routers.Transaction do
   @skill %{
     intent: "Toggle transaction mode for a project",
     endpoint: "POST /api/transaction/enable",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "body", doc: "Absolute project path"}},
     returns: "JSON with new transaction_mode status",
     category: "transaction"
   }
@@ -38,8 +38,9 @@ defmodule Giulia.Daemon.Routers.Transaction do
   @skill %{
     intent: "View transaction staging status",
     endpoint: "GET /api/transaction/staged",
-    params: %{path: :optional},
-    returns: "JSON with transaction_mode and staged_files (always empty — staging is per-inference)",
+    params: %{path: %{required: false, in: "query", doc: "Absolute project path"}},
+    returns:
+      "JSON with transaction_mode and staged_files (always empty — staging is per-inference)",
     category: "transaction"
   }
   get "/staged" do
@@ -68,7 +69,7 @@ defmodule Giulia.Daemon.Routers.Transaction do
   @skill %{
     intent: "Reset transaction mode (disable)",
     endpoint: "POST /api/transaction/rollback",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "body", doc: "Absolute project path"}},
     returns: "JSON confirmation of reset",
     category: "transaction"
   }

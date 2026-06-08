@@ -13,7 +13,10 @@ defmodule Giulia.Daemon.Routers.Approval do
   @skill %{
     intent: "Respond to an approval request",
     endpoint: "POST /api/approval/:approval_id",
-    params: %{approval_id: :required, approved: :required},
+    params: %{
+      approval_id: %{required: true, in: "path", doc: "Approval request id"},
+      approved: %{required: true, in: "body", doc: "true to approve, false to reject"}
+    },
     returns: "JSON confirmation with approval_id and approved flag",
     category: "approval"
   }
@@ -31,7 +34,7 @@ defmodule Giulia.Daemon.Routers.Approval do
   @skill %{
     intent: "Get pending approval request info",
     endpoint: "GET /api/approval/:approval_id",
-    params: %{approval_id: :required},
+    params: %{approval_id: %{required: true, in: "path", doc: "Approval request id"}},
     returns: "JSON approval request details or 404",
     category: "approval"
   }

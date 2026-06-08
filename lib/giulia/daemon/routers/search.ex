@@ -13,7 +13,10 @@ defmodule Giulia.Daemon.Routers.Search do
   @skill %{
     intent: "Search code by text pattern",
     endpoint: "GET /api/search",
-    params: %{pattern: :required, path: :optional},
+    params: %{
+      pattern: %{required: true, in: "query", doc: "Text pattern to search for (alias: q)"},
+      path: %{required: false, in: "query", doc: "Absolute project path (defaults to CWD)"}
+    },
     returns: "JSON search results",
     category: "search"
   }
@@ -41,7 +44,11 @@ defmodule Giulia.Daemon.Routers.Search do
   @skill %{
     intent: "Semantic search by concept (embedding-based)",
     endpoint: "GET /api/search/semantic",
-    params: %{concept: :required, path: :required, top_k: :optional},
+    params: %{
+      concept: %{required: true, in: "query", doc: "Concept to search for (alias: q)"},
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      top_k: %{required: false, in: "query", default: "5", doc: "Number of results to return"}
+    },
     returns: "JSON with matching modules and functions ranked by relevance",
     category: "search"
   }
@@ -87,10 +94,14 @@ defmodule Giulia.Daemon.Routers.Search do
               })
 
             {:error, "Semantic search unavailable" <> _} ->
-              send_json(conn, 503, %{error: "Semantic search unavailable. EmbeddingServing not loaded."})
+              send_json(conn, 503, %{
+                error: "Semantic search unavailable. EmbeddingServing not loaded."
+              })
 
             {:error, "No embeddings" <> _} ->
-              send_json(conn, 404, %{error: "No embeddings for this project. Run POST /api/index/scan first."})
+              send_json(conn, 404, %{
+                error: "No embeddings for this project. Run POST /api/index/scan first."
+              })
 
             {:error, reason} ->
               send_json(conn, 500, %{error: reason})
@@ -107,7 +118,7 @@ defmodule Giulia.Daemon.Routers.Search do
   @skill %{
     intent: "Check semantic search index status for a project",
     endpoint: "GET /api/search/semantic/status",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON semantic index status",
     category: "search"
   }

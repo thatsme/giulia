@@ -64,8 +64,8 @@ defmodule Giulia.Daemon.SkillRouter do
         }
       }
 
-  Keys: `required` (bool), `in` (`"query"` | `"body"`), and optional `values`
-  (allowed enum), `default`, `format` (e.g. `"Module.func/arity"`), `doc`.
+  Keys: `required` (bool), `in` (`"query"` | `"body"` | `"path"`), and optional
+  `values` (allowed enum), `default`, `format` (e.g. `"Module.func/arity"`), `doc`.
 
   **Default convention — `default:` carries the WIRE representation (a string),
   never the typed value.** Every param here is a query/body text argument
