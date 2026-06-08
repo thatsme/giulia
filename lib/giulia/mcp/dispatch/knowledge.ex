@@ -171,20 +171,28 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec style_oracle(map()) :: {:ok, term()} | {:error, String.t()}
   def style_oracle(args) do
-    with {:ok, path} <- require_path(args),
-         {:ok, q} <- require_param(args, "q") do
-      top_k = parse_int(args["top_k"], 3)
+    # Readiness via the shared edge; q gate STAYS (Store.style_oracle embeds the
+    # query — not nil-safe). top_k coercion lives in the facade.
+    case Giulia.Daemon.Edge.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
 
-      case Store.style_oracle(path, q, top_k) do
-        {:ok, result} ->
-          {:ok, result}
+      {:not_ready, info} ->
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
 
-        {:error, "Semantic search unavailable" <> _} ->
-          {:error, "Semantic search unavailable. EmbeddingServing not loaded."}
+      {:ok, path} ->
+        with {:ok, _q} <- require_param(args, "q") do
+          case Giulia.Knowledge.Facade.style_oracle(path, args) do
+            {:ok, result} ->
+              {:ok, result}
 
-        {:error, reason} ->
-          {:error, inspect(reason)}
-      end
+            {:error, "Semantic search unavailable" <> _} ->
+              {:error, "Semantic search unavailable. EmbeddingServing not loaded."}
+
+            {:error, reason} ->
+              {:error, inspect(reason)}
+          end
+        end
     end
   end
 

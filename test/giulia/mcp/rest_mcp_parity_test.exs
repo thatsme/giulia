@@ -179,6 +179,39 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "style_oracle — REST/MCP parity through facade" do
+    test "valid q: REST and MCP agree (identical body when embedded; same error otherwise)" do
+      rest_conn =
+        conn(:get, "/api/knowledge/style_oracle?path=#{@project_path}&q=graph+traversal")
+        |> Endpoint.call(@opts)
+
+      mcp = Dispatch.Knowledge.style_oracle(%{"path" => @project_path, "q" => "graph traversal"})
+
+      # Parity = agreement, not a specific status. The fixture may or may not have
+      # embeddings built; either way both surfaces reach the same outcome through
+      # the shared facade. style_oracle SIGNALS missing embeddings loudly (error +
+      # hint), unlike the silent-empty that makes duplicates the open question.
+      case mcp do
+        {:ok, body} ->
+          assert rest_conn.status == 200
+          assert Jason.decode!(rest_conn.resp_body) == body |> Jason.encode!() |> Jason.decode!()
+
+        {:error, _msg} ->
+          assert rest_conn.status in [500, 503]
+      end
+    end
+
+    test "ready project, missing q: both reject (q gate fires after readiness)" do
+      assert rest_status("/api/knowledge/style_oracle", path: @project_path) == 400
+      assert {:error, _} = Dispatch.Knowledge.style_oracle(%{"path" => @project_path})
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.style_oracle(%{"path" => @unscanned, "q" => "x"})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do
     test "same path + suppress: identical result (one parse_suppress, both protocols)" do
       suppress = "process_dictionary:Giulia.Knowledge.Store"

@@ -166,12 +166,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         send_json(conn, 400, %{error: "Missing required query param: path"})
 
       {:not_ready, info} ->
-        send_json(conn, 409, %{
-          error: info.reason,
-          path: info.path,
-          state: to_string(info.state),
-          hint: info.hint
-        })
+        send_not_ready(conn, info)
 
       {:ok, project_path} ->
         if conn.query_params["module"] do
@@ -564,17 +559,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/style_oracle" do
-    case resolve_and_check_ready(conn) do
-      {:halt, conn} ->
-        conn
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
 
-      {:ok, conn, project_path} ->
-        query = conn.query_params["q"]
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
 
-        if query do
-          top_k = parse_int_param(conn.query_params["top_k"], 3)
-
-          case Giulia.Knowledge.Store.style_oracle(project_path, query, top_k) do
+      {:ok, project_path} ->
+        if conn.query_params["q"] do
+          case Giulia.Knowledge.Facade.style_oracle(project_path, conn.query_params) do
             {:ok, result} ->
               send_json(conn, 200, result)
 

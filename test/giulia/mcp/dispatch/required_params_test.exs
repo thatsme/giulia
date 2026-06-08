@@ -317,9 +317,12 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
                })
     end
 
-    test "style_oracle errors when q missing (path present)" do
-      assert {:error, "Missing required parameter: q"} =
-               Dispatch.Knowledge.style_oracle(%{"path" => "/projects/example"})
+    test "style_oracle errors for an unindexed path (readiness before the q gate)" do
+      # Post-facade: readiness checked first (parity with REST). Unscanned path
+      # returns not-ready, not the q gate. q gate (load-bearing — Store embeds
+      # the query) fires on a READY project, covered in the parity suite.
+      assert {:error, msg} = Dispatch.Knowledge.style_oracle(%{"path" => "/projects/example"})
+      assert is_binary(msg)
     end
 
     test "pre_impact_check errors when module missing" do

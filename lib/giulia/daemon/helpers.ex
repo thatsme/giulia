@@ -15,6 +15,18 @@ defmodule Giulia.Daemon.Helpers do
     |> send_resp(status, Jason.encode!(data))
   end
 
+  @doc """
+  Render a `Giulia.Daemon.Edge` `{:not_ready, info}` payload as a 409 response.
+
+  Takes the plain `info` map (not the `Edge` module) so `Helpers` stays free of
+  any dependency on `Edge` — `Edge` depends on `Helpers.scan_state/1`, not the
+  reverse. Shared by every REST route that resolves through the facade edge.
+  """
+  @spec send_not_ready(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def send_not_ready(conn, %{reason: reason, hint: hint, state: state, path: path}) do
+    send_json(conn, 409, %{error: reason, path: path, state: to_string(state), hint: hint})
+  end
+
   @doc "Resolve project path from ?path= query param. Returns nil if missing."
   @spec resolve_project_path(Plug.Conn.t()) :: String.t() | nil
   def resolve_project_path(conn) do

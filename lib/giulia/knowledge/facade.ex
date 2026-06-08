@@ -62,4 +62,22 @@ defmodule Giulia.Knowledge.Facade do
           end)
     }
   end
+
+  # ===========================================================================
+  # style_oracle — exemplar functions by concept (semantic)
+  # ===========================================================================
+
+  @doc """
+  Style-oracle exemplars. Owns the `top_k` default (was triplicated). `q` is
+  forwarded raw — it is required and NOT nil-safe in `Store.style_oracle`
+  (embeds the query), so the protocol edge gates it (REST 400 / MCP
+  require_param). Returns `Store`'s result verbatim, including the
+  `"Semantic search unavailable"` error each protocol renders (REST 503 / MCP
+  error string) — an explicit signal, not a silent empty.
+  """
+  @spec style_oracle(String.t(), map()) :: {:ok, term()} | {:error, term()}
+  def style_oracle(path, params) do
+    top_k = Helpers.parse_int_param(params["top_k"], 3)
+    Store.style_oracle(path, params["q"], top_k)
+  end
 end
