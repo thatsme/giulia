@@ -28,7 +28,7 @@ defmodule Giulia.Daemon.Routers.Discovery do
   @skill %{
     intent: "List all available API skills with optional category filter",
     endpoint: "GET /api/discovery/skills",
-    params: %{category: "optional — filter by category name"},
+    params: %{category: %{required: false, in: "query", doc: "Filter by category name"}},
     returns: "JSON list of skill maps (intent, endpoint, params, returns, category)",
     category: "discovery"
   }
@@ -70,7 +70,13 @@ defmodule Giulia.Daemon.Routers.Discovery do
   @skill %{
     intent: "Search skills by keyword in intent description",
     endpoint: "GET /api/discovery/search",
-    params: %{q: "required — search text (case-insensitive substring match on intent)"},
+    params: %{
+      q: %{
+        required: true,
+        in: "query",
+        doc: "Search text (case-insensitive substring match on intent)"
+      }
+    },
     returns: "JSON list of matching skill maps",
     category: "discovery"
   }
@@ -113,7 +119,9 @@ defmodule Giulia.Daemon.Routers.Discovery do
 
     # Also check for a project-local copy (works inside container)
     project_path = conn.query_params["path"]
-    local_path = if project_path, do: Path.join([project_path, "docs", "REPORT_RULES.md"]), else: nil
+
+    local_path =
+      if project_path, do: Path.join([project_path, "docs", "REPORT_RULES.md"]), else: nil
 
     # Read content: try project-local first, then Giulia's own copy
     content =
@@ -144,5 +152,4 @@ defmodule Giulia.Daemon.Routers.Discovery do
   defp all_skills do
     Enum.flat_map(@routers, & &1.__skills__())
   end
-
 end

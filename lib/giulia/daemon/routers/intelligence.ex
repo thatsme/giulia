@@ -17,7 +17,14 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   @skill %{
     intent: "Build a surgical briefing for a prompt (semantic + graph pre-processing)",
     endpoint: "GET /api/intelligence/briefing",
-    params: %{path: :required, prompt: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      prompt: %{
+        required: true,
+        in: "query",
+        doc: "Task prompt to build a briefing for (alias: q)"
+      }
+    },
     returns: "JSON briefing with relevant modules and context",
     category: "intelligence"
   }
@@ -54,8 +61,14 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   @skill %{
     intent: "Run preflight contract checklist for a prompt",
     endpoint: "POST /api/briefing/preflight",
-    params: %{prompt: :required, path: :required, top_k: :optional, depth: :optional},
+    params: %{
+      prompt: %{required: true, in: "body", doc: "Task prompt"},
+      path: %{required: true, in: "body", doc: "Absolute project path"},
+      top_k: %{required: false, in: "body", default: "5", doc: "Modules to analyze"},
+      depth: %{required: false, in: "body", default: "2", doc: "Graph traversal depth"}
+    },
     returns: "JSON structured contract analysis with 6 sections per module",
+    notes: "422 if the contract analysis fails for the resolved path.",
     category: "intelligence"
   }
   post "/preflight" do
@@ -82,7 +95,7 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   @skill %{
     intent: "Single-call project briefing (topology, health, constitution)",
     endpoint: "GET /api/brief/architect",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON architect brief with project shape, heatmap, and constitution summary",
     category: "intelligence"
   }
@@ -105,7 +118,10 @@ defmodule Giulia.Daemon.Routers.Intelligence do
   @skill %{
     intent: "Validate a proposed plan against the Knowledge Graph",
     endpoint: "POST /api/plan/validate",
-    params: %{path: :required, plan: :required},
+    params: %{
+      path: %{required: true, in: "body", doc: "Absolute project path"},
+      plan: %{required: true, in: "body", doc: "Proposed plan text to validate against the graph"}
+    },
     returns: "JSON validation result with risk assessment",
     category: "intelligence"
   }
@@ -162,11 +178,21 @@ defmodule Giulia.Daemon.Routers.Intelligence do
         "attached to a specific function MFA or module — uncapped drill-down " <>
         "for explicit agent queries",
     endpoint: "GET /api/intelligence/enrichments",
-    params: %{path: :required, mfa: :optional, module: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      mfa: %{
+        required: false,
+        in: "query",
+        format: "Module.func/arity",
+        doc: "Target MFA (provide mfa OR module)"
+      },
+      module: %{required: false, in: "query", doc: "Target module (provide mfa OR module)"}
+    },
     returns:
       "JSON %{findings: %{tool => [findings]}, target: \"Mod.fn/N\" | \"Mod\"} — " <>
         "empty map when no tool ingested for project; tool key with empty list " <>
         "when ingested but no findings on this target",
+    notes: "Provide exactly one of :mfa or :module — 400 otherwise.",
     category: "intelligence"
   }
   get "/enrichments" do
