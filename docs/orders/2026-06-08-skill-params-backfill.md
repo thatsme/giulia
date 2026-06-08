@@ -2,7 +2,8 @@
 
 **Date:** 2026-06-08
 **Build at start:** 162
-**Status:** in progress — 2 of 78 blocks done (`dead_code`, `duplicates`)
+**Status:** backfill complete — 78 of 78 blocks on the map format. Remaining
+close-out: Step 78 (SKILL.md shrink) below.
 
 ## Goal
 
@@ -89,10 +90,14 @@ No `notes`, no `values`, no `default`. These carry no lost detail —
    search → intelligence → monitor → index → runtime → knowledge). Commit
    per-router (or per logical group) with `mix test test/giulia/mcp/` green.
 2. Tier B bumps and Tier A enrichment can ride the same per-router commit.
-3. Keep the legacy atom clauses in `ToolSchema` until the **last** block is
-   migrated — they are the coexistence path. Once 78/78 are maps, the atom
-   clauses in `required?`/`param_description` become dead code; remove them in
-   the final commit.
+3. Keep the legacy atom/binary clauses in `ToolSchema`
+   (`required?`/`param_description`) as a **permanent guard** — NOT a
+   coexistence path to delete. Although all 78 blocks are maps, removing the
+   atom clauses would let a future param written with muscle-memory
+   `:required` fall through to `required?(_) -> false` and silently lose its
+   required-ness in the MCP schema. The `build_input_schema/1`
+   build-accountability test keeps the guard honest. (Original plan said
+   "remove as dead code"; superseded — they are a guard, not dead code.)
 
 ## Step 78 — SKILL.md shrink (DO NOT SKIP)
 
