@@ -13,7 +13,7 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "List all indexed modules in a project",
     endpoint: "GET /api/index/modules",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON list of module names with count",
     category: "index"
   }
@@ -34,7 +34,10 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "List functions in a project or module",
     endpoint: "GET /api/index/functions",
-    params: %{path: :required, module: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: false, in: "query", doc: "Filter to one module"}
+    },
     returns: "JSON list of function signatures with arities and line numbers",
     category: "index"
   }
@@ -62,7 +65,10 @@ defmodule Giulia.Daemon.Routers.Index do
     intent:
       "Get full module details (file, moduledoc, functions, types, specs, callbacks, struct)",
     endpoint: "GET /api/index/module_details",
-    params: %{path: :required, module: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: true, in: "query", doc: "Module name (e.g. Giulia.Tools.Registry)"}
+    },
     returns: "JSON with module metadata including all API surface",
     category: "index"
   }
@@ -89,7 +95,7 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Get project summary (modules, functions, types, specs count)",
     endpoint: "GET /api/index/summary",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON project shape summary",
     category: "index"
   }
@@ -110,8 +116,11 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Check indexer status (idle/scanning, file count, last scan time)",
     endpoint: "GET /api/index/status",
-    params: %{path: "optional — project path for per-project status"},
+    params: %{path: %{required: false, in: "query", doc: "Project path for per-project status"}},
     returns: "JSON indexer status",
+    notes:
+      "state is idle | scanning | empty; empty = scan completed with zero source files " <>
+        "(wrong path or over-aggressive ignore rules). Also returns cache_status and merkle_root.",
     category: "index"
   }
   get "/status" do
@@ -124,11 +133,22 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Trigger a re-index scan for a project path",
     endpoint: "POST /api/index/scan",
-    params: %{path: :required, force: :optional},
+    params: %{
+      path: %{required: true, in: "body", doc: "Absolute project path"},
+      force: %{
+        required: false,
+        in: "body",
+        default: "false",
+        doc: "Bypass the L2 warm-cache and cold-extract from disk"
+      }
+    },
     returns:
       "JSON confirmation that scanning started. Pass `force: true` to bypass " <>
         "the L2 warm-cache and cold-extract from disk — needed after editing " <>
         "the extractor or graph builder.",
+    notes:
+      "422 if :path is missing, not a directory, or lacks a project marker " <>
+        "(mix.exs / GIULIA.md / package.json / Cargo.toml / go.mod).",
     category: "index"
   }
   post "/scan" do
@@ -182,10 +202,17 @@ defmodule Giulia.Daemon.Routers.Index do
         "attach findings to graph vertices for consumption by intelligence " <>
         "endpoints",
     endpoint: "POST /api/index/enrichment",
-    params: %{tool: :required, project: :required, payload_path: :required},
+    params: %{
+      tool: %{required: true, in: "body", doc: "Tool name (credo, dialyzer, ...)"},
+      project: %{required: true, in: "body", doc: "Project path (must resolve to a directory)"},
+      payload_path: %{required: true, in: "body", doc: "Path to the tool's output file"}
+    },
     returns:
       "JSON {tool, ingested, written, replaced} — replaces all prior findings " <>
         "for this {tool, project}",
+    notes:
+      "payload_path must fall under the enrichment_payload_roots allowlist; 422 otherwise. " <>
+        "Replace-on-ingest: prior findings for {tool, project} are deleted before the new set is written.",
     category: "index"
   }
   post "/enrichment" do
@@ -233,7 +260,7 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Verify AST cache integrity via Merkle tree recomputation",
     endpoint: "POST /api/index/verify",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "body", doc: "Absolute project path"}},
     returns: "JSON verification result (ok or corrupted)",
     category: "index"
   }
@@ -253,7 +280,15 @@ defmodule Giulia.Daemon.Routers.Index do
         "also prune stale build_id rows from ArcadeDB (CALLS + DEPENDS_ON " <>
         "edges older than the configured retention window)",
     endpoint: "POST /api/index/compact",
-    params: %{path: :required, include: :optional},
+    params: %{
+      path: %{required: true, in: "body", doc: "Absolute project path"},
+      include: %{
+        required: false,
+        in: "body",
+        values: ["arcade"],
+        doc: "Also prune stale ArcadeDB build_id rows (CALLS + DEPENDS_ON edges)"
+      }
+    },
     returns:
       "JSON %{status, path, arcade?: %{pruned: %{kept, pruned, keep_from, calls, depends_on}}}",
     category: "index"
@@ -292,7 +327,12 @@ defmodule Giulia.Daemon.Routers.Index do
   @skill %{
     intent: "Rank functions by cognitive complexity (Sonar-style, nesting-aware)",
     endpoint: "GET /api/index/complexity",
-    params: %{path: :required, module: :optional, min: :optional, limit: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: false, in: "query", doc: "Filter to one module"},
+      min: %{required: false, in: "query", default: "0", doc: "Minimum complexity threshold"},
+      limit: %{required: false, in: "query", default: "50", doc: "Max functions returned"}
+    },
     returns: "JSON list of functions sorted by complexity descending",
     category: "index"
   }

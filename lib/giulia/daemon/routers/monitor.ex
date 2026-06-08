@@ -52,7 +52,8 @@ defmodule Giulia.Daemon.Routers.Monitor do
   get "/stream" do
     Giulia.Monitor.Store.subscribe()
 
-    conn = conn
+    conn =
+      conn
       |> put_resp_content_type("text/event-stream")
       |> put_resp_header("cache-control", "no-cache")
       |> put_resp_header("connection", "keep-alive")
@@ -69,7 +70,7 @@ defmodule Giulia.Daemon.Routers.Monitor do
   @skill %{
     intent: "Get recent telemetry events from the monitor buffer",
     endpoint: "GET /api/monitor/history",
-    params: %{n: :optional},
+    params: %{n: %{required: false, in: "query", default: "50", doc: "Number of recent events"}},
     returns: "JSON list of recent events",
     category: "monitor"
   }
@@ -88,8 +89,15 @@ defmodule Giulia.Daemon.Routers.Monitor do
   @skill %{
     intent: "Start observing a target BEAM node with optional module tracing",
     endpoint: "POST /api/monitor/observe/start",
-    params: %{node: :required, cookie: :optional, worker_url: :optional, interval_ms: :optional, trace_modules: :optional},
+    params: %{
+      node: %{required: true, in: "body", doc: "Target BEAM node (e.g. app@host)"},
+      cookie: %{required: false, in: "body", doc: "Erlang cookie (defaults to GIULIA_COOKIE)"},
+      worker_url: %{required: false, in: "body", doc: "Worker URL for snapshot push"},
+      interval_ms: %{required: false, in: "body", doc: "Snapshot interval in ms"},
+      trace_modules: %{required: false, in: "body", doc: "List of modules to trace"}
+    },
     returns: "JSON confirmation with session_id, interval, and traced modules",
+    notes: "409 if an observation is already running; 422 on invalid params.",
     category: "monitor"
   }
   post "/observe/start" do
@@ -106,7 +114,9 @@ defmodule Giulia.Daemon.Routers.Monitor do
   @skill %{
     intent: "Stop observing a target node and trigger Worker finalization",
     endpoint: "POST /api/monitor/observe/stop",
-    params: %{node: :optional},
+    params: %{
+      node: %{required: false, in: "body", doc: "Target node (defaults to active session)"}
+    },
     returns: "JSON summary with snapshots pushed, duration, and finalize result",
     category: "monitor"
   }
@@ -145,8 +155,11 @@ defmodule Giulia.Daemon.Routers.Monitor do
     receive do
       {:monitor_event, event} ->
         data = Jason.encode!(serialize_event(event))
+
         case chunk(conn, "event: event\ndata: #{data}\n\n") do
-          {:ok, conn} -> stream_monitor(conn)
+          {:ok, conn} ->
+            stream_monitor(conn)
+
           {:error, _} ->
             Giulia.Monitor.Store.unsubscribe()
             conn
@@ -162,7 +175,12 @@ defmodule Giulia.Daemon.Routers.Monitor do
   # Serialization
   # ============================================================================
 
-  defp serialize_event(%{event: event, measurements: measurements, metadata: metadata, timestamp: timestamp}) do
+  defp serialize_event(%{
+         event: event,
+         measurements: measurements,
+         metadata: metadata,
+         timestamp: timestamp
+       }) do
     %{
       event: event,
       measurements: safe_encode(measurements),
