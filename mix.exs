@@ -23,15 +23,20 @@ defmodule Giulia.MixProject do
       releases: releases(),
       aliases: aliases(),
       dialyzer: dialyzer(),
-      preferred_cli_env: [
+      docs: docs()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
         check: :test,
         "check.strict": :test,
         "check.fast": :test,
         credo: :test,
         dialyzer: :dev,
         sobelow: :dev
-      ],
-      docs: docs()
+      ]
     ]
   end
 

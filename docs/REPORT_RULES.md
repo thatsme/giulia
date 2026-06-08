@@ -37,6 +37,19 @@ reduction. Before interpreting heatmap results — especially red-zone counts �
 verify test detection is working correctly (`has_test` values are plausible for
 the project). A broken test detector inflates ALL scores by 25 points.
 
+**`has_test` is file-existence only — it does NOT measure assertion content.**
+`suggest_test_file` checks that `test/foo_test.exs` exists; it never opens the file.
+A test module containing `assert true` — or zero assertions — flips `has_test` to
+true and hands the module a 25-point score reduction it has not earned. Before
+crediting any module as tested, the report MUST apply an **assertion floor** (see
+Section 2): open the mapped test file and count real assertion macros (`assert`,
+`refute`, `assert_raise`, `assert_receive`, `assert_received`, `catch_throw`,
+`catch_exit`). A file with fewer than **2 real assertions** (or fewer than 10 lines
+of test body) is **nominal coverage** — report it as untested regardless of the
+`has_test` flag. The heatmap score is computed inside Giulia from file existence and
+will NOT reflect this floor; reconciling it is the report author's job until the
+heatmap calculation is changed in code.
+
 ### Change Risk Score
 
 ```
@@ -85,6 +98,9 @@ Call endpoints in this order. All require `?path=<project_path>` query param.
 | `GET /api/knowledge/fan_in_out` | per-module in/out degree | Top Hubs |
 | `GET /api/knowledge/dead_code` | unused functions | Dead Code |
 | `GET /api/knowledge/orphan_specs` | specs without matching function | Architecture Health |
+| `GET /api/knowledge/conventions` | AST idiom violations grouped by severity/category | Convention Violations |
+| `GET /api/knowledge/verify_l2` | L1/L2 parity — graph edge count, vertex count | Executive Summary, Architecture Health |
+| `GET /api/knowledge/verify_l3` | L3 (ArcadeDB) CALLS edge parity vs L1 — the L3 edge count | Executive Summary, Architecture Health |
 
 ### Stage 3: Risk Analysis (graph + AST, heavier)
 
@@ -197,9 +213,26 @@ A single table with all key metrics. This is the first thing the reader sees.
 - Circular dependencies count
 - Behaviour fractures count
 - Orphan specs count
-- Dead code count
+- Dead code count (with the connected-components count printed alongside — see reconciliation rule below)
+- Graph edge integrity: L2 edge count, L3 (ArcadeDB) CALLS edge count, and the delta between them
 
 **Rules:**
+- **Dead-code / components reconciliation (MANDATORY)**: the dead-code count may NEVER print
+  alone. It must appear beside the connected-components count from `stats` (e.g., "Dead code: 0 —
+  but 587 connected components over 2,299 vertices"). A near-zero dead-code figure sitting next to
+  hundreds of components is the report's job to reconcile, not to hide: state in one line that
+  isolated/zero-edge function vertices are excluded by the classifier categories (OTP callbacks,
+  behaviour implementations, framework entry points, `apply/3`/dynamic dispatch) and that the
+  component fragmentation is therefore expected. If the component count is high AND dead code is
+  zero, say so explicitly — never let "0 dead code" stand as an unqualified clean bill of health.
+  (The exact zero-edge-function count is not yet queryable; reconcile at the component level until
+  an `isolated_functions` capability exists.)
+- **L2 vs L3 edge parity (MANDATORY)**: print the L2 graph edge count (`verify_l2`) and the L3
+  ArcadeDB CALLS edge count (`verify_l3`) side by side with their delta. The report runs off L2;
+  the live agent queries L3 — if they diverge, that line must scream. Given the CALLS-downgrade
+  history, a non-zero delta is a P0-adjacent finding. If ArcadeDB is unreachable (L3 down), do NOT
+  silently omit it: print "L3 UNAVAILABLE — edge parity unreconciled (ArcadeDB not running)" so the
+  blind spot is visible rather than absent.
 - Spec coverage = specs / **public** functions only. The summary endpoint's "Functions" count
   includes both `def` and `defp`. Specs only apply to public functions (`def`), so dividing
   specs by total functions understates coverage. To get the correct denominator:
@@ -225,6 +258,7 @@ Three sub-tables: Red (>= 60), Yellow (30-59), Green (< 30).
 - Yellow zone: list ALL modules individually (abbreviated — score and zone only is acceptable for large projects)
 - Green zone: count only, optionally list notable modules
 - `has_test` comes from real file cross-referencing (`suggest_test_file` maps `lib/foo.ex` to `test/foo_test.exs` and checks `File.exists?`). It is NOT inferred. If has_test is false, there is genuinely no matching `_test.exs` file by naming convention. Note: non-standard test locations (e.g., `test/livebook_teams/` for a `Livebook.Hubs` module) will show as false — the detection uses path convention only.
+- **Assertion floor (MANDATORY)**: `has_test = true` only means the file exists, not that it tests anything. For every module the heatmap marks as tested, open the mapped test file and count real assertion macros (`assert`, `refute`, `assert_raise`, `assert_receive`, `assert_received`, `catch_throw`, `catch_exit`). A file under the floor — fewer than 2 real assertions, or fewer than 10 lines of test body — is **nominal coverage**: treat the module as untested in the report (move it to the gap analysis below), and note that its heatmap score is 25 points lower than it should be because the file-existence check credited it. Do not silently trust the flag.
 - See "Key Scoring Formulas" above for the test weight interaction — verify `has_test` values are plausible before interpreting red-zone counts
 - **Test Coverage Gap Analysis (MANDATORY)**: After the heatmap tables, include a sub-section listing
   ALL modules that lack test files, grouped by reason. Every untested module must have an explanation:
@@ -233,6 +267,10 @@ Three sub-tables: Red (>= 60), Yellow (30-59), Green (< 30).
     (integration-tested elsewhere, external dependency, or impractical to unit-test)
   - Which untested modules are **quick wins** (standard interface, simple setup)
   - Never leave a test gap unexplained — "no test" without a reason is a red flag for any reader
+  - **Include nominal-coverage modules here** — any module the heatmap marked `has_test = true` but
+    which failed the assertion floor (see above). List them in their own group ("nominal coverage —
+    test file exists but asserts nothing") with the assertion count found, because the heatmap is
+    silently crediting them.
 
 ### Section 3: Top 5 Hubs
 
@@ -352,6 +390,15 @@ Function-level edges: <count> MFA→MFA call edges
   > "N total flagged dead — `actionable` (genuine + uncategorized), `irreducible`
   > (library_public_api + test_only + template_pending). Of M total functions
   > (X%)."
+- **Components reconciliation (MANDATORY — no bare zero)**: a dead-code count of 0 (or near-zero)
+  may NOT print without the connected-components count from `stats` on the same line, plus a
+  one-sentence reconciliation. The graph having hundreds of components while dead code reads zero
+  is not a contradiction to bury — it is the gap the report exists to explain. State that
+  isolated/zero-edge function vertices are held out of the dead-code list by the classifier's
+  exclusion categories (OTP callbacks, behaviour implementations, framework entry points, dynamic
+  dispatch via `apply/3`/captures/MFA-tuples) and that component fragmentation follows from that
+  exclusion, not from absence of unused code. The report must be structurally unable to claim
+  "zero dead code" as a clean result while leaving the component fragmentation unmentioned.
 - **Sort entries by category**: actionable first (`genuine`,
   `uncategorized`), then irreducible (`library_public_api`, `test_only`,
   `template_pending`). The reader cares most about actionable items.
@@ -471,13 +518,16 @@ A pass/fail checklist table:
 | Circular dependencies | 0 — Clean DAG / N cycles found |
 | Behaviour integrity | Consistent / N fractures |
 | Orphan specs | 0 / N orphans found |
-| Dead code | N functions (M genuinely unused) |
+| Dead code | N functions (M genuinely unused) — over K connected components |
+| Graph edge parity (L2 vs L3) | L2=N, L3=M, delta=D / L3 UNAVAILABLE |
 
 **Rules:**
 - Cycles > 0 is a P0 issue — list the cycle chains
 - Fractures > 0 is a P1 issue — list which behaviours/implementers are broken
 - Orphan specs indicate refactoring debris — list them for cleanup
 - Behaviour integrity can be extracted from `audit` response instead of a separate call
+- The Dead code row MUST carry the connected-components count (see Section 9 reconciliation) — a zero in this row with no component context is a malformed report
+- Graph edge parity: from `verify_l2` (L2 edge count) and `verify_l3` (L3 ArcadeDB CALLS edges). A non-zero delta is P0-adjacent given the CALLS-downgrade history — list it loudly. If ArcadeDB is down, the cell reads "L3 UNAVAILABLE", never blank
 
 ### Section 14: Runtime Health (if available)
 
@@ -511,15 +561,55 @@ include a sub-section listing available observation sessions with:
 
 Skip the fused observations sub-section if no sessions exist (monitor hasn't observed any nodes).
 
-### Section 15: Recommended Actions (Priority Order)
+### Section 15: Convention Violations
+
+AST-based idiom checks from `GET /api/knowledge/conventions` (12 rules across documentation,
+error handling, atoms, OTP, control flow, pipes, lists). This is **distinct from Section 10
+(External Tool Findings)** — Section 10 is ingested Credo/Dialyzer output; this section is
+Giulia's own built-in AST analysis and is always available, no ingestion required. **This
+section is mandatory** — the error-severity violations it surfaces must persist between runs,
+not evaporate.
+
+**Two sub-tables.**
+
+**15a. Errors (severity = error)** — these are correctness/security issues, not style nits.
+The error-tier rules are: `try_rescue_flow_control`, `silent_rescue`, `runtime_atom_creation`.
+Columns: Rule | Module | Line | Message.
+
+- Source: `GET /api/knowledge/conventions?path=P` — read `by_severity` for counts and
+  `by_category` for the grouped findings. To isolate errors only, `relevance=high` keeps just
+  `severity: "error"` and recomputes the totals to match.
+- List EVERY error-severity violation individually — never cap, never summarize away. A runtime
+  atom creation or a silent rescue is a real bug the project's own conventions forbid.
+- Each error-tier violation MUST also appear in Section 16 (Recommended Actions) at P0 or P1 —
+  `runtime_atom_creation` is a memory/DoS issue, `silent_rescue` hides failures, and
+  `try_rescue_flow_control` is control flow via exceptions. They do not get to be footnotes.
+
+**15b. Warnings + info (severity = warning / info)** — style and idiom drift. Columns: Rule |
+Count | Category. Report counts per rule, not every line; list the top offending modules in
+commentary. Cap any per-rule expansion at 20 lines with "+ N more".
+
+**Counts header (always)**:
+
+> "Convention scan: E errors, W warnings, I info across the project. Error-tier rules checked:
+> try_rescue_flow_control, silent_rescue, runtime_atom_creation."
+
+**Rules:**
+- Use `total_violations` and `by_severity` from the unfiltered response for the header counts.
+- A clean project prints "0 errors" — but still list the warning/info totals so the section is
+  never empty.
+- Do NOT re-frame any of these as OOP defects — see the ELIXIR IDIOM RULE. These are Elixir
+  convention checks (the project's own `coding-conventions.md`), applied to Elixir.
+
+### Section 16: Recommended Actions (Priority Order)
 
 Synthesize findings into concrete, prioritized recommendations.
 
 **Priority levels:**
-- **P0**: Blocking issues — cycles, behaviour fractures, crashes
-- **P1**: High-risk gaps — unprotected hubs, god modules with high fan-in
+- **P0**: Blocking issues — cycles, behaviour fractures, crashes, L2/L3 edge-parity divergence, and error-tier convention violations that are correctness/security bugs (`runtime_atom_creation`, `silent_rescue`)
+- **P1**: High-risk gaps — unprotected hubs, god modules with high fan-in, `try_rescue_flow_control` violations, nominal-coverage modules masquerading as tested
 - **P2**: Improvement opportunities — god module splits, coupling reduction, dead code
-- **P3**: Polish — spec coverage for non-hub modules, doc coverage
+- **P3**: Polish — spec coverage for non-hub modules, doc coverage, warning/info convention drift
 
 **Priority ordering within P1 — fan-in dominates:**
 A hub module with high fan-in and low doc/spec coverage ALWAYS outranks a low-fan-in module
@@ -613,3 +703,7 @@ pattern matching in Elixir — STOP. Delete it. Rewrite in Elixir terms.**
 8. **Don't interpret heatmap red zones without checking test detection** — a broken test detector inflates all scores by 25 points (see scoring formula interaction).
 9. **Don't use OOP framing for Elixir code** — no "encapsulation leaks", no "Law of Demeter violations", no "information hiding concerns" for struct pattern matching. This is Elixir, not Java. See the **ELIXIR IDIOM RULE** section above.
 10. **Don't call 4 separate endpoints when audit covers it** — use `GET /api/knowledge/audit` for unprotected_hubs + struct_lifecycle + duplicates + integrity. Fall back to individual calls only on error.
+11. **Don't print "0 dead code" as a clean result** — it may not stand alone. Print the connected-components count beside it and reconcile in one sentence (Section 1 + Section 9). A zero next to hundreds of unreconciled components reads as health when it is actually an unexamined gap.
+12. **Don't trust `has_test` as coverage** — it is file existence, not assertions. Apply the assertion floor (Section 2). A test file that asserts nothing is nominal coverage, and the heatmap is crediting it 25 points it didn't earn.
+13. **Don't report L2 graph edges without the L3 delta** — print L2 and L3 (ArcadeDB CALLS) edge counts side by side with the delta (Section 1 + Section 13). The report runs off L2, the agent queries L3; a divergence is the line that must scream, given the CALLS-downgrade history. If L3 is down, say "L3 UNAVAILABLE" — never omit it.
+14. **Don't let convention errors evaporate** — Section 15 is mandatory and error-tier violations (`runtime_atom_creation`, `silent_rescue`, `try_rescue_flow_control`) escalate to P0/P1 in Section 16. They are correctness/security bugs the project's own conventions forbid, not style nits.
