@@ -732,7 +732,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     },
     returns: "JSON clusters of semantically similar functions",
     notes:
-      "Requires EmbeddingServing; returns [] if EmbeddingServing is unavailable or not loaded for this role (monitor skips it -- query the worker).",
+      "Requires EmbeddingServing; returns [] if unavailable OR not loaded for this role (the monitor skips it by design -- query the worker on :4000).",
     category: "knowledge"
   }
   get "/duplicates" do
