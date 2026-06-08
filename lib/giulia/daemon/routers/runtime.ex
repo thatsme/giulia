@@ -13,7 +13,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get BEAM health snapshot (memory, processes, schedulers, ETS)",
     endpoint: "GET /api/runtime/pulse",
-    params: %{node: :optional},
+    params: %{node: %{required: false, in: "query", doc: "Target node (defaults to self)"}},
     returns: "JSON pulse data with memory, process count, scheduler utilization",
     category: "runtime"
   }
@@ -32,7 +32,16 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get top 10 processes by metric (reductions, memory, message_queue)",
     endpoint: "GET /api/runtime/top_processes",
-    params: %{metric: :optional, node: :optional},
+    params: %{
+      metric: %{
+        required: false,
+        in: "query",
+        values: ~w(reductions memory message_queue),
+        default: "reductions",
+        doc: "Ranking metric"
+      },
+      node: %{required: false, in: "query", doc: "Target node (defaults to self)"}
+    },
     returns: "JSON list of top processes with PID, registered name, and metric value",
     category: "runtime"
   }
@@ -60,7 +69,10 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get hot spots: top runtime modules fused with Knowledge Graph data",
     endpoint: "GET /api/runtime/hot_spots",
-    params: %{path: :optional, node: :optional},
+    params: %{
+      path: %{required: false, in: "query", doc: "Absolute project path (for graph fusion)"},
+      node: %{required: false, in: "query", doc: "Target node (defaults to self)"}
+    },
     returns: "JSON list of hot spot modules with runtime + static analysis data",
     category: "runtime"
   }
@@ -85,8 +97,17 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Trace function calls for a module (short-lived)",
     endpoint: "GET /api/runtime/trace",
-    params: %{module: :required, duration: :optional, node: :optional},
+    params: %{
+      module: %{
+        required: true,
+        in: "query",
+        doc: "Module to trace (e.g. Giulia.Inference.Engine)"
+      },
+      duration: %{required: false, in: "query", default: "5000", doc: "Trace window in ms"},
+      node: %{required: false, in: "query", doc: "Target node (defaults to self)"}
+    },
     returns: "JSON trace results with call counts",
+    notes: "404 if the module is not loaded on the target node.",
     category: "runtime"
   }
   get "/trace" do
@@ -112,7 +133,10 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get last N runtime snapshots from the collector",
     endpoint: "GET /api/runtime/history",
-    params: %{last: :optional, node: :optional},
+    params: %{
+      last: %{required: false, in: "query", default: "20", doc: "Number of snapshots"},
+      node: %{required: false, in: "query", doc: "Target node (defaults to self)"}
+    },
     returns: "JSON list of historical snapshots",
     category: "runtime"
   }
@@ -130,7 +154,16 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get time-series trend for a runtime metric",
     endpoint: "GET /api/runtime/trend",
-    params: %{metric: :optional, node: :optional},
+    params: %{
+      metric: %{
+        required: false,
+        in: "query",
+        values: ~w(memory processes run_queue ets_memory),
+        default: "memory",
+        doc: "Metric to chart"
+      },
+      node: %{required: false, in: "query", doc: "Target node (defaults to self)"}
+    },
     returns: "JSON time-series points for the requested metric",
     category: "runtime"
   }
@@ -155,7 +188,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get active runtime alerts with duration",
     endpoint: "GET /api/runtime/alerts",
-    params: %{node: :optional},
+    params: %{node: %{required: false, in: "query", doc: "Target node (defaults to self)"}},
     returns: "JSON list of active alerts",
     category: "runtime"
   }
@@ -172,8 +205,12 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Connect to a remote BEAM node for introspection",
     endpoint: "POST /api/runtime/connect",
-    params: %{node: :required, cookie: :optional},
+    params: %{
+      node: %{required: true, in: "body", doc: "Remote BEAM node (e.g. app@host)"},
+      cookie: %{required: false, in: "body", doc: "Erlang cookie (defaults to GIULIA_COOKIE)"}
+    },
     returns: "JSON confirmation of connection or error",
+    notes: "422 if the node is unreachable or the cookie mismatches.",
     category: "runtime"
   }
   post "/connect" do
@@ -214,7 +251,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "List saved performance profiles from burst analysis",
     endpoint: "GET /api/runtime/profiles",
-    params: %{limit: :optional},
+    params: %{limit: %{required: false, in: "query", default: "20", doc: "Max profiles returned"}},
     returns: "JSON list of profile summaries (timestamps, durations)",
     category: "runtime"
   }
@@ -260,7 +297,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get a specific performance profile by timestamp ID",
     endpoint: "GET /api/runtime/profile/:id",
-    params: %{id: :required},
+    params: %{id: %{required: true, in: "path", doc: "Profile timestamp id"}},
     returns: "JSON full profile detail",
     category: "runtime"
   }
@@ -277,7 +314,12 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Ingest a runtime snapshot pushed by the Monitor container",
     endpoint: "POST /api/runtime/ingest",
-    params: %{node: :required, session_id: :required, timestamp: :required, metrics: :required},
+    params: %{
+      node: %{required: true, in: "body", doc: "Source node the snapshot came from"},
+      session_id: %{required: true, in: "body", doc: "Observation session id"},
+      timestamp: %{required: true, in: "body", doc: "Snapshot timestamp"},
+      metrics: %{required: true, in: "body", doc: "Snapshot metrics payload"}
+    },
     returns: "JSON ack with session_id and snapshot count",
     category: "runtime"
   }
@@ -294,8 +336,12 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Finalize an observation session and produce fused profile",
     endpoint: "POST /api/runtime/ingest/finalize",
-    params: %{session_id: :required, node: :required},
+    params: %{
+      session_id: %{required: true, in: "body", doc: "Observation session id"},
+      node: %{required: true, in: "body", doc: "Source node"}
+    },
     returns: "JSON finalized profile summary with hot modules and correlation data",
+    notes: "404 if no snapshots were recorded for the session.",
     category: "runtime"
   }
   post "/ingest/finalize" do
@@ -341,7 +387,7 @@ defmodule Giulia.Daemon.Routers.Runtime do
   @skill %{
     intent: "Get full fused observation profile (static + runtime correlation)",
     endpoint: "GET /api/runtime/observation/:session_id",
-    params: %{session_id: :required},
+    params: %{session_id: %{required: true, in: "path", doc: "Observation session id"}},
     returns: "JSON full observation with fused profile, hot modules, bottleneck analysis",
     category: "runtime"
   }
