@@ -70,24 +70,18 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec impact(map()) :: {:ok, map()} | {:error, String.t()}
   def impact(args) do
+    # Facade owns depth coercion + normalization + the Store call, shared with
+    # REST. The module gate STAYS (not bucket-1 redundant): Store.impact_map is
+    # NOT nil-safe — it crashes on a nil module (String.downcase, topology.ex),
+    # unlike dependents/centrality which guard via has_vertex?. Verified.
     with {:ok, path} <- require_path(args),
-         {:ok, module} <- require_param(args, "module") do
-      depth = parse_int(args["depth"], 2)
-
-      case Store.impact_map(path, module, depth) do
+         {:ok, _module} <- require_param(args, "module") do
+      case Giulia.Knowledge.Facade.impact(path, args) do
         {:ok, result} ->
-          upstream = Enum.map(result.upstream, fn {v, d} -> %{module: v, depth: d} end)
-          downstream = Enum.map(result.downstream, fn {v, d} -> %{module: v, depth: d} end)
+          {:ok, result}
 
-          func_edges =
-            Enum.map(result.function_edges, fn {name, targets} ->
-              %{function: name, calls: targets}
-            end)
-
-          {:ok,
-           %{result | upstream: upstream, downstream: downstream, function_edges: func_edges}}
-
-        {:error, {:not_found, _, suggestions, graph_info}} ->
+        {:error,
+         {:not_found, %{module: module, suggestions: suggestions, graph_info: graph_info}}} ->
           {:error,
            "Module not found in graph: #{module}. Suggestions: #{inspect(suggestions)}. Graph: #{inspect(graph_info)}"}
       end

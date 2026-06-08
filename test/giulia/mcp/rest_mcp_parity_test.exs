@@ -135,6 +135,22 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "impact — REST/MCP parity through Knowledge.Facade (ready)" do
+    test "valid module: identical normalized body (one depth default, one normalizer)" do
+      rest =
+        rest_get("/api/knowledge/impact", path: @project_path, module: "Giulia.Knowledge.Store")
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.impact(%{
+                 "path" => @project_path,
+                 "module" => "Giulia.Knowledge.Store"
+               })
+
+      # No schema_version on impact — full bodies must match.
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+  end
+
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do
     test "same path + suppress: identical result (one parse_suppress, both protocols)" do
       suppress = "process_dictionary:Giulia.Knowledge.Store"

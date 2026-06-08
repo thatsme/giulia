@@ -286,6 +286,9 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
     end
 
     test "impact errors when module missing" do
+      # impact KEEPS its module gate (unlike the bucket-1 endpoints):
+      # Store.impact_map is not nil-safe (crashes on nil module), so the gate
+      # is necessary, not redundant.
       assert {:error, "Missing required parameter: module"} =
                Dispatch.Knowledge.impact(%{"path" => "/projects/example"})
     end

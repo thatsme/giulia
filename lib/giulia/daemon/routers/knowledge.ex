@@ -163,34 +163,15 @@ defmodule Giulia.Daemon.Routers.Knowledge do
         conn
 
       {:ok, conn, project_path} ->
-        module = conn.query_params["module"]
-        depth = parse_int_param(conn.query_params["depth"], 2)
-
-        if module do
-          case Giulia.Knowledge.Store.impact_map(project_path, module, depth) do
+        # Module required-ness stays at the REST edge (400). Depth coercion +
+        # Store call + normalization live once in the facade, shared with MCP.
+        if conn.query_params["module"] do
+          case Giulia.Knowledge.Facade.impact(project_path, conn.query_params) do
             {:ok, result} ->
-              upstream = Enum.map(result.upstream, fn {v, d} -> %{module: v, depth: d} end)
-              downstream = Enum.map(result.downstream, fn {v, d} -> %{module: v, depth: d} end)
+              send_json(conn, 200, result)
 
-              func_edges =
-                Enum.map(result.function_edges, fn {name, targets} ->
-                  %{function: name, calls: targets}
-                end)
-
-              send_json(conn, 200, %{
-                result
-                | upstream: upstream,
-                  downstream: downstream,
-                  function_edges: func_edges
-              })
-
-            {:error, {:not_found, _, suggestions, graph_info}} ->
-              send_json(conn, 404, %{
-                error: "Module not found in graph",
-                module: module,
-                suggestions: suggestions,
-                graph_info: graph_info
-              })
+            {:error, {:not_found, info}} ->
+              send_json(conn, 404, Map.put(info, :error, "Module not found in graph"))
           end
         else
           send_json(conn, 400, %{error: "Missing required query param: module"})
