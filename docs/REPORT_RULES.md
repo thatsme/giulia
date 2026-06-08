@@ -493,10 +493,19 @@ detail elsewhere. Useful sentence to land:
 - Use `duplicates` endpoint (or extract from `audit` response)
 - Report: "N clusters found at >= X% similarity threshold"
 - List top 3 clusters with their similarity score and member function names
+- **`defdelegate`→`def` EXCLUSION (mandatory)**: a `defdelegate` stub and its target `def`
+  share name + signature, so the embedding detector clusters them every run — a guaranteed
+  false positive, NOT duplication (it's intentional delegation, the opposite of copy-paste).
+  **Exclude any cluster whose members are a `defdelegate` and the `def`/`defp` it forwards to**
+  (same function name across the delegating module and its target) — do not list it as a
+  finding. Verified example (the recurring one): `extract_callbacks`, `count_lines`,
+  `estimate_complexity` cluster across `Processor`/`Extraction`/`Analysis` because `Processor`
+  `defdelegate`s all three; `mix xref` confirms the AST modules are a clean DAG (not in any of
+  the 3 dependency cycles). Closed as no-fix — nothing to collapse.
 - **False positive caveat**: large clusters of accessor functions (`get_x/1`, `set_x/2`),
-  delegate functions (`defdelegate`), or simple CRUD wrappers are expected to cluster —
-  they share structural patterns, not duplicated logic. Flag these as "structural similarity,
-  not duplication" when the cluster members are all accessors/delegates.
+  or simple CRUD wrappers are expected to cluster — they share structural patterns, not
+  duplicated logic. Flag these as "structural similarity, not duplication" when the cluster
+  members are all accessors/wrappers.
 - **Mega-clusters with low similarity (< 20%)**: These are threshold artifacts — the algorithm
   groups everything sharing basic language structure (def heads, pipe chains, pattern matches)
   into one cluster. Explain WHY it's noise: "N members at X% similarity means the cluster
