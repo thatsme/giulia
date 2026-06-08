@@ -158,13 +158,22 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     category: "knowledge"
   }
   get "/impact" do
-    case resolve_and_check_ready(conn) do
-      {:halt, conn} ->
-        conn
+    # Resolution + readiness via the shared facade step (single source, also used
+    # by MCP). REST renders the readiness payload as 409 + hint; module
+    # required-ness stays at the REST edge (400).
+    case Giulia.Knowledge.Facade.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
 
-      {:ok, conn, project_path} ->
-        # Module required-ness stays at the REST edge (400). Depth coercion +
-        # Store call + normalization live once in the facade, shared with MCP.
+      {:not_ready, info} ->
+        send_json(conn, 409, %{
+          error: info.reason,
+          path: info.path,
+          state: to_string(info.state),
+          hint: info.hint
+        })
+
+      {:ok, project_path} ->
         if conn.query_params["module"] do
           case Giulia.Knowledge.Facade.impact(project_path, conn.query_params) do
             {:ok, result} ->

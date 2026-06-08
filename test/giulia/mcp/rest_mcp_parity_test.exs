@@ -149,6 +149,34 @@ defmodule Giulia.MCP.RestMcpParityTest do
       # No schema_version on impact — full bodies must match.
       assert rest == mcp |> Jason.encode!() |> Jason.decode!()
     end
+
+    test "ready project, missing module: both reject (module gate fires after readiness)" do
+      assert rest_status("/api/knowledge/impact", path: @project_path) == 400
+      assert {:error, _} = Dispatch.Knowledge.impact(%{"path" => @project_path})
+    end
+  end
+
+  describe "impact — REST/MCP readiness parity (not-ready)" do
+    # An unscanned path: REST already 409s with a scan hint; MCP must too, via
+    # the facade's readiness step (the (a) behavior change). Before that wiring
+    # MCP returned a bare not-found with no actionable hint — the divergence
+    # this asserts away. Failing-when-fixed: red until MCP carries the hint.
+    @unscanned "/projects/__unscanned_for_parity__"
+
+    test "unscanned path: both surfaces signal not-ready with the actionable scan hint" do
+      rest =
+        conn(:get, "/api/knowledge/impact?path=#{@unscanned}&module=Foo")
+        |> Endpoint.call(@opts)
+
+      assert rest.status == 409
+      assert Jason.decode!(rest.resp_body)["hint"] =~ "scan"
+
+      assert {:error, msg} =
+               Dispatch.Knowledge.impact(%{"path" => @unscanned, "module" => "Foo"})
+
+      assert msg =~ "scan",
+             "MCP must carry the actionable scan hint, not a bare not-found: #{inspect(msg)}"
+    end
   end
 
   describe "conventions — REST/MCP input parity (shared parse_suppress)" do

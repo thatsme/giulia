@@ -70,21 +70,30 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
 
   @spec impact(map()) :: {:ok, map()} | {:error, String.t()}
   def impact(args) do
-    # Facade owns depth coercion + normalization + the Store call, shared with
-    # REST. The module gate STAYS (not bucket-1 redundant): Store.impact_map is
-    # NOT nil-safe — it crashes on a nil module (String.downcase, topology.ex),
-    # unlike dependents/centrality which guard via has_vertex?. Verified.
-    with {:ok, path} <- require_path(args),
-         {:ok, _module} <- require_param(args, "module") do
-      case Giulia.Knowledge.Facade.impact(path, args) do
-        {:ok, result} ->
-          {:ok, result}
+    # Readiness now via the shared facade step (the (a) behavior change): MCP
+    # gains the actionable not-ready signal it lacked, rendered as a binary
+    # string carrying the scan hint (Server renders binary {:error,_} verbatim).
+    # Module gate STAYS after readiness (not bucket-1 redundant): Store.impact_map
+    # crashes on nil module (String.downcase, topology.ex), unlike dependents.
+    case Giulia.Knowledge.Facade.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
 
-        {:error,
-         {:not_found, %{module: module, suggestions: suggestions, graph_info: graph_info}}} ->
-          {:error,
-           "Module not found in graph: #{module}. Suggestions: #{inspect(suggestions)}. Graph: #{inspect(graph_info)}"}
-      end
+      {:not_ready, info} ->
+        {:error, Giulia.Knowledge.Facade.not_ready_message(info)}
+
+      {:ok, path} ->
+        with {:ok, _module} <- require_param(args, "module") do
+          case Giulia.Knowledge.Facade.impact(path, args) do
+            {:ok, result} ->
+              {:ok, result}
+
+            {:error,
+             {:not_found, %{module: module, suggestions: suggestions, graph_info: graph_info}}} ->
+              {:error,
+               "Module not found in graph: #{module}. Suggestions: #{inspect(suggestions)}. Graph: #{inspect(graph_info)}"}
+          end
+        end
     end
   end
 

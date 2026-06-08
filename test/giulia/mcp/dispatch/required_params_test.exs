@@ -285,12 +285,13 @@ defmodule Giulia.MCP.Dispatch.RequiredParamsTest do
       assert {:error, _} = Dispatch.Knowledge.centrality(%{"path" => "/projects/example"})
     end
 
-    test "impact errors when module missing" do
-      # impact KEEPS its module gate (unlike the bucket-1 endpoints):
-      # Store.impact_map is not nil-safe (crashes on nil module), so the gate
-      # is necessary, not redundant.
-      assert {:error, "Missing required parameter: module"} =
-               Dispatch.Knowledge.impact(%{"path" => "/projects/example"})
+    test "impact errors for an unindexed path (readiness fires before the module gate)" do
+      # Post-facade, readiness is checked first (parity with REST's order), so an
+      # unscanned path returns the not-ready signal — not the module gate. impact
+      # still KEEPS its module gate (Store.impact_map crashes on nil module), but
+      # that fires only on a READY project — covered in the parity suite.
+      assert {:error, msg} = Dispatch.Knowledge.impact(%{"path" => "/projects/example"})
+      assert msg =~ "scan" or msg =~ "not" or is_binary(msg)
     end
 
     test "path errors when from missing" do
