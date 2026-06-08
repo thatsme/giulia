@@ -75,12 +75,12 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
     # string carrying the scan hint (Server renders binary {:error,_} verbatim).
     # Module gate STAYS after readiness (not bucket-1 redundant): Store.impact_map
     # crashes on nil module (String.downcase, topology.ex), unlike dependents.
-    case Giulia.Knowledge.Facade.resolve_ready(args) do
+    case Giulia.Daemon.Edge.resolve_ready(args) do
       {:error, :missing_path} ->
         {:error, "Missing required parameter: path"}
 
       {:not_ready, info} ->
-        {:error, Giulia.Knowledge.Facade.not_ready_message(info)}
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
 
       {:ok, path} ->
         with {:ok, _module} <- require_param(args, "module") do

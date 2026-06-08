@@ -161,7 +161,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     # Resolution + readiness via the shared facade step (single source, also used
     # by MCP). REST renders the readiness payload as 409 + hint; module
     # required-ness stays at the REST edge (400).
-    case Giulia.Knowledge.Facade.resolve_ready(conn.query_params) do
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
       {:error, :missing_path} ->
         send_json(conn, 400, %{error: "Missing required query param: path"})
 
