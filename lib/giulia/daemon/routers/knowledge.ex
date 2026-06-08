@@ -207,8 +207,21 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Detect dead code (functions defined but never called)",
     endpoint: "GET /api/knowledge/dead_code",
-    params: %{path: :required, relevance: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      relevance: %{
+        required: false,
+        in: "query",
+        values: ~w(high medium all),
+        default: "all",
+        doc:
+          "high -> :genuine only; medium -> :genuine + :uncategorized (= :actionable); all/absent -> unfiltered"
+      }
+    },
     returns: "JSON list of unused functions",
+    notes:
+      "Excludes OTP callbacks, behaviour implementations, framework entry points. " <>
+        ":enrichments appear per entry only when external-tool findings are ingested (POST /api/index/enrichment).",
     category: "knowledge"
   }
   get "/dead_code" do
@@ -700,8 +713,26 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find semantic duplicates (redundant logic via embedding similarity)",
     endpoint: "GET /api/knowledge/duplicates",
-    params: %{path: :required, threshold: :optional, max: :optional, relevance: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      threshold: %{
+        required: false,
+        in: "query",
+        default: "0.85",
+        doc: "Cosine similarity floor (0.0-1.0)"
+      },
+      max: %{required: false, in: "query", default: "20", doc: "Max clusters returned"},
+      relevance: %{
+        required: false,
+        in: "query",
+        values: ~w(high medium all),
+        doc:
+          "Shorthand that TIGHTENS threshold: high -> 0.95, medium -> 0.90. A user-supplied threshold higher than the bucket wins -- relevance only tightens, never loosens."
+      }
+    },
     returns: "JSON clusters of semantically similar functions",
+    notes:
+      "Requires EmbeddingServing; returns [] if EmbeddingServing is unavailable or not loaded for this role (monitor skips it -- query the worker).",
     category: "knowledge"
   }
   get "/duplicates" do

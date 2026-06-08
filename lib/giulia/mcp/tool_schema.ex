@@ -181,21 +181,33 @@ defmodule Giulia.MCP.ToolSchema do
 
   # --- Input schema ---
 
-  defp build_input_schema(skill) do
+  # Public for build-accountability testing (mirrors mcp_compatible?/1). Not
+  # part of the module's API surface — exposed so the suite can prove a
+  # structured map-param with required: true actually emits the :required
+  # tuple and its `values` survive as `enum`, rather than trusting the clauses
+  # read correctly. A bare-atom param is the legacy shape; a map param is the
+  # enriched shape — both must convert during the incremental backfill window.
+  @doc false
+  @spec build_input_schema(map()) :: map()
+  def build_input_schema(skill) do
     skill.params
     |> Enum.map(fn {name, requirement} ->
-      desc = param_description(name, requirement)
+      opts = [description: param_description(name, requirement)] ++ enum_opt(requirement)
 
       type =
         if required?(requirement),
-          do: {:required, :string, [description: desc]},
-          else: {:string, [description: desc]}
+          do: {:required, :string, opts},
+          else: {:string, opts}
 
       {to_string(name), type}
     end)
     |> Map.new()
   end
 
+  # Map clause first, then the legacy atom/binary clauses, `_` fallback LAST —
+  # the shapes are disjoint, but order is load-bearing during the coexistence
+  # window so an unmatched map can never fall through to required?(_) -> false.
+  defp required?(%{required: r}) when is_boolean(r), do: r
   defp required?(:required), do: true
 
   defp required?(desc) when is_binary(desc) do
@@ -204,10 +216,28 @@ defmodule Giulia.MCP.ToolSchema do
 
   defp required?(_), do: false
 
+  # Anubis 1.0.0 (peri 0.6.2) discards `default` in convert_type/1, so the
+  # structured default: never reaches the MCP JSON Schema. Fold it into the
+  # description until the dep is bumped, then remove this and rely on enum/default
+  # emission directly. See schema.ex convert_type({type, {:default, _}}).
+  defp param_description(name, %{} = spec) do
+    base = Map.get(spec, :doc, to_string(name))
+
+    case Map.get(spec, :default) do
+      nil -> base
+      default -> "#{base}, default #{default}"
+    end
+  end
+
   defp param_description(name, :required), do: "#{name} (required)"
   defp param_description(name, :optional), do: "#{name} (optional)"
   defp param_description(_name, desc) when is_binary(desc), do: desc
   defp param_description(name, _), do: to_string(name)
+
+  # `values` -> JSON Schema `enum` (verified emitted by Anubis 1.0.0 schema.ex
+  # parse_type_opt). Only map params carry it; legacy atom/binary params don't.
+  defp enum_opt(%{values: values}) when is_list(values), do: [enum: values]
+  defp enum_opt(_), do: []
 
   # --- Filtering ---
 

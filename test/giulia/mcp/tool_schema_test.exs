@@ -85,7 +85,10 @@ defmodule Giulia.MCP.ToolSchemaTest do
       %{endpoint: "GET /api/runtime/stream_stats_summary", returns: "JSON summary"},
       # Returns JSON with "assessment" (which contains "sse" as substring) — regression
       # guard: the filter must use phrase matches, not naked substring checks
-      %{endpoint: "GET /api/intelligence/validate", returns: "JSON validation with risk assessment"}
+      %{
+        endpoint: "GET /api/intelligence/validate",
+        returns: "JSON validation with risk assessment"
+      }
     ]
     for fixture <- @pass_through_fixtures do
       @tag fixture: fixture
@@ -93,6 +96,95 @@ defmodule Giulia.MCP.ToolSchemaTest do
         assert ToolSchema.mcp_compatible?(skill(fixture)),
                "fixture should survive the MCP filter but was dropped: #{inspect(fixture)}"
       end
+    end
+  end
+
+  # GATE for the @skill params-map backfill (the other 76 blocks). These prove
+  # build_input_schema/1 emits the right TUPLE for the enriched map-param shape:
+  # required-ness preserved, `values` carried as `enum`, `default` folded into
+  # the description (Anubis 1.0.0 strips structured default — see ToolSchema).
+  #
+  # SCOPE LIMIT: this proves OUR side of the boundary only. It does NOT prove
+  # Anubis 1.0.0 emits "enum" from {:required, :string, [enum: [...]]} — that
+  # Peri-tuple-form question requires an integration check through
+  # Anubis.Server.Frame.register_tool + the rendered JSON Schema, to be added
+  # against the verified Frame API once Docker is available. Both halves green
+  # is the precondition for backfilling the remaining 76 @skill blocks.
+  #
+  # :pending_docker — unexecuted on the Windows host (EXLA does not compile);
+  # runs only inside the Docker test environment.
+  describe "build_input_schema/1 — enriched map-param accountability" do
+    @describetag :pending_docker
+
+    test "required map param emits a :required string tuple" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{params: %{path: %{required: true, in: "query", doc: "Absolute project path"}}})
+        )
+
+      assert {:required, :string, opts} = schema["path"]
+      assert opts[:description] == "Absolute project path"
+    end
+
+    test "optional map param emits a non-required string tuple" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{params: %{max: %{required: false, in: "query", doc: "Max clusters returned"}}})
+        )
+
+      assert {:string, opts} = schema["max"]
+      assert opts[:description] == "Max clusters returned"
+    end
+
+    test "values: is carried as enum: into the field opts" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{
+            params: %{
+              relevance: %{
+                required: false,
+                in: "query",
+                values: ~w(high medium all),
+                doc: "filter"
+              }
+            }
+          })
+        )
+
+      assert {:string, opts} = schema["relevance"]
+      assert opts[:enum] == ~w(high medium all)
+    end
+
+    test "default: is folded into the description (Anubis 1.0.0 strips structured default)" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{
+            params: %{
+              threshold: %{required: false, in: "query", default: "0.85", doc: "Cosine floor"}
+            }
+          })
+        )
+
+      assert {:string, opts} = schema["threshold"]
+      assert opts[:description] == "Cosine floor, default 0.85"
+    end
+
+    test "absent default: produces no dangling ', default' suffix" do
+      schema =
+        ToolSchema.build_input_schema(
+          skill(%{params: %{path: %{required: true, in: "query", doc: "Absolute project path"}}})
+        )
+
+      assert {:required, :string, opts} = schema["path"]
+      refute opts[:description] =~ "default"
+    end
+
+    test "legacy bare-atom params still convert during the coexistence window" do
+      schema =
+        ToolSchema.build_input_schema(skill(%{params: %{path: :required, depth: :optional}}))
+
+      assert {:required, :string, _} = schema["path"]
+      assert {:string, _} = schema["depth"]
     end
   end
 
