@@ -664,9 +664,10 @@ Endpoint.ex                     core routes + forward declarations
 Sub-router (e.g., Routers.Knowledge)
     |
     v
-Helpers.send_json/3             JSON response encoding
-Helpers.resolve_project_path/1  host-to-container path translation
-    |
+Daemon.Edge.resolve_ready/1     path resolution + scan-readiness (shared with MCP dispatch)
+Knowledge.Facade / Search.Facade  string->typed coercion, defaults, response shape (shared with MCP)
+    |  (the per-domain facade is the single place these live; the REST route
+    |   and the MCP dispatch handler are thin renderers over the same call)
     v
 GenServer.call to Knowledge.Store / Context.Store
     |
@@ -674,7 +675,8 @@ GenServer.call to Knowledge.Store / Context.Store
 ETS / libgraph lookup
     |
     v
-JSON response
+Helpers.send_json/3   (REST renders the facade result as JSON / 4xx / 409;
+                        MCP renders the same result as {:ok, _} | {:error, msg})
 ```
 
 Core routes that remain in Endpoint.ex (not forwarded):
@@ -743,6 +745,34 @@ Sub-routers and their domains:
 
 Note: `/api/briefing`, `/api/brief`, and `/api/plan` all forward to
 `Routers.Intelligence` as aliases.
+
+### Edge / Facade layer (Build 163)
+
+REST and MCP both front the same internal handlers, but originally each
+re-implemented param required-ness, defaults, and coercion (the MCP dispatch
+was meant to be a thin proxy and had drifted into a parallel implementation).
+That let the two protocols' param contracts diverge independently. Build 163
+introduced a shared edge + per-domain facades so the contract lives once:
+
+| Module | Responsibility |
+|--------|---------------|
+| `Daemon.Edge` | Domain-agnostic protocol edge: `resolve_ready/1` (host->container path resolution + scan-readiness, returns plain data + actionable hint) and `not_ready_message/1`. Shared by every domain and both protocols. |
+| `Knowledge.Facade` | Per-domain coerce + Store call for knowledge endpoints (impact, style_oracle, unprotected_hubs, duplicates, pre_impact_check): owns defaults (depth/top_k/thresholds), response normalization, the `schema_version` stamp, and the embedding-availability check. |
+| `Search.Facade` | Same for the search domain (semantic): canonical result shape + `top_k` default. |
+
+Three layers: **edge** (resolve + readiness) -> **domain facade** (coerce +
+defaults + Store call) -> **`Store`** (typed, pure semantics — never learns
+about strings, HTTP, or defaults). A REST route body and the matching MCP
+dispatch handler are now thin renderers over the same facade call, each
+rendering the result in its own idiom (REST: JSON + 4xx/409; MCP: `{:ok, _}` |
+`{:error, message}` with the hint preserved as a binary string).
+
+`test/giulia/mcp/rest_mcp_parity_test.exs` is the standing guarantee: for every
+facade-routed endpoint, the same input through REST and through MCP must agree.
+This also closed pre-existing divergences — MCP gained the scan-readiness and
+embedding-availability signals it lacked, and `search/semantic` converged on one
+canonical shape (it previously emitted raw structs via MCP and a functions-only
+`count`).
 
 
 ## 14. Semantic Search
