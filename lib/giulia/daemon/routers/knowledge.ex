@@ -14,7 +14,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get Knowledge Graph statistics (vertices, edges, components, hubs)",
     endpoint: "GET /api/knowledge/stats",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON graph stats with top hub modules",
     category: "knowledge"
   }
@@ -39,7 +39,10 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find all modules that depend on a given module (downstream blast radius)",
     endpoint: "GET /api/knowledge/dependents",
-    params: %{path: :required, module: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: true, in: "query", doc: "Module name (e.g. Giulia.Tools.Registry)"}
+    },
     returns: "JSON list of dependent modules with count",
     category: "knowledge"
   }
@@ -71,7 +74,10 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find all modules that a given module depends on (upstream dependencies)",
     endpoint: "GET /api/knowledge/dependencies",
-    params: %{path: :required, module: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: true, in: "query", doc: "Module name (e.g. Giulia.Tools.Registry)"}
+    },
     returns: "JSON list of dependency modules with count",
     category: "knowledge"
   }
@@ -103,7 +109,10 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get centrality score for a module (in-degree, out-degree, hub detection)",
     endpoint: "GET /api/knowledge/centrality",
-    params: %{path: :required, module: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: true, in: "query", doc: "Module name (e.g. Giulia.Tools.Registry)"}
+    },
     returns: "JSON centrality data with in/out degree and dependents list",
     category: "knowledge"
   }
@@ -135,7 +144,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get full impact map (upstream + downstream dependencies at given depth)",
     endpoint: "GET /api/knowledge/impact",
-    params: %{path: :required, module: :required, depth: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: true, in: "query", doc: "Module name (e.g. Giulia.Tools.Registry)"},
+      depth: %{
+        required: false,
+        in: "query",
+        default: "2",
+        doc: "Traversal depth (upstream+downstream)"
+      }
+    },
     returns: "JSON impact map with upstream, downstream, and function-level edges",
     category: "knowledge"
   }
@@ -186,7 +204,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Check behaviour-implementer integrity (missing/extra callbacks)",
     endpoint: "GET /api/knowledge/integrity",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON with consistent/fractured status and fracture details",
     category: "knowledge"
   }
@@ -252,7 +270,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Detect circular dependencies (strongly connected components)",
     endpoint: "GET /api/knowledge/cycles",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON list of cycle chains",
     category: "knowledge"
   }
@@ -282,7 +300,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Detect god modules (high complexity + centrality + function count)",
     endpoint: "GET /api/knowledge/god_modules",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON list of god modules with scores",
     category: "knowledge"
   }
@@ -312,7 +330,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Detect orphan specs (@spec without matching function definition)",
     endpoint: "GET /api/knowledge/orphan_specs",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON list of orphan specs",
     category: "knowledge"
   }
@@ -342,7 +360,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Analyze fan-in/fan-out (dependency direction imbalance)",
     endpoint: "GET /api/knowledge/fan_in_out",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON fan-in/fan-out analysis per module",
     category: "knowledge"
   }
@@ -372,7 +390,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Analyze coupling (function-level dependency strength between module pairs)",
     endpoint: "GET /api/knowledge/coupling",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON coupling scores between module pairs",
     category: "knowledge"
   }
@@ -402,7 +420,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Analyze API surface (public vs private function ratio per module)",
     endpoint: "GET /api/knowledge/api_surface",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON API surface analysis per module",
     category: "knowledge"
   }
@@ -424,7 +442,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get change risk score (composite refactoring priority per module)",
     endpoint: "GET /api/knowledge/change_risk",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON change risk scores ranked by priority",
     category: "knowledge"
   }
@@ -454,7 +472,11 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find shortest path between two modules in the dependency graph",
     endpoint: "GET /api/knowledge/path",
-    params: %{path: :required, from: :required, to: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      from: %{required: true, in: "query", doc: "Source module name"},
+      to: %{required: true, in: "query", doc: "Target module name"}
+    },
     returns: "JSON path with hop count or 'no path found'",
     category: "knowledge"
   }
@@ -490,7 +512,11 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Trace function-level logic flow between two MFA vertices (Dijkstra)",
     endpoint: "GET /api/knowledge/logic_flow",
-    params: %{path: :required, from: :required, to: :required},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      from: %{required: true, in: "query", format: "Module.func/arity", doc: "Source MFA vertex"},
+      to: %{required: true, in: "query", format: "Module.func/arity", doc: "Target MFA vertex"}
+    },
     returns: "JSON step-by-step function call path",
     category: "knowledge"
   }
@@ -539,7 +565,11 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find exemplar functions by concept with quality gate (@spec + @doc required)",
     endpoint: "GET /api/knowledge/style_oracle",
-    params: %{path: :required, q: :required, top_k: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      q: %{required: true, in: "query", doc: "Concept to find exemplars for"},
+      top_k: %{required: false, in: "query", default: "3", doc: "Number of exemplars"}
+    },
     returns: "JSON exemplar functions ranked by quality and relevance",
     category: "knowledge"
   }
@@ -578,8 +608,27 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Analyze rename/remove risk with callers, risk score, phased migration plan",
     endpoint: "POST /api/knowledge/pre_impact_check",
-    params: %{path: :required, module: :required, action: :required},
+    params: %{
+      path: %{required: true, in: "body", doc: "Absolute project path"},
+      module: %{required: true, in: "body", doc: "Module the target lives in"},
+      action: %{
+        required: true,
+        in: "body",
+        values: ~w(rename_function remove_function rename_module),
+        doc: "Operation to assess"
+      },
+      target: %{
+        required: false,
+        in: "body",
+        format: "func/arity",
+        doc: "Target function (required for function-level actions)"
+      },
+      new_name: %{required: false, in: "body", doc: "New name (required for rename actions)"}
+    },
     returns: "JSON risk analysis with affected callers and migration steps",
+    notes:
+      "404 if the vertex is not in the graph; 400 on unknown action or invalid target format. " <>
+        "When external-tool enrichments are ingested, affected_callers carry :enrichments.",
     category: "knowledge"
   }
   post "/pre_impact_check" do
@@ -633,7 +682,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get module heatmap (composite health scores 0-100, red/yellow/green zones)",
     endpoint: "GET /api/knowledge/heatmap",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON heatmap with per-module health scores",
     category: "knowledge"
   }
@@ -659,7 +708,21 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Find hub modules with low spec/doc coverage (unprotected hubs)",
     endpoint: "GET /api/knowledge/unprotected_hubs",
-    params: %{path: :required, hub_threshold: :optional, spec_threshold: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      hub_threshold: %{
+        required: false,
+        in: "query",
+        default: "3",
+        doc: "Min in-degree to count as a hub"
+      },
+      spec_threshold: %{
+        required: false,
+        in: "query",
+        default: "0.5",
+        doc: "Spec-coverage floor (0.0-1.0)"
+      }
+    },
     returns: "JSON list of unprotected hub modules with severity",
     category: "knowledge"
   }
@@ -688,7 +751,10 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Trace struct lifecycle (data flow across modules)",
     endpoint: "GET /api/knowledge/struct_lifecycle",
-    params: %{path: :required, struct: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      struct: %{required: false, in: "query", format: "Module.Name", doc: "Filter to one struct"}
+    },
     returns: "JSON struct lifecycle with creation, usage, and transformation points",
     category: "knowledge"
   }
@@ -770,7 +836,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent:
       "Run unified audit (unprotected hubs + struct lifecycle + duplicates + behaviour integrity)",
     endpoint: "GET /api/knowledge/audit",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns: "JSON comprehensive audit with all 4 analysis results",
     category: "knowledge"
   }
@@ -791,7 +857,7 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   @skill %{
     intent: "Get full module dependency graph in Cytoscape.js-ready format (nodes + edges)",
     endpoint: "GET /api/knowledge/topology",
-    params: %{path: :required},
+    params: %{path: %{required: true, in: "query", doc: "Absolute project path"}},
     returns:
       "JSON with nodes (id, fan_in, fan_out, score, zone) and edges (source, target, label)",
     category: "knowledge"
@@ -814,7 +880,23 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent:
       "Detect coding convention violations (error handling, OTP, atoms, pipes, docs) with optional per-rule per-module suppression",
     endpoint: "GET /api/knowledge/conventions",
-    params: %{path: :required, module: :optional, suppress: :optional, relevance: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      module: %{required: false, in: "query", doc: "Filter to one module"},
+      suppress: %{
+        required: false,
+        in: "query",
+        format: "rule:Mod1,Mod2;rule2:Mod3",
+        doc: "Skip specific rules for specific modules"
+      },
+      relevance: %{
+        required: false,
+        in: "query",
+        values: ~w(high medium all),
+        default: "all",
+        doc: "high -> error only; medium -> error + warning; all -> unfiltered"
+      }
+    },
     returns: "JSON violations grouped by severity, category, and file with convention references",
     category: "knowledge"
   }
@@ -851,7 +933,22 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent:
       "Verify L1 (ETS) matches L2 (CubDB) for the graph, AST, and/or metrics payloads after serialization round-trip. Parity + stratified sample identity per payload.",
     endpoint: "GET /api/knowledge/verify_l2",
-    params: %{path: :required, check: :optional, sample_per_label: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      check: %{
+        required: false,
+        in: "query",
+        values: ~w(graph ast metrics all),
+        default: "all",
+        doc: "Which payload to verify"
+      },
+      sample_per_label: %{
+        required: false,
+        in: "query",
+        default: "10",
+        doc: "Sample size per payload"
+      }
+    },
     returns:
       "JSON report with per-payload checks and an overall pass/fail. `check` ∈ graph | ast | metrics | all (default all).",
     category: "knowledge"
@@ -891,7 +988,16 @@ defmodule Giulia.Daemon.Routers.Knowledge do
     intent:
       "Verify function-level :calls edges round-trip from L1 (libgraph) to L3 (ArcadeDB). Stratified sample across resolution-path buckets; surfaces silent mismatches between stores.",
     endpoint: "GET /api/knowledge/verify_l3",
-    params: %{path: :required, sample_per_bucket: :optional},
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      sample_per_bucket: %{
+        required: false,
+        in: "query",
+        default: "10",
+        doc: "MFA sample size per resolution-path bucket"
+      }
+    },
+    notes: "Requires ArcadeDB (L3). overall: pass on a healthy system regardless of prior scans.",
     returns: "JSON report with per-bucket {ok, missing, errors} counts and overall pass/fail",
     category: "knowledge"
   }
