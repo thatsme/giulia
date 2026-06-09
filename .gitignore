@@ -71,3 +71,6 @@ docs/orders/quality-tooling/_*.txt
 # Dialyzer PLT cache (rebuilt from mix.lock; priv/plts/.gitkeep is tracked)
 priv/plts/*.plt
 priv/plts/*.plt.hash
+
+# Ad-hoc captured logs (e.g. test_output.log) — regenerable, never tracked
+*.log
