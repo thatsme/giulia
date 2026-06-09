@@ -168,9 +168,22 @@ the action is relevant (e.g., god module split recommendations).
 ### Stage 7: External Tool Findings (Build 156+, conditional)
 
 Run only when external-tool enrichments have been ingested for the project.
-A simple existence check before this stage: if `dead_code.dead[*].enrichments`
-is uniformly `%{}` across the response, no tool has been ingested for this
-project — skip Stage 7 entirely.
+**Use a positive "is the project enriched?" signal — the same one Section 10
+gates on (`tools_ingested(project) != []`), not a shape test.** The project is
+enriched if **any** `dead_code.dead[*].enrichments` map carries at least one
+tool key — *even when its list is empty* (`%{credo: []}`) — OR any entry carries
+an `:enrichments_summary` (the per-response cap fired). Only when **every**
+entry's `enrichments` is literally `%{}` with no tool key anywhere **and** no
+`:enrichments_summary` is present has the project never been enriched — skip
+Stage 7 entirely.
+
+Do **not** skip on uniform `%{credo: []}`: that is enriched-but-clean (the
+integration ran and found nothing on these targets), which is exactly what
+Stage 7 / Section 10 should report. A bare-shape check (`uniformly %{}`) is
+fragile — it also misreads the cap-cleared case (`apply_response_cap` resets
+every entry to `%{}` when the per-response cap fires, leaving the signal only
+in `:enrichments_summary`). Key off "is enriched?", one signal, shared with
+Section 10.
 
 The findings are not fetched via a dedicated bulk endpoint. They flow
 through two paths Stage 4 / Stage 5 already collect:
