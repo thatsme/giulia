@@ -126,6 +126,51 @@ defmodule Giulia.Enrichment.IngestTest do
     end
   end
 
+  describe "run_with_validation/3 — payload_path resolution" do
+    test "accepts a project-relative payload_path (the documented form)", %{project: project} do
+      # Regression: `tmp/credo.json` must resolve against the project dir, not
+      # the daemon cwd. Before the fix this was rejected as not-under-root.
+      File.mkdir_p!(Path.join(project, "tmp"))
+
+      File.write!(
+        Path.join([project, "tmp", "credo.json"]),
+        Jason.encode!(%{"issues" => [credo_issue("rel")]})
+      )
+
+      assert {:ok, %{ingested: 1, tool: :credo}} =
+               Ingest.run_with_validation("credo", project, "tmp/credo.json")
+
+      assert [%{message: "rel"}] = Reader.fetch_for_module(project, "X")[:credo]
+    end
+
+    test "still accepts an absolute payload_path", %{project: project} do
+      payload = write_credo_payload(project, [credo_issue("abs")])
+
+      assert {:ok, %{ingested: 1}} =
+               Ingest.run_with_validation("credo", project, payload)
+    end
+
+    test "rejects an empty payload_path", %{project: project} do
+      assert {:error, {:invalid_payload_path, ""}} =
+               Ingest.run_with_validation("credo", project, "")
+    end
+
+    test "rejects a relative path that escapes the allowed roots", %{project: project} do
+      # Path-traversal attempt: resolves outside /tmp, must be refused. Error
+      # reports the raw caller-supplied path, not the expanded one.
+      assert {:error, {:payload_path_not_under_root, "../../../../etc/passwd"}} =
+               Ingest.run_with_validation("credo", project, "../../../../etc/passwd")
+    end
+
+    test "rejects a relative path under an allowed root when the file is missing",
+         %{project: project} do
+      File.mkdir_p!(Path.join(project, "tmp"))
+
+      assert {:error, {:payload_not_regular_file, "tmp/absent.json"}} =
+               Ingest.run_with_validation("credo", project, "tmp/absent.json")
+    end
+  end
+
   defp credo_issue(message) do
     %{
       "category" => "refactor",

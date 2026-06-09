@@ -58,8 +58,8 @@ defmodule Giulia.Enrichment.Ingest do
   def run_with_validation(tool, project, payload_path) do
     with :ok <- validate_tool(tool),
          {:ok, resolved_project} <- validate_project(project),
-         :ok <- validate_payload_path(payload_path, resolved_project) do
-      run(tool, resolved_project, payload_path)
+         {:ok, resolved_payload} <- validate_payload_path(payload_path, resolved_project) do
+      run(tool, resolved_project, resolved_payload)
     end
   end
 
@@ -83,22 +83,29 @@ defmodule Giulia.Enrichment.Ingest do
 
   defp validate_project(other), do: {:error, {:invalid_project, other}}
 
-  defp validate_payload_path(payload_path, resolved_project) when is_binary(payload_path) do
-    cond do
-      payload_path == "" ->
-        {:error, {:invalid_payload_path, payload_path}}
+  defp validate_payload_path("", _resolved_project),
+    do: {:error, {:invalid_payload_path, ""}}
 
+  defp validate_payload_path(payload_path, resolved_project) when is_binary(payload_path) do
+    # Resolve relative payload paths against the project dir once, then use the
+    # absolute form for every downstream step (allow-list check, regular-file
+    # check, and the parse read in `run/3`). Errors still report the raw path
+    # the caller sent. Returns `{:ok, absolute_payload}` so `run/3` reads the
+    # resolved file rather than re-resolving a relative path against cwd.
+    resolved_payload = Path.expand(payload_path, resolved_project)
+
+    cond do
       Giulia.Context.ScanConfig.validate_enrichment_payload_path(
-        payload_path,
+        resolved_payload,
         resolved_project
       ) != :ok ->
         {:error, {:payload_path_not_under_root, payload_path}}
 
-      not File.regular?(payload_path) ->
+      not File.regular?(resolved_payload) ->
         {:error, {:payload_not_regular_file, payload_path}}
 
       true ->
-        :ok
+        {:ok, resolved_payload}
     end
   end
 

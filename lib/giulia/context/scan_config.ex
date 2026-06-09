@@ -168,7 +168,11 @@ defmodule Giulia.Context.ScanConfig do
           :ok | {:error, :path_not_allowed}
   def validate_enrichment_payload_path(payload_path, project_path)
       when is_binary(payload_path) and is_binary(project_path) do
-    expanded = Path.expand(payload_path)
+    # Resolve a relative payload_path against the project dir, not the daemon's
+    # cwd (`/app`). A project-relative path like `tmp/credo.json` must land
+    # under `<project>/tmp` to match the project-relative allowed roots; an
+    # absolute payload_path is unaffected (Path.expand/2 ignores the base).
+    expanded = Path.expand(payload_path, project_path)
 
     allowed_roots =
       enrichment_payload_roots()
