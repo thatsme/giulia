@@ -148,14 +148,19 @@ defmodule Giulia.Knowledge.Conventions do
     |> Enum.reject(fn f -> MapSet.member?(spec_set, {f.name, f.arity}) end)
     |> Enum.reject(fn f -> String.starts_with?(to_string(f.name), "__") end)
     |> Enum.map(fn f ->
+      # Attribute to the function's own module — not the file's first module.
+      # A file may declare several modules (co-located exceptions, multiple
+      # schemas); `first_module_name` would mis-stamp every spec gap.
+      mod = f[:module] || module_name
+
       violation(
         rule: "missing_spec",
-        message: "#{module_name}.#{f.name}/#{f.arity} has no @spec",
+        message: "#{mod}.#{f.name}/#{f.arity} has no @spec",
         category: "documentation",
         severity: "warning",
         file: file,
         line: f[:line] || f.line,
-        module: module_name,
+        module: mod,
         convention_ref: "Typespecs and Documentation > Every public function gets @spec"
       )
     end)
@@ -204,22 +209,59 @@ defmodule Giulia.Knowledge.Conventions do
   # ============================================================================
 
   defp tier2_checks(all_asts, project_path) do
+    # One line-range index for the whole project. Each AST-walk violation
+    # carries a line but no module, so we resolve {file, line} -> containing
+    # module per violation instead of stamping the file's first module on all
+    # of them (the multi-module mis-attribution bug).
+    index = Giulia.Context.LineResolver.build_function_index(project_path)
+
     Enum.flat_map(all_asts, fn {file, data} ->
       # Resolve the actual file path for reading
       resolved = resolve_file_path(file, project_path)
-      module_name = first_module_name(data[:modules] || [])
+      modules = data[:modules] || []
+      fallback_module = first_module_name(modules)
 
       case File.read(resolved) do
         {:ok, source} ->
           case Sourceror.parse_string(source) do
-            {:ok, ast} -> walk_ast(ast, file, module_name)
-            _ -> []
+            {:ok, ast} ->
+              ast
+              |> walk_ast(file, fallback_module)
+              |> Enum.map(&attribute_module(&1, index, modules, fallback_module))
+
+            _ ->
+              []
           end
 
         _ ->
           []
       end
     end)
+  end
+
+  # Re-attribute a Tier-2 violation to the module that actually contains its
+  # line. Primary path: the line-range index (line -> function -> true module),
+  # correct for nested/co-located modules. Fallback for a line outside any
+  # function (e.g. a module-attribute expression): the nearest module whose
+  # declaration starts at or before the line. Last resort: the file's first
+  # module (only when the file has no module line info).
+  defp attribute_module(violation, index, modules, fallback_module) do
+    module =
+      Giulia.Context.LineResolver.resolve_module(index, violation.file, violation.line) ||
+        nearest_module_by_line(modules, violation.line) ||
+        fallback_module
+
+    %{violation | module: module}
+  end
+
+  defp nearest_module_by_line(modules, line) do
+    modules
+    |> Enum.filter(fn m -> (m[:line] || m.line) <= line end)
+    |> Enum.max_by(fn m -> m[:line] || m.line end, fn -> nil end)
+    |> case do
+      nil -> nil
+      m -> m.name
+    end
   end
 
   @doc false

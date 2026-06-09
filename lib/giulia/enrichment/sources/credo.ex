@@ -10,7 +10,7 @@ defmodule Giulia.Enrichment.Sources.Credo do
 
   @behaviour Giulia.Enrichment.Source
 
-  alias Giulia.Context.Store.Query
+  alias Giulia.Context.LineResolver
   alias Giulia.Enrichment.Registry
 
   # Severity mapping lives in `priv/config/enrichment_sources.json`
@@ -30,70 +30,12 @@ defmodule Giulia.Enrichment.Sources.Credo do
       when is_binary(payload_path) and is_binary(project_path) do
     with {:ok, content} <- File.read(payload_path),
          {:ok, %{"issues" => issues}} when is_list(issues) <- Jason.decode(content) do
-      function_index = build_function_index(project_path)
+      function_index = LineResolver.build_function_index(project_path)
       {:ok, Enum.map(issues, &issue_to_finding(&1, function_index))}
     else
       {:error, reason} -> {:error, {:read_or_decode_failed, reason}}
       {:ok, other} -> {:error, {:unexpected_shape, other}}
     end
-  end
-
-  # ============================================================================
-  # Function-level line-range index
-  # ============================================================================
-  #
-  # `Query.list_functions/2` returns each function's start `:line` but no
-  # end line. We approximate end-line per file as
-  # `next_function_in_file.line - 1` after a stable per-file sort by
-  # start line. The last function in a file extends to `:infinity`.
-  #
-  # Returned shape: %{file_path => [%{module, function, arity, line_start, line_end}, ...]}
-  # The list per file is sorted by line_start ascending so range lookup
-  # can short-circuit.
-
-  @typep range_entry :: %{
-           module: String.t(),
-           function: String.t(),
-           arity: non_neg_integer(),
-           line_start: non_neg_integer(),
-           line_end: non_neg_integer() | :infinity
-         }
-
-  @spec build_function_index(String.t()) :: %{optional(String.t()) => [range_entry()]}
-  defp build_function_index(project_path) do
-    Query.list_functions(project_path, nil)
-    |> Enum.group_by(& &1.file)
-    |> Enum.into(%{}, fn {file, funcs} ->
-      sorted = Enum.sort_by(funcs, & &1.line)
-      ranged = with_end_lines(sorted)
-      {file, ranged}
-    end)
-  end
-
-  defp with_end_lines([]), do: []
-
-  defp with_end_lines(sorted_funcs) do
-    pairs = Enum.zip(sorted_funcs, tl(sorted_funcs) ++ [nil])
-
-    Enum.map(pairs, fn
-      {func, nil} ->
-        %{
-          module: func.module,
-          function: to_string(func.name),
-          arity: func.arity,
-          line_start: func.line,
-          line_end: :infinity
-        }
-
-      {func, next} ->
-        %{
-          module: func.module,
-          function: to_string(func.name),
-          arity: func.arity,
-          line_start: func.line,
-          line_end: max(func.line, next.line - 1)
-        }
-    end)
   end
 
   # ============================================================================
@@ -187,7 +129,7 @@ defmodule Giulia.Enrichment.Sources.Credo do
     file = issue["filename"]
     line = issue["line_no"]
 
-    candidates = candidates_for_line(function_index, file, line)
+    candidates = LineResolver.candidates_for_line(function_index, file, line)
 
     case candidates do
       [single] ->
@@ -259,18 +201,6 @@ defmodule Giulia.Enrichment.Sources.Credo do
       [] ->
         Map.merge(base, %{scope: :module, module: module})
     end
-  end
-
-  defp candidates_for_line(_function_index, nil, _line), do: []
-  defp candidates_for_line(_function_index, _file, nil), do: []
-
-  defp candidates_for_line(function_index, file, line) do
-    fns_in_file = Map.get(function_index, file, [])
-
-    Enum.filter(fns_in_file, fn entry ->
-      entry.line_start <= line and
-        (entry.line_end == :infinity or line <= entry.line_end)
-    end)
   end
 
   # ============================================================================
