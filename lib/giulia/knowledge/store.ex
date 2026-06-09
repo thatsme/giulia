@@ -562,6 +562,73 @@ defmodule Giulia.Knowledge.Store do
     |> List.flatten()
   end
 
+  # Cached analysis results that embed enrichment findings and therefore go
+  # stale when findings change. Only `:dead_code` attaches enrichments (via
+  # `Enrichment.Consumer.attach/2` in `Metrics`); `:heatmap`, `:change_risk`,
+  # `:god_modules`, and `:coupling` do not, and `pre_impact_check` is uncached.
+  @enrichment_dependent_metrics [:dead_code]
+
+  @doc """
+  Telemetry handler for `[:giulia, :enrichment, :ingest]`, attached by
+  `Giulia.Application` at startup. Drops the stale `:dead_code` cache for the
+  just-ingested project.
+
+  This is the cycle-free seam: `Enrichment.Ingest` only emits the event, so
+  there is no `Enrichment -> Knowledge` compile-time edge. The `project` in the
+  event metadata is the same resolved path `find_dead_code` caches under (both
+  flow through `Giulia.Core.PathMapper.resolve_path/1`), so the key matches.
+
+  **Must never raise.** A telemetry handler that raises is permanently detached
+  by `:telemetry` for the node's lifetime — silently — after which the cache
+  goes stale with no error. Both clauses are total and
+  `invalidate_enrichment_dependent_caches/1` itself never raises (it guards on
+  table existence and `Map.drop` is safe on an absent key).
+  """
+  @spec handle_enrichment_event([atom()], map(), map(), term()) :: :ok
+  def handle_enrichment_event(_event, _measurements, %{project: project}, _config)
+      when is_binary(project) do
+    invalidate_enrichment_dependent_caches(project)
+    :ok
+  end
+
+  def handle_enrichment_event(_event, _measurements, _metadata, _config), do: :ok
+
+  @doc """
+  Drop the cached analysis results that embed enrichment data for
+  `project_path`, so the next read recomputes against current findings.
+  Called via the telemetry handler above after an ingest changes the finding
+  set.
+
+  Scoped on purpose: only the `:dead_code` entry is cleared, leaving the
+  heavy graph metrics (`:heatmap`, `:change_risk`, `:god_modules`,
+  `:coupling`) cached — clearing the whole metrics map would force a full
+  recompute on every ingest.
+
+  `project_path` must be the resolved container path the `dead_code` cache
+  is keyed under (both this caller and the `dead_code` route derive it via
+  `Giulia.Core.PathMapper.resolve_path/1`). Returns `:cleared` when a
+  `:dead_code` entry was present, `:absent` otherwise — `:absent` is normal
+  (dead_code may never have been queried) and never an error.
+  """
+  @spec invalidate_enrichment_dependent_caches(project_path()) :: :cleared | :absent
+  def invalidate_enrichment_dependent_caches(project_path) when is_binary(project_path) do
+    case :ets.whereis(@table) do
+      :undefined ->
+        :absent
+
+      _tid ->
+        case :ets.lookup(@table, {:metrics, project_path}) do
+          [{_key, metrics}] ->
+            remaining = Map.drop(metrics, @enrichment_dependent_metrics)
+            :ets.insert(@table, {{:metrics, project_path}, remaining})
+            if Map.has_key?(metrics, :dead_code), do: :cleared, else: :absent
+
+          [] ->
+            :absent
+        end
+    end
+  end
+
   defp ets_get_graph(project_path) do
     case :ets.lookup(@table, {:graph, project_path}) do
       [{_, graph}] -> graph

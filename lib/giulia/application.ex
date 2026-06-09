@@ -177,7 +177,8 @@ defmodule Giulia.Application do
         []
       end
 
-    all_children = base_children ++ heavy_children ++ inference_children ++ tail_children ++ mcp_children
+    all_children =
+      base_children ++ heavy_children ++ inference_children ++ tail_children ++ mcp_children
 
     # Skip HTTP endpoint in test env (port already in use by the running daemon)
     children =
@@ -192,10 +193,28 @@ defmodule Giulia.Application do
 
     # Attach telemetry handlers after supervisor is up (Build 95)
     case result do
-      {:ok, _pid} -> Giulia.Monitor.Telemetry.attach()
-      _ -> :ok
+      {:ok, _pid} ->
+        Giulia.Monitor.Telemetry.attach()
+        attach_enrichment_cache_invalidation()
+
+      _ ->
+        :ok
     end
 
     result
+  end
+
+  # Drop the stale dead_code cache whenever enrichment findings change. The
+  # handler lives on Knowledge.Store; wiring it through the telemetry event
+  # Enrichment.Ingest already emits keeps Enrichment free of any compile-time
+  # dependency on Knowledge — a direct call there would close a dependency
+  # cycle (Knowledge.Store already transitively reaches Enrichment.Ingest).
+  defp attach_enrichment_cache_invalidation do
+    :telemetry.attach(
+      "giulia-enrichment-dead-code-cache-invalidation",
+      [:giulia, :enrichment, :ingest],
+      &Giulia.Knowledge.Store.handle_enrichment_event/4,
+      nil
+    )
   end
 end

@@ -4,6 +4,9 @@ defmodule Giulia.Enrichment.IngestTest do
   alias Giulia.Enrichment.{Ingest, Reader, Registry}
   alias Giulia.Persistence.Store
 
+  # Knowledge analysis cache (ETS) — used by the cache-invalidation seam test.
+  @knowledge_table :giulia_knowledge_graphs
+
   setup do
     project =
       Path.join(
@@ -168,6 +171,30 @@ defmodule Giulia.Enrichment.IngestTest do
 
       assert {:error, {:payload_not_regular_file, "tmp/absent.json"}} =
                Ingest.run_with_validation("credo", project, "tmp/absent.json")
+    end
+  end
+
+  describe "run/3 — dead_code cache invalidation (Bug #3)" do
+    test "clears the cached :dead_code entry for the ingested project, scoped", %{
+      project: project
+    } do
+      # Reproduce the collaudo's stale-cache mechanism: a dead_code result was
+      # cached (here, with stale %{} enrichments) BEFORE the ingest. The ingest
+      # must drop that cached entry under the exact same project key so the next
+      # read recomputes — while leaving the heavy graph metrics cached.
+      :ets.insert(
+        @knowledge_table,
+        {{:metrics, project}, %{dead_code: %{dead: [:stale]}, heatmap: %{a: 1}}}
+      )
+
+      on_exit(fn -> :ets.delete(@knowledge_table, {:metrics, project}) end)
+
+      payload = write_credo_payload(project, [credo_issue("x")])
+      assert {:ok, _} = Ingest.run("credo", project, payload)
+
+      [{_, metrics}] = :ets.lookup(@knowledge_table, {:metrics, project})
+      refute Map.has_key?(metrics, :dead_code), "ingest must drop the stale dead_code cache"
+      assert Map.has_key?(metrics, :heatmap), "ingest must NOT clear unrelated graph metrics"
     end
   end
 

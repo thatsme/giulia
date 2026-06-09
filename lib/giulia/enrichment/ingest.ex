@@ -131,6 +131,13 @@ defmodule Giulia.Enrichment.Ingest do
            Writer.replace_for(tool_atom, project_path, findings) do
       duration = System.monotonic_time(:millisecond) - started
 
+      # The finding set changed, so the cached dead_code result (the only
+      # cached analysis that embeds enrichment findings) is now stale. We do
+      # NOT invalidate it with a direct call here: Knowledge.Store already
+      # transitively reaches Enrichment.Ingest, so an Enrichment -> Knowledge
+      # call edge would close a large dependency cycle. Instead, the invalidation
+      # rides this telemetry event — Giulia.Knowledge.Store attaches a handler at
+      # startup. Runtime coupling via the event bus, no compile-time edge.
       :telemetry.execute(
         [:giulia, :enrichment, :ingest],
         %{count: persisted, targets: targets, duration_ms: duration, replaced: replaced},
