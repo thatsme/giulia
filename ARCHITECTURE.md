@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 163 · v0.3.8 · 2026-06-08
+> **Document version**: Build 164 · v0.3.8 · 2026-06-09
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -1064,6 +1064,7 @@ returning after a few releases.
 
 | Doc version | Date | Highlights |
 |---|---|---|
+| Build 164 / v0.3.8 | 2026-06-09 | Plug-collaudo bug-fix round (3 fixes). Conventions attribution: extracted `Context.LineResolver` (line→function→module) shared by the conventions analyzer and the Credo correlator, fixing multi-module files that mis-attributed every finding to the file's first module. Enrichment `payload_path`: project-relative paths (`tmp/credo.json`) now resolve against the project dir, matching the documented contract. `dead_code` cache: invalidated on enrichment ingest via a telemetry handler (`[:giulia, :enrichment, :ingest]` → `Knowledge.Store`) — a direct call would close a 139-module dependency cycle. Report Stage 7 existence check switched from a shape test to the positive `tools_ingested != []` signal (aligned with Section 10). |
 | Build 163 / v0.3.8 | 2026-06-08 | New **Edge / Facade layer** subsection (Section 13) + request-flow diagram updated: the MCP-thin-proxy refactor introduced `Daemon.Edge` (shared resolution + scan-readiness) and per-domain `Knowledge.Facade` / `Search.Facade` (coercion, defaults, response shape) so REST and MCP route through one contract instead of re-implementing it. Closed REST/MCP divergences (MCP gained scan-readiness + embedding-availability signals; `search/semantic` converged on one canonical shape + total `count`; `schema_version` single-sourced). Build 162: `@skill` params migrated to structured maps (discovery/MCP-inputSchema metadata). |
 | Build 161 / v0.3.8 | 2026-04-29 | Configuration surface table grew to 5 entries (`dispatch_invariants.json`, `relevance.json` added). Section 5 split: `External Tool Enrichment`, `Knowledge Graph`, `Intelligence Layer`, `MCP Layer`, and `Runtime Layer` promoted from H3 to H2. New `Configuration Surface` H2 (lifted from a Section 4 subsection with brief design-philosophy framing). New `Known Blind Spots` H2 listing what the AST passes structurally cannot see and the residual taxonomy. Consolidator framing corrected: doc now acknowledges it was a skeleton until v0.3.7. The 3 non-MCP-compatible endpoints named inline. **Inference / local-chat subsystem (TIER 3, OODA-loop pipeline, `POST /api/command`, write-tools, LLM provider tree) marked deprecated** — canonical LLM integration is now external clients calling Giulia over MCP / REST. Removal scheduled for v0.4.0. |
 | Build 160 / v0.3.7 | 2026-04-29 | Doc baseline alongside the 2026-04-29 trio (orchestration lift, self-scan SIGSEGV fix, verifier parity). |
