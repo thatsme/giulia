@@ -939,13 +939,17 @@ defmodule Giulia.Knowledge.Builder do
   defp extract_defdelegate_targets(ast, all_modules) do
     {_ast, targets} =
       Macro.prewalk(ast, MapSet.new(), fn
-        {:defdelegate, _meta, [_call, [to: {:__aliases__, _, parts}]]} = node, set ->
-          mod = Enum.map_join(parts, ".", &Atom.to_string/1)
+        {:defdelegate, _meta, [_call, opts]} = node, set when is_list(opts) ->
+          case defdelegate_target(opts) do
+            {:ok, mod} ->
+              if MapSet.member?(all_modules, mod) do
+                {node, MapSet.put(set, mod)}
+              else
+                {node, set}
+              end
 
-          if MapSet.member?(all_modules, mod) do
-            {node, MapSet.put(set, mod)}
-          else
-            {node, set}
+            :error ->
+              {node, set}
           end
 
         node, set ->
@@ -954,6 +958,30 @@ defmodule Giulia.Knowledge.Builder do
 
     targets
   end
+
+  # The `to:` option of a defdelegate, tolerant of both keyword shapes:
+  # plain `[to: Mod]` (Code.string_to_quoted) and Sourceror's key-wrapped
+  # `[{{:__block__, _, [:to]}, Mod}]`, single- or multi-pair (`as:` etc.).
+  # Normalize the KEY first, then match — fixing only the wrapped shape
+  # would break the plain path, the mirror image of the original bug
+  # (the old clause matched only plain single-pair `[to: ...]` and never
+  # fired on Sourceror output, silently degrading defdelegate deps to
+  # Pass-6 :references on uncompiled projects).
+  defp defdelegate_target(opts) do
+    Enum.find_value(opts, :error, fn
+      {key, {:__aliases__, _, parts}} ->
+        if unwrap_keyword_key(key) == :to do
+          {:ok, Enum.map_join(parts, ".", &safe_part_to_string/1)}
+        end
+
+      _other ->
+        nil
+    end)
+  end
+
+  defp unwrap_keyword_key({:__block__, _meta, [key]}) when is_atom(key), do: key
+  defp unwrap_keyword_key(key) when is_atom(key), do: key
+  defp unwrap_keyword_key(_other), do: nil
 
   # Resolve __MODULE__ AST tuples in alias parts to the enclosing module name.
   # Sourceror represents `__MODULE__.Foo` as [{:__MODULE__, meta, nil}, :Foo].

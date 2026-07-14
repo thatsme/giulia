@@ -71,12 +71,11 @@ defmodule Giulia.Knowledge.GoldenFixtureTest do
                    {"Golden.Application", "Golden.Server", :references},
                    # Pass 2 — explicit alias
                    {"Golden.Consumer", "Golden.Util", :depends_on},
-                   # KNOWN BUG pinned as-is: SHOULD be :depends_on from the
-                   # defdelegate pass, but extract_defdelegate_targets/2 never
-                   # matches Sourceror's {:__block__, _, [:to]} keyword shape —
-                   # Pass 6 catches the alias instead. See golden_facade.ex.
-                   # Flip to :depends_on in the same commit that fixes the matcher.
-                   {"Golden.Facade", "Golden.Util", :references},
+                   # defdelegate pass — single-pair and multi-pair (as:) opts.
+                   # History: degraded to :references until the Sourceror
+                   # keyword-shape fix (this suite's maiden-run catch).
+                   {"Golden.Facade", "Golden.Util", :depends_on},
+                   {"Golden.Facade", "Golden.Data", :depends_on},
                    # Pass 6 — MFA-form aliases land AFTER promotion, so :references
                    {"Golden.Jobs", "Golden.Util", :references},
                    # Pass 2 — require emits both labels (pinned as-is)

@@ -1,14 +1,14 @@
-# KNOWN BUG, pinned as-is (found by this golden's maiden run, 2026-07-14):
-# the defdelegate pass SHOULD emit Golden.Facade -> Golden.Util :depends_on,
-# but `extract_defdelegate_targets/2` (builder.ex) pattern-matches the plain
-# keyword shape `[to: {:__aliases__, ...}]` while the pass parses with
-# Sourceror, which wraps keyword keys in {:__block__, _, [:to]} — the match
-# never fires on real input. Pass 6 catches the alias as a fallback:
-#   => Golden.Facade -> Golden.Util :references   (CURRENT, buggy label)
-# On compiled projects xref (Pass 3) masks this by emitting call edges;
-# on uncompiled projects (typical third-party analysis) defdelegate deps
-# degrade to :references. When the matcher is fixed, this golden MUST be
-# updated to :depends_on in the same commit — that update is the fix's test.
+# defdelegate pass (runs with Pass 5, before references): module-level
+# :depends_on per `to:` target. Two keyword shapes pinned deliberately —
+# Sourceror wraps keyword keys in {:__block__, _, [:to]}, so the matcher
+# must tolerate wrapped AND plain forms, single- and multi-pair opts:
+#   => Golden.Facade -> Golden.Util :depends_on   (single-pair `to:`)
+#   => Golden.Facade -> Golden.Data :depends_on   (two-pair `to: ..., as:`)
+# Pass 6: both aliases suppressed by these module edges.
+# History: until the Sourceror keyword-shape fix these degraded to
+# :references — a real under-extraction found by this golden's maiden run.
 defmodule Golden.Facade do
   defdelegate normalize(value), to: Golden.Util
+
+  defdelegate build(field), to: Golden.Data, as: :from_field
 end
