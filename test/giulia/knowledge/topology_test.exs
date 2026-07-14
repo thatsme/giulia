@@ -185,6 +185,55 @@ defmodule Giulia.Knowledge.TopologyTest do
       assert result.count == 1
       assert length(hd(result.cycles)) == 2
     end
+
+    # Invariant: :references edges (Builder Pass 6 wiring facts) do not
+    # count as dependency coupling for cycle detection. A loop closed only
+    # by a :references edge is not a circular dependency.
+    test "cycle closed only by a :references edge is not reported" do
+      wiring =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("X", :module)
+        |> Graph.add_vertex("Y", :module)
+        |> Graph.add_edge("X", "Y", label: :depends_on)
+        |> Graph.add_edge("Y", "X", label: :references)
+
+      {:ok, result} = Topology.cycles(wiring)
+      assert result.count == 0
+      assert result.cycles == []
+    end
+
+    # Invariant: when the same vertex pair carries both a :calls and a
+    # :references edge (parallel labeled edges), dropping the :references
+    # edge must not drop the :calls edge with it — guards against the
+    # filter (or libgraph parallel-edge handling) collapsing the pair.
+    test "co-located :calls and :references edges: :calls survives the filter" do
+      mixed =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("X", :module)
+        |> Graph.add_vertex("Y", :module)
+        |> Graph.add_edge("X", "Y", label: :calls)
+        |> Graph.add_edge("X", "Y", label: :references)
+        |> Graph.add_edge("Y", "X", label: :calls)
+
+      {:ok, result} = Topology.cycles(mixed)
+      assert result.count == 1
+      assert hd(result.cycles) == ["X", "Y"]
+    end
+
+    # Invariant: labeled call/dependency edges — including synthesized
+    # {:calls, _} tuple labels — still participate in cycle detection.
+    test "cycle through labeled call edges is still detected" do
+      calls =
+        Graph.new(type: :directed)
+        |> Graph.add_vertex("X", :module)
+        |> Graph.add_vertex("Y", :module)
+        |> Graph.add_edge("X", "Y", label: :calls)
+        |> Graph.add_edge("Y", "X", label: {:calls, :promoted})
+
+      {:ok, result} = Topology.cycles(calls)
+      assert result.count == 1
+      assert length(hd(result.cycles)) == 2
+    end
   end
 
   # ============================================================================

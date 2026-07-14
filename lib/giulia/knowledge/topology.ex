@@ -173,17 +173,32 @@ defmodule Giulia.Knowledge.Topology do
         :module in labels
       end)
 
-    # Build a module-only subgraph
-    module_graph =
-      Enum.reduce(module_vertices, Graph.new(type: :directed), fn v, g ->
-        g = Graph.add_vertex(g, v)
+    module_set = MapSet.new(module_vertices)
 
-        # Only add edges between modules (skip function edges)
-        Graph.out_neighbors(graph, v)
-        |> Enum.filter(fn neighbor -> neighbor in module_vertices end)
-        |> Enum.reduce(g, fn neighbor, g2 ->
-          Graph.add_edge(g2, v, neighbor)
-        end)
+    base_graph =
+      Enum.reduce(module_vertices, Graph.new(type: :directed), fn v, g ->
+        Graph.add_vertex(g, v)
+      end)
+
+    # Build a module-only subgraph. Edge labels matter here: :references
+    # edges (Builder Pass 6 — supervision children lists, module atoms
+    # passed to framework macros) are wiring facts, not dependency
+    # coupling, and carry a distinct label precisely so structural views
+    # can filter them out. Counting them collapsed most of this codebase
+    # into one fake SCC (Application -> children :references + any module
+    # referencing Application closed a cycle through the supervision
+    # root). Unlabeled edges are kept — PlanValidator's proposed-edge
+    # clone adds edges without labels.
+    module_graph =
+      graph
+      |> Graph.edges()
+      |> Enum.filter(fn e ->
+        e.label != :references and
+          MapSet.member?(module_set, e.v1) and
+          MapSet.member?(module_set, e.v2)
+      end)
+      |> Enum.reduce(base_graph, fn e, g ->
+        Graph.add_edge(g, e.v1, e.v2)
       end)
 
     # Find strongly connected components with > 1 member = cycles
