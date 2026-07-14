@@ -265,8 +265,8 @@ defmodule Giulia.Knowledge.Store.Reader do
         |> Map.put(:by_category,
           violations
           |> Enum.group_by(& &1.category)
-          |> Enum.map(fn {k, vs} -> {k, length(vs)} end)
-          |> Enum.sort_by(fn {_k, n} -> -n end)
+          |> Enum.sort_by(fn {_cat, vs} -> -length(vs) end)
+          |> Map.new()
         )
         |> Map.put(:relevance, bucket)
     end
