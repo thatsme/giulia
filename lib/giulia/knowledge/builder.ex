@@ -884,14 +884,42 @@ defmodule Giulia.Knowledge.Builder do
   defp resolve_with_fallback(parts, caller_module, prefixes, all_modules) do
     direct = resolve_module_parts(parts, caller_module)
 
-    if MapSet.member?(all_modules, direct) do
-      {:ok, direct}
-    else
-      Enum.find_value(prefixes, :not_found, fn prefix ->
-        candidate = "#{prefix}.#{direct}"
-        if MapSet.member?(all_modules, candidate), do: {:ok, candidate}, else: nil
-      end)
+    cond do
+      MapSet.member?(all_modules, direct) ->
+        {:ok, direct}
+
+      loadable_runtime_module?(direct) ->
+        # The bare alias names a module loadable in the analyzer's own
+        # runtime (Elixir/OTP stdlib or a Giulia dep) — e.g. `Application`,
+        # `Version`, `Registry`. The stdlib reading wins: the prefix
+        # fallback below would misresolve it to a project module.
+        # Concretely, `Application.get_env/2` inside any `MyApp.*` module
+        # used to fabricate a `MyApp.X -> MyApp.Application` :references
+        # edge, closing a fake supervision cycle in every analyzed project.
+        :not_found
+
+      true ->
+        Enum.find_value(prefixes, :not_found, fn prefix ->
+          candidate = "#{prefix}.#{direct}"
+          if MapSet.member?(all_modules, candidate), do: {:ok, candidate}, else: nil
+        end)
     end
+  end
+
+  # True when `name` ("Application", "Ecto.Query") is a loadable module in
+  # the current runtime. `String.to_existing_atom` — never `to_atom`, since
+  # unbounded analyzed-project names must not mint atoms: if the atom does
+  # not exist, no loaded code has ever referenced such a module, which is
+  # already the answer. Same pattern as `Daemon.Helpers.safe_to_node_atom/1`.
+  defp loadable_runtime_module?(name) do
+    module =
+      try do
+        String.to_existing_atom("Elixir." <> name)
+      rescue
+        ArgumentError -> nil
+      end
+
+    module != nil and Code.ensure_loaded?(module)
   end
 
   # Parent-namespace prefixes of a module, deepest first.

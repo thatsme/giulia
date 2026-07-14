@@ -688,6 +688,69 @@ defmodule Giulia.Knowledge.BuilderTest do
         end
       )
     end
+
+    # Invariant: a bare alias that names a loadable runtime module
+    # (stdlib/dep) must keep its stdlib meaning — the prefix fallback may
+    # not repurpose it as a project module. Regression for the fabricated
+    # `MyApp.X -> MyApp.Application` edges that closed a fake supervision
+    # cycle in every analyzed project.
+    test "stdlib alias colliding with a project module does not resolve via prefix fallback" do
+      with_sources(
+        %{
+          "app.ex" => """
+          defmodule AlexClaw.Application do
+            def start(_type, _args), do: Supervisor.start_link([], strategy: :one_for_one)
+          end
+          """,
+          "provider.ex" => """
+          defmodule AlexClaw.Provider do
+            def api_key do
+              Application.get_env(:alex_claw, :api_key)
+            end
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          refute Enum.any?(
+                   edges(graph, "AlexClaw.Provider", "AlexClaw.Application"),
+                   fn e -> e.label == :references end
+                 ),
+                 "stdlib Application call must not fabricate a :references edge to AlexClaw.Application"
+        end
+      )
+    end
+
+    # Invariant: direct membership in all_modules beats the stdlib
+    # suppression — a project module literally named after a stdlib module
+    # (structurally valid, semantically unusual) still resolves directly.
+    test "project module literally named Application still gets a direct :references edge" do
+      with_sources(
+        %{
+          "application.ex" => """
+          defmodule Application do
+            def boot, do: :ok
+          end
+          """,
+          "user.ex" => """
+          defmodule AlexClaw.User do
+            def children_spec do
+              [Application]
+            end
+          end
+          """
+        },
+        fn ast_data ->
+          graph = Builder.build_graph(ast_data)
+
+          assert Enum.any?(
+                   edges(graph, "AlexClaw.User", "Application"),
+                   fn e -> e.label == :references end
+                 )
+        end
+      )
+    end
   end
 
   # ============================================================================
