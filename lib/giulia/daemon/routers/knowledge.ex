@@ -725,7 +725,10 @@ defmodule Giulia.Daemon.Routers.Knowledge do
       check: %{
         required: false,
         in: "query",
-        format: "blocking_init|missing_catch_all_handle_info",
+        format:
+          "blocking_init|missing_catch_all_handle_info|cross_process_call_cycle|" <>
+            "sync_call_chain_depth|singleton_bottleneck|infinity_call_timeout|" <>
+            "one_for_all_amplification|unlinked_start",
         doc: "Filter to a single check"
       },
       suppress: %{

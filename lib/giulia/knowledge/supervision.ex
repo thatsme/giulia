@@ -103,10 +103,32 @@ defmodule Giulia.Knowledge.Supervision do
       |> Enum.reject(&MapSet.member?(child_keys, &1))
       |> Enum.sort()
 
+    # Counting edge sources alone undercounts: a DynamicSupervisor has no child
+    # edges by construction, so a tree containing two of them reported
+    # `supervisor_count: 2` while showing four supervisors — a count that
+    # contradicts the tree it describes.
+    #
+    # The union with `:supervisor`-labelled vertices is still a lower bound, and
+    # deliberately so: Pass 12 never re-labels an existing vertex, so a
+    # supervisor that is also a project module keeps `[:module]` alone and is
+    # only counted here if it has children. Under-reporting is the safe
+    # direction for a summary figure.
+    labelled_supervisors =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(&(:supervisor in Graph.vertex_labels(graph, &1)))
+      |> MapSet.new()
+
+    supervisors =
+      by_parent
+      |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(labelled_supervisors)
+
     %{
       roots: Enum.map(roots, &build_node(&1, by_parent, MapSet.new())),
       edges: Enum.sort_by(edges, &{&1.from, &1.order}),
-      supervisor_count: by_parent |> Map.keys() |> length(),
+      supervisor_count: MapSet.size(supervisors),
       supervised_count: MapSet.size(child_keys)
     }
   end
@@ -263,7 +285,7 @@ defmodule Giulia.Knowledge.Supervision do
     opts = resolve_expr(opts_expr, bindings, 0)
     dynamic? = mod == :DynamicSupervisor
 
-    name = opts |> keyword_value(:name) |> render_name()
+    name = opts |> keyword_value(:name) |> render_name(module)
     strategy = opts |> keyword_value(:strategy) |> render_atom()
 
     {children, unresolved?} =
@@ -324,6 +346,16 @@ defmodule Giulia.Knowledge.Supervision do
   # Resolve an expression to a plain value where the bound rules allow it.
   # Returns `:unresolved` for anything outside them.
   defp resolve_expr(_expr, _bindings, depth) when depth > @max_binding_depth, do: :unresolved
+
+  # `__MODULE__` parses as `{:__MODULE__, meta, ctx}`, which matches the
+  # variable clause below — `:__MODULE__` is an atom and so is the context. It
+  # would then resolve to no binding and return the `:unresolved` sentinel,
+  # which `render_name/2` faithfully rendered as a process named
+  # `":unresolved"`. Since `name: __MODULE__` is the most common supervisor
+  # naming idiom in Elixir, that fabricated a root for most real applications.
+  # Pass it through intact so the caller, which knows the enclosing module, can
+  # resolve it.
+  defp resolve_expr({:__MODULE__, _meta, ctx} = ast, _bindings, _depth) when is_atom(ctx), do: ast
 
   defp resolve_expr({var, _meta, ctx}, bindings, depth) when is_atom(var) and is_atom(ctx) do
     case Map.fetch(bindings, var) do
@@ -560,9 +592,20 @@ defmodule Giulia.Knowledge.Supervision do
   # Registered names are either module aliases (`name: Giulia.Registry`) or
   # bare atoms (`name: :my_server`). Bare atoms keep their leading colon so a
   # name can never collide with a module key.
-  defp render_name({:__aliases__, _, _} = alias_ast), do: render_module(alias_ast)
-  defp render_name(atom) when is_atom(atom) and not is_nil(atom), do: inspect(atom)
-  defp render_name(_other), do: nil
+  defp render_name(ast), do: render_name(ast, nil)
+
+  # `enclosing` resolves `name: __MODULE__`. Nil when the caller has no module
+  # in hand (a child spec's own `name:`), in which case an unresolvable name
+  # yields nil and the child falls back to its module — a missing name is
+  # recoverable, a wrong one is not.
+  defp render_name({:__MODULE__, _meta, ctx}, enclosing) when is_atom(ctx), do: enclosing
+  defp render_name({:__aliases__, _, _} = alias_ast, _enclosing), do: render_module(alias_ast)
+
+  # The resolution sentinel must never become a vertex key.
+  defp render_name(:unresolved, _enclosing), do: nil
+
+  defp render_name(atom, _enclosing) when is_atom(atom) and not is_nil(atom), do: inspect(atom)
+  defp render_name(_other, _enclosing), do: nil
 
   defp render_atom(atom) when is_atom(atom) and not is_nil(atom), do: Atom.to_string(atom)
   defp render_atom(_other), do: nil

@@ -324,6 +324,60 @@ still crashes the pool. It also confirms the guard semantics: that clause is
 correctly *not* counted as a catch-all, because the guard is what makes it
 selective.
 
+### Final Validation — live daemon, 2026-07-26
+
+Run through the real pipeline (`/api/index/scan` → `Context.Store` →
+`Builder.build_graph/1` → ETS → facade → HTTP), not the test harness. Plug and
+Bandit are ordinary Elixir codebases used here purely as analysis inputs.
+
+| Project | Files | Supervisors | Supervised | Root | otp_risks |
+|---|---|---|---|---|---|
+| Giulia | 189 | 4 | 30 | `Giulia.Supervisor` | 10 (9 warning, 1 info) |
+| Plug | 44 | 2 | 3 | `Plug.Application` | 1 warning |
+| Bandit | 67 | 1 | 1 | `Bandit.Application` | 0 |
+
+Plausible was skipped: that checkout has no `mix.exs`, so it scanned 0 files.
+Correct behaviour, not a scanner defect.
+
+**Giulia's tree matches `application.ex` exactly** by hand-inspection — 29
+children in source order, `conditional: true` on precisely tiers 2/3/5 plus
+`Bandit`, which is the Phase 1 acceptance criterion satisfied through the live
+pipeline. `blocking_init` is 0, with `Persistence.WarmRestore` clean: the
+brief's designated negative case, where a flag would mean the check is wrong.
+
+**Plug's one finding is a true positive.** `Plug.Upload.Supervisor.init/1` calls
+`File.cwd!()`, flagged at warning tier rather than error — exactly the tiering
+intent, since a cheap local read at boot is legitimate but worth inventorying.
+
+**Bandit's zero is honest but weak evidence.** Its real supervision lives in
+Thousand Island, a dependency outside the scan, so the tree correctly stops at
+`Bandit.Application → Bandit.Clock`.
+
+#### Two defects this run caught that the entire test suite missed
+
+**1. `name: __MODULE__` produced a fabricated root.** `__MODULE__` parses as
+`{:__MODULE__, meta, ctx}`, which matched the *variable* clause in
+`resolve_expr/3` (`:__MODULE__` is an atom, so is the context), found no
+binding, and returned the `:unresolved` sentinel — which `render_name/2` then
+rendered as a process literally named `":unresolved"`.
+
+This is the most common supervisor-naming idiom in Elixir. It survived because
+every fixture used an alias (`name: Demo.Sup`) and so does Giulia's own
+`application.ex` (`name: Giulia.Supervisor`) — the self-scan and the golden
+fixtures were structurally incapable of catching it. Only third-party code did.
+Regression test added.
+
+**2. `supervisor_count` contradicted its own tree.** It counted edge *sources*,
+so DynamicSupervisors — childless by construction — were excluded: Giulia
+reported 2 supervisors while displaying 4. Now the union of edge sources and
+`:supervisor`-labelled vertices. Still a documented lower bound, because Pass 12
+never re-labels an existing vertex, so a supervisor that is also a project
+module keeps `[:module]` alone and is counted only if it has children.
+
+The general lesson, consistent with the `singleton_bottleneck` fan-in bug in
+Phase 4: **a self-scan validates against one codebase's idioms.** Both bugs were
+invisible to fixtures written by the same person who wrote the checks.
+
 ### 3.6 Cheaper heuristics — severity: info
 
 Slot into the existing Tier 2 conventions engine as an `otp_deep` rule family, no new machinery:

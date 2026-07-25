@@ -99,6 +99,35 @@ defmodule Giulia.Knowledge.SupervisionTest do
       refute Enum.any?(decl.children, & &1.conditional)
     end
 
+    test "name: __MODULE__ resolves to the enclosing module, not the sentinel" do
+      # Regression: `__MODULE__` parses as `{:__MODULE__, meta, ctx}`, which
+      # matched the variable clause in resolve_expr/3, found no binding, and
+      # returned the `:unresolved` sentinel — rendered as a process literally
+      # named ":unresolved". Every fixture here used an alias (`name: Demo.Sup`)
+      # and so did Giulia's own application.ex, so the entire suite missed the
+      # most common supervisor-naming idiom in Elixir. Caught by running
+      # against Plug.
+      source = """
+      defmodule Demo.App do
+        use Application
+
+        def start(_type, _args) do
+          children = [Demo.Worker]
+          Supervisor.start_link(children, name: __MODULE__, strategy: :one_for_one)
+        end
+      end
+      """
+
+      decls = extract_source(source)
+
+      refute Enum.any?(decls, &(&1.key == ":unresolved")),
+             "the resolution sentinel leaked into a vertex key"
+
+      assert decl = Enum.find(decls, &(&1.key == "Demo.App"))
+      assert decl.registered_name == "Demo.App"
+      assert Enum.map(decl.children, & &1.key) == ["Demo.Worker"]
+    end
+
     test "refuses to guess at function-built child lists" do
       source = """
       defmodule Demo.App do
