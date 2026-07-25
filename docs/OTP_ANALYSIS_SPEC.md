@@ -267,6 +267,31 @@ that the check fires at all — treat it as load-bearing, not illustrative. Runs
 against Plug / Bandit / Plausible are still outstanding and are the way to get
 real-world positives.
 
+#### `singleton_bottleneck`: why `Knowledge.Store` is correctly NOT flagged
+
+The Phase 4 brief predicts `Knowledge.Store` and `Context.Store` as the
+singleton-bottleneck candidates, "high fan-in by design". The check reports
+neither, and that is the right answer — the prediction measures a different
+quantity.
+
+| | `Knowledge.Store` |
+|---|---|
+| modules referencing it | 19 |
+| `defdelegate … to: Reader` (bypass the process) | 31 |
+| `GenServer.call(__MODULE__, …)` sites | 4 |
+| distinct modules calling those 4 | **4** (threshold 8) |
+
+Module fan-in and *synchronous process* fan-in diverge here, and the divergence
+is the whole point: `Store.Reader` exists precisely so bulk reads go straight to
+ETS instead of queueing on the GenServer. Those 31 delegated functions never
+touch the process, so counting their callers would report a bottleneck that was
+deliberately engineered away.
+
+A check that flagged `Knowledge.Store` would be measuring "how popular is this
+module", not "how much serialises through this process". The mitigation is real
+and the check confirms it works. Recorded here because a future reader comparing
+against the brief will otherwise read this zero as a missing finding.
+
 The nine: `Storage.Arcade.Consolidator`, `Inference.Orchestrator`,
 `Persistence.Writer`, `Core.ContextManager`, `Inference.Pool`,
 `Persistence.WarmRestore`, `Inference.Approval`, `Core.ProjectContext`,

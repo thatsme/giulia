@@ -24,6 +24,7 @@ defmodule Giulia.Knowledge.Otp do
   """
 
   alias Giulia.Config.OtpChecks
+  alias Giulia.Runtime.Collector
 
   @behaviour_aliases ["GenServer", "Supervisor"]
 
@@ -478,54 +479,207 @@ defmodule Giulia.Knowledge.Otp do
   Singleton GenServers receiving synchronous calls from many distinct modules.
 
   A singleton serialises every caller, so high static fan-in is a *suspicion* of
-  a contention point — not yet a finding. Phase 4 promotes it to `error` when
-  Collector runtime data agrees on queue depth.
+  a contention point. `runtime` promotes it to a confirmed finding: pass a
+  `%{registered_name => %{max_queue_len:, window:}}` map, or `nil` to read the
+  Collector ring buffer, or `:unavailable` to force the static-only path.
+
+  ## Fan-in is measured at the API, not at the `GenServer.call`
+
+  The obvious implementation — count `GenServer.call(Target, …)` sites — is
+  wrong for idiomatic Elixir, and shipped that way in the first Phase 3 commit.
+  The universal pattern wraps the call in a public function:
+
+      def rebuild(path), do: GenServer.call(__MODULE__, {:rebuild, path})
+
+  so the target argument is *always* `__MODULE__` and the real callers are the
+  modules invoking `Store.rebuild/1`, one level up. Measured at the call site,
+  fan-in is structurally always zero and the check could never fire on
+  well-written code — a false negative that a self-scan reporting 0 looks
+  identical to a clean codebase.
+
+  Fan-in is therefore: distinct modules calling any public function of the
+  singleton whose body performs a `GenServer.call(__MODULE__, …)`. That set is
+  the module's synchronous API surface; calls to its other functions do not
+  queue on the process and are correctly ignored.
   """
-  @spec singleton_bottleneck([map()]) :: [finding()]
-  def singleton_bottleneck(modules) do
+  @spec singleton_bottleneck([map()], map() | nil | :unavailable) :: [finding()]
+  def singleton_bottleneck(modules, runtime \\ nil) do
+    runtime = if is_nil(runtime), do: collector_queue_data(), else: runtime
+    thresholds = OtpChecks.singleton_thresholds()
     by_name = Map.new(modules, &{&1.name, &1})
-    threshold = OtpChecks.singleton_thresholds().fan_in
 
     modules
-    |> Enum.filter(&genserver?/1)
-    |> Enum.flat_map(&all_sync_callers(&1, modules))
-    |> Enum.group_by(& &1.to, & &1.from)
-    |> Enum.flat_map(fn {target, callers} ->
-      callers = Enum.uniq(callers)
-      module = Map.get(by_name, target)
+    |> Enum.filter(&(genserver?(&1) and &1.singleton))
+    |> Enum.flat_map(fn module ->
+      callers = sync_callers(modules, module.name, sync_api_names(module))
 
-      if module && module.singleton && length(callers) >= threshold do
-        [
-          %{
-            rule: "singleton_bottleneck",
-            message:
-              "#{target} is a name: __MODULE__ singleton receiving synchronous calls from " <>
-                "#{length(callers)} distinct modules — every caller serialises through one " <>
-                "process (statically suspected; runtime confirmation pending)",
-            category: "otp_deep",
-            severity: "warning",
-            confidence: "static",
-            fan_in: length(callers),
-            file: module.file,
-            line: module.line,
-            module: target
-          }
-        ]
+      if length(callers) >= thresholds.fan_in do
+        [bottleneck_finding(Map.fetch!(by_name, module.name), callers, runtime, thresholds)]
       else
         []
       end
     end)
   end
 
-  # Fan-in counts calls from ANY function, not just callbacks: a bottleneck is
-  # about total load on the singleton, whereas the cycle subgraph deliberately
-  # restricts to callback-reachable code because only a call made while already
-  # holding a process can deadlock.
-  defp all_sync_callers(module, _modules) do
+  # Public function names whose body performs `GenServer.call(__MODULE__, …)`.
+  # May be empty: a singleton can expose no wrapper at all and be called
+  # directly, which `sync_callers/3` handles separately.
+  defp sync_api_names(module) do
     module.functions
-    |> Map.values()
-    |> List.flatten()
-    |> Enum.flat_map(&genserver_call_sites(&1.body, module))
+    |> Enum.filter(fn {_key, clauses} ->
+      Enum.any?(clauses, &(&1.public and calls_self_sync?(&1.body)))
+    end)
+    |> Enum.map(fn {{name, _arity}, _clauses} -> name end)
+    |> MapSet.new()
+  end
+
+  # `GenServer.call(__MODULE__, …)` — the self-targeted form the client wrapper
+  # uses. `render_alias/1` returns nil for `__MODULE__`, which is why these are
+  # (correctly) absent from the inter-process subgraph but are exactly what
+  # marks a function as synchronous API here.
+  defp calls_self_sync?(body) do
+    {_ast, found} =
+      Macro.prewalk(body, false, fn
+        {{:., _, [{:__aliases__, _, [:GenServer]}, fun]}, _meta,
+         [{:__MODULE__, _, ctx} | _rest]} = node,
+        _acc
+        when fun in [:call, :multi_call] and is_atom(ctx) ->
+          {node, true}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    found
+  end
+
+  # Both forms of synchronous load count, and the union matters:
+  #
+  #   * via the client wrapper — `Store.fetch(k)`, which internally calls the
+  #     process. This is the dominant idiom, and measuring only the raw call
+  #     site misses it entirely (a false negative on essentially all real code).
+  #   * direct — `GenServer.call(Store, :read)` from another module, which
+  #     serialises on the same process without going through any wrapper.
+  #
+  # A module doing either is one more caller queueing on the singleton.
+  defp sync_callers(modules, target, api_functions) do
+    modules
+    |> Enum.reject(&(&1.name == target))
+    |> Enum.filter(fn module ->
+      clauses = module.functions |> Map.values() |> List.flatten()
+
+      calls_api?(clauses, target, api_functions) or calls_process_directly?(clauses, module, target)
+    end)
+    |> Enum.map(& &1.name)
+  end
+
+  defp calls_api?(clauses, target, api_functions) do
+    MapSet.size(api_functions) > 0 and
+      Enum.any?(clauses, fn clause ->
+        clause.body
+        |> qualified_calls()
+        |> Enum.any?(fn {mfa, _line} ->
+          case String.split(mfa, ".") do
+            [_single] ->
+              false
+
+            parts ->
+              fun = List.last(parts)
+              mod = parts |> Enum.drop(-1) |> Enum.join(".")
+              mod == target and MapSet.member?(api_functions, fun)
+          end
+        end)
+      end)
+  end
+
+  defp calls_process_directly?(clauses, module, target) do
+    Enum.any?(clauses, fn clause ->
+      clause.body
+      |> genserver_call_sites(module)
+      |> Enum.any?(&(&1.to == target))
+    end)
+  end
+
+  defp bottleneck_finding(module, callers, runtime, thresholds) do
+    observed = runtime_for(runtime, module.name)
+    confirmed? = confirmed?(observed, thresholds.queue_len)
+
+    %{
+      rule: "singleton_bottleneck",
+      message: bottleneck_message(module.name, callers, observed, confirmed?, thresholds),
+      category: "otp_deep",
+      severity: if(confirmed?, do: "error", else: "warning"),
+      confidence: if(confirmed?, do: "runtime_confirmed", else: "static"),
+      fan_in: length(callers),
+      callers: Enum.sort(callers),
+      runtime: observed,
+      file: module.file,
+      line: module.line,
+      module: module.name
+    }
+  end
+
+  defp runtime_for(:unavailable, _name), do: :unavailable
+
+  defp runtime_for(runtime, name) when is_map(runtime) do
+    case Map.fetch(runtime, name) do
+      {:ok, data} -> Map.put(data, :confirmed, false)
+      :error -> :unavailable
+    end
+  end
+
+  defp confirmed?(:unavailable, _threshold), do: false
+  defp confirmed?(%{max_queue_len: len}, threshold), do: len >= threshold
+  defp confirmed?(_other, _threshold), do: false
+
+  defp bottleneck_message(name, callers, :unavailable, _confirmed?, _thresholds) do
+    "#{name} is a name: __MODULE__ singleton whose synchronous API is called by " <>
+      "#{length(callers)} distinct modules — every caller serialises through one process " <>
+      "(statically suspected; no runtime data available to confirm)"
+  end
+
+  defp bottleneck_message(name, callers, %{max_queue_len: len} = observed, true, thresholds) do
+    "#{name} is a singleton called by #{length(callers)} distinct modules AND observed with a " <>
+      "message queue of #{len} (threshold #{thresholds.queue_len}) over #{observed.window} " <>
+      "snapshots — statically suspected, runtime-confirmed"
+  end
+
+  defp bottleneck_message(name, callers, %{max_queue_len: len} = observed, false, _thresholds) do
+    "#{name} is a singleton called by #{length(callers)} distinct modules; observed max queue " <>
+      "#{len} over #{observed.window} snapshots did not reach the confirmation threshold"
+  end
+
+  # Collector ring buffer, joined by registered name. Degrades to :unavailable
+  # rather than erroring when no snapshots exist — the monitor role may not be
+  # running at all, which is the same graceful-absence contract EmbeddingServing
+  # uses for the semantic endpoints.
+  defp collector_queue_data do
+    if Collector.active?() do
+      snapshots = Collector.history(:local, last: 20)
+
+      queues =
+        snapshots
+        |> Enum.flat_map(&(&1[:top_processes] || []))
+        |> Enum.reduce(%{}, fn proc, acc ->
+          case proc[:registered_name] || proc[:module] do
+            nil ->
+              acc
+
+            key ->
+              Map.update(acc, key, proc[:message_queue] || 0, &max(&1, proc[:message_queue] || 0))
+          end
+        end)
+
+      Map.new(queues, fn {name, len} ->
+        {name, %{max_queue_len: len, window: length(snapshots)}}
+      end)
+    else
+      :unavailable
+    end
+  rescue
+    # The Collector is optional infrastructure; a bottleneck finding must never
+    # fail because runtime telemetry is missing or mid-restart.
+    _ -> :unavailable
   end
 
   # ============================================================================
@@ -637,7 +791,8 @@ defmodule Giulia.Knowledge.Otp do
                 args: args,
                 body: fn_body,
                 line: meta[:line] || 0,
-                guarded: guarded?
+                guarded: guarded?,
+                public: kind == :def
               }
 
               {node, [{{name, length(args)}, clause} | acc]}
