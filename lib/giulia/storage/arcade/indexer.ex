@@ -186,41 +186,69 @@ defmodule Giulia.Storage.Arcade.Indexer do
   defp write_module_edges(project, edges, build_id) do
     # CREATE EDGE is not idempotent — purge this (project, build_id) first
     # so re-snapshots replace rather than accumulate.
-    Client.delete_edges_for_build("DEPENDS_ON", project, build_id)
+    case purge!("DEPENDS_ON", project, build_id) do
+      :ok ->
+        {written, dropped} =
+          Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
+            case type do
+              :depends_on ->
+                {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
 
-    {written, dropped} =
-      Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
-        case type do
-          :depends_on ->
-            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
+              :implements ->
+                {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
 
-          :implements ->
-            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
+              other ->
+                {writes, Map.update(drops, other, 1, &(&1 + 1))}
+            end
+          end)
 
-          other ->
-            {writes, Map.update(drops, other, 1, &(&1 + 1))}
+        if map_size(dropped) > 0 do
+          Logger.debug(
+            "[Arcade.Indexer] Module-edge types intentionally not persisted to L3: #{inspect(dropped)}"
+          )
         end
-      end)
 
-    if map_size(dropped) > 0 do
-      Logger.debug(
-        "[Arcade.Indexer] Module-edge types intentionally not persisted to L3: #{inspect(dropped)}"
-      )
+        Map.put(count_results(written, "module_edge"), :dropped_by_type, dropped)
+
+      {:error, _reason} ->
+        %{ok: 0, error: 1, purge_failed: true, dropped_by_type: %{}}
     end
-
-    Map.put(count_results(written, "module_edge"), :dropped_by_type, dropped)
   end
 
   # Function-level :calls edges. These are the authoritative CALLS edges per
   # the L3 schema (CALLS runs between Function vertices).
   defp write_function_call_edges(project, edges, build_id) do
-    Client.delete_edges_for_build("CALLS", project, build_id)
+    case purge!("CALLS", project, build_id) do
+      :ok ->
+        edges
+        |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
+          Client.insert_call(project, from_mfa, to_mfa, build_id)
+        end)
+        |> count_results("function_call_edge")
 
-    edges
-    |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
-      Client.insert_call(project, from_mfa, to_mfa, build_id)
-    end)
-    |> count_results("function_call_edge")
+      {:error, _reason} ->
+        %{ok: 0, error: 1, purge_failed: true}
+    end
+  end
+
+  # A failed purge is more damaging than a failed insert, and was previously
+  # discarded entirely. CREATE EDGE is not idempotent, so inserting on top of a
+  # build whose edges were not removed ACCUMULATES them — L3 then exceeds L1,
+  # which is precisely the `l3_exceeds_l1` drift Arcade.Verifier reports. Abort
+  # the write group instead of corrupting the snapshot.
+  defp purge!(edge_type, project, build_id) do
+    case Client.delete_edges_for_build(edge_type, project, build_id) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Arcade.Indexer] #{edge_type} purge failed for #{project} build #{build_id} — " <>
+            "skipping inserts to avoid accumulating duplicate edges: #{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
   end
 
   # The reason must be logged, not just counted. A snapshot summary of

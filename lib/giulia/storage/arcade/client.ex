@@ -534,9 +534,14 @@ defmodule Giulia.Storage.Arcade.Client do
   #
   # Retrying is safe even for non-idempotent `CREATE EDGE`: the conflict aborts
   # the whole transaction, so the failed attempt committed nothing.
+  # Budget sized against measurement, not intuition: at 5 retries with linear
+  # backoff a full-suite run still exhausted the budget on 8 writes. Exponential
+  # growth is what actually spreads colliding writers apart; the per-attempt cap
+  # keeps the tail bounded (worst case ≈ 2.1s per write, only ever on conflict).
   @concurrent_modification "com.arcadedb.exception.ConcurrentModificationException"
-  @max_write_retries 5
+  @max_write_retries 8
   @retry_base_backoff_ms 20
+  @retry_max_backoff_ms 500
 
   defp post(url, body), do: post_with_retry(url, body, 0)
 
@@ -560,11 +565,12 @@ defmodule Giulia.Storage.Arcade.Client do
     end
   end
 
-  # Linear backoff with jitter. Jitter matters more than the growth curve here:
-  # the colliding writers are near-simultaneous, so equal sleeps would just
-  # re-collide in lockstep.
+  # Exponential backoff, capped, with jitter. Jitter is not optional: the
+  # colliding writers are near-simultaneous, so identical sleeps would simply
+  # re-collide in lockstep on every attempt.
   defp backoff_ms(attempt) do
-    @retry_base_backoff_ms * (attempt + 1) + :rand.uniform(@retry_base_backoff_ms)
+    base = min(@retry_base_backoff_ms * Integer.pow(2, attempt), @retry_max_backoff_ms)
+    base + :rand.uniform(@retry_base_backoff_ms)
   end
 
   defp do_post(url, body) do
