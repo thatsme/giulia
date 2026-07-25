@@ -21,7 +21,7 @@ Brief description of the change and why it's needed.
 ## Code conventions
 
 - [ ] `mix format` run (on host, not inside Docker)
-- [ ] Follows [CODING_CONVENTIONS.md](../CODING_CONVENTIONS.md)
+- [ ] Follows [CODING_CONVENTIONS.md](../docs/CODING_CONVENTIONS.md)
 - [ ] No `String.to_integer` without `Integer.parse`
 - [ ] No `String.to_atom` from runtime values
 - [ ] No bare `rescue _` swallowing errors

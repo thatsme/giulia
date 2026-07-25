@@ -68,7 +68,7 @@ your right to use your own contributions however you wish.
 1. **Fork** the repository
 2. **Create a branch** — `git checkout -b feature/my-tool` or `fix/cubdb-recovery`
 3. **Write your code** — follow the existing patterns in `lib/giulia/`
-4. **Add tests** — see [TESTING.md](TESTING.md) for the test infrastructure
+4. **Add tests** — see [docs/TESTING.md](docs/TESTING.md) for the test infrastructure
 5. **Run tests** — `docker compose -f docker-compose.test.yml run --rm giulia-test`
 6. **Open a pull request** — describe what you built and why
 
@@ -131,7 +131,7 @@ This makes the endpoint self-describing via the Discovery API. It also automatic
 
 ## Code Style
 
-Follow [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) for idiomatic Elixir patterns.
+Follow [docs/CODING_CONVENTIONS.md](docs/CODING_CONVENTIONS.md) for idiomatic Elixir patterns.
 
 Key points:
 - Pattern match in function heads, not if/else chains
@@ -140,7 +140,7 @@ Key points:
 - Use `Integer.parse` not `String.to_integer`
 - Keep GenServer callbacks thin — delegate to pure functions
 - Every public function gets `@spec`, every module gets `@moduledoc`
-- Run `mix format` on the host before committing (never inside Docker — see TESTING.md)
+- Run `mix format` on the host before committing (never inside Docker — see docs/TESTING.md)
 
 ---
 
@@ -153,7 +153,7 @@ This is how we track which version is running on client vs server.
 
 ## Testing
 
-Tests run inside Docker. See [TESTING.md](TESTING.md) for full details.
+Tests run inside Docker. See [docs/TESTING.md](docs/TESTING.md) for full details.
 
 ```bash
 # Full suite (isolated environment, recommended)

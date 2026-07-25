@@ -8,7 +8,7 @@
 
 > **Giulia is the eyes, not the brain.** It analyzes your codebase and serves structured data over REST and MCP. Your LLM client — Claude Code, Claude Desktop, or anything that speaks REST or MCP — is the reasoner. Giulia never calls an LLM in production, never modifies your files, never runs autonomously. The only thing it writes to disk is its own cache (`.giulia/cache/`).
 >
-> *Legacy note*: a self-hosted local-chat inference layer (`POST /api/command`, internal LLM-provider tree) shipped in early v0.x and still loads, but is **deprecated as of v0.3.8** and will be removed in v0.4.0. The shipped product is the read-only data surface — see [ARCHITECTURE.md](ARCHITECTURE.md) Section 18.
+> *Legacy note*: a self-hosted local-chat inference layer (`POST /api/command`, internal LLM-provider tree) shipped in early v0.x and still loads, but is **deprecated as of v0.3.8** and will be removed in v0.4.0. The shipped product is the read-only data surface — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) Section 18.
 
 Giulia is a persistent, local-first code intelligence daemon built in Elixir/OTP. It runs as a long-lived background process with multi-project awareness, providing AST-level code intelligence, a Property Graph, runtime BEAM introspection, and semantic search -- via both a REST API and native MCP (Model Context Protocol) integration.
 
@@ -71,7 +71,7 @@ GIULIA_HOST_PROJECTS_PATH="$(dirname "$(pwd)")" docker compose up -d
 curl http://localhost:4000/health
 ```
 
-If a scan returns "path not found" errors, the host-to-container translation is wrong — see [INSTALLATION.md](INSTALLATION.md) for `GIULIA_HOST_PROJECTS_PATH` setup.
+If a scan returns "path not found" errors, the host-to-container translation is wrong — see [docs/INSTALLATION.md](docs/INSTALLATION.md) for `GIULIA_HOST_PROJECTS_PATH` setup.
 
 ### First Scan
 
@@ -145,14 +145,14 @@ Claude Code / CLI Client
 
 | Document | Description |
 |---|---|
-| [INSTALLATION.md](INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System design, OTP supervision tree, data flow, 11 graph-builder passes |
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | Prerequisites, setup, configuration, troubleshooting |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design, OTP supervision tree, data flow, 11 graph-builder passes |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Per-variable reference for `priv/config/*.json` (scoring, dispatch patterns, scan roots, dispatch invariants, relevance buckets) and the cache-invalidation contract |
-| [API.md](API.md) | REST API and MCP reference (88 endpoints across 10 categories) |
+| [docs/API.md](docs/API.md) | REST API and MCP reference (88 endpoints across 10 categories) |
 | [docs/REPORT_RULES.md](docs/REPORT_RULES.md) | Standard report-generation procedure for AI agents and humans |
-| [TESTING.md](TESTING.md) | Test environment setup, running tests, conventions |
+| [docs/TESTING.md](docs/TESTING.md) | Test environment setup, running tests, conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, build counter rules, PR process |
-| [CODING_CONVENTIONS.md](CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
+| [docs/CODING_CONVENTIONS.md](docs/CODING_CONVENTIONS.md) | Code style, patterns, naming conventions |
 | [SECURITY.md](SECURITY.md) | Path sandboxing, constitution enforcement, threat model |
 
 ## Visual Dashboards
@@ -229,7 +229,7 @@ The early-v0.x local-chat inference layer (Giulia ran an internal Observe-Orient
 - Write-tools `patch_function`, `bulk_replace`, `rename_mfa`
 - Compose env vars `LM_STUDIO_URL`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`
 
-Canonical LLM integration is now external clients (Claude Code, Claude Desktop, etc.) calling Giulia over REST or MCP. See [ARCHITECTURE.md](ARCHITECTURE.md) Section 18 for the full deprecation set.
+Canonical LLM integration is now external clients (Claude Code, Claude Desktop, etc.) calling Giulia over REST or MCP. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) Section 18 for the full deprecation set.
 
 ## License
 

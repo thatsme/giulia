@@ -257,7 +257,7 @@ On-disk key-value store for surviving restarts without re-scanning.
   via `?force=true` on `/api/index/scan`. Only the cheap downstream path
   (graph rebuild + metric recompute from existing ASTs) is auto-invalidated.
 
-  See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the full
+  See [`CONFIGURATION.md`](CONFIGURATION.md) for the full
   invalidation contract and the operator workflow for tuning each config
   surface.
 
@@ -335,7 +335,7 @@ All are loaded once at daemon startup, cached in `:persistent_term`,
 and tracked by the CodeDigest envelope (see L2 section above). Edits
 propagate via daemon restart + automatic cache invalidation on warm-restore.
 
-See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for the per-variable
+See [`CONFIGURATION.md`](CONFIGURATION.md) for the per-variable
 reference and operator workflow.
 
 

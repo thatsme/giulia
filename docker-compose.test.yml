@@ -13,7 +13,7 @@
 #   docker compose -f docker-compose.test.yml down -v   # Clean up volumes
 #
 # The test runner uses /projects/Giulia (live mount), NOT /app (stale image copy).
-# NEVER run `mix format` inside this container — see TESTING.md for why.
+# NEVER run `mix format` inside this container — see docs/TESTING.md for why.
 #
 # HERMETIC BY CONSTRUCTION: this stack uses its own project name (`giulia-test`),
 # its own network, and `giulia_test_*` / `arcadedb_test_*` volumes only. It is
