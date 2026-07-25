@@ -108,6 +108,28 @@ defmodule Giulia.Knowledge.Facade do
   end
 
   # ===========================================================================
+  # supervision — process architecture (Builder Pass 12)
+  # ===========================================================================
+
+  @doc """
+  Supervision tree for a project: nested `roots` plus the flat `edges` list.
+
+  Takes no parameters beyond `path` — the tree is whatever the current build
+  contains, so there is nothing to coerce or default. It still routes through
+  the facade rather than letting each protocol call `Store` directly, so REST
+  and MCP cannot drift in shape.
+
+  `children_unresolved` supervisors appear in the tree with no children. That
+  is a deliberate, visible gap (a child list built by a function call or
+  `Enum.*` is outside Pass 12's binding bound) rather than a claim of
+  childlessness — see the ARCHITECTURE blind-spot table.
+  """
+  @spec supervision(String.t(), map()) :: {:ok, map()}
+  def supervision(path, _params) do
+    {:ok, Store.supervision(path)}
+  end
+
+  # ===========================================================================
   # unprotected_hubs — hubs with weak spec/doc coverage
   # ===========================================================================
 

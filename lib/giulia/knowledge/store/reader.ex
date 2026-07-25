@@ -11,6 +11,7 @@ defmodule Giulia.Knowledge.Store.Reader do
   """
 
   alias Giulia.Knowledge.Analyzer
+  alias Giulia.Knowledge.Supervision
 
   @table :giulia_knowledge_graphs
 
@@ -49,6 +50,11 @@ defmodule Giulia.Knowledge.Store.Reader do
   @spec stats(String.t()) :: map()
   def stats(project_path) do
     project_path |> get_graph() |> Analyzer.stats()
+  end
+
+  @spec supervision(String.t()) :: map()
+  def supervision(project_path) do
+    project_path |> get_graph() |> Supervision.tree()
   end
 
   @spec centrality(String.t(), String.t()) :: {:ok, map()} | {:error, {:not_found, String.t()}}

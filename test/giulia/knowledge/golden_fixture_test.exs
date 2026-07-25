@@ -69,6 +69,13 @@ defmodule Giulia.Knowledge.GoldenFixtureTest do
   @module_golden MapSet.new([
                    # Pass 6 — supervision children list
                    {"Golden.Application", "Golden.Server", :references},
+                   # Pass 12 — same pair, distinct label. Pass 6 sees only that
+                   # the alias appears in the file; Pass 12 carries the child's
+                   # order, restart and conditionality. Both edges are correct
+                   # and independent — Pass 12 adds, it never rewrites Pass 6.
+                   {"Golden.Application", "Golden.Server",
+                    {:supervises,
+                     %{restart: :unknown, order: 0, strategy: "one_for_one", conditional: false}}},
                    # Pass 2 — explicit alias
                    {"Golden.Consumer", "Golden.Util", :depends_on},
                    # defdelegate pass — single-pair and multi-pair (as:) opts.

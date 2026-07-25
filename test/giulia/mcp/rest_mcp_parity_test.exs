@@ -221,6 +221,20 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "supervision — REST/MCP parity through facade" do
+    test "ready: identical body (no params to drift, but shape must still match)" do
+      rest = rest_get("/api/knowledge/supervision", path: @project_path)
+      assert {:ok, mcp} = Dispatch.Knowledge.supervision(%{"path" => @project_path})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.supervision(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "search/semantic — REST/MCP parity through Search.Facade" do
     test "valid concept: REST and MCP agree on the canonical shape (was divergent)" do
       rest_conn =

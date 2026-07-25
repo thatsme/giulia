@@ -199,6 +199,9 @@ defmodule Giulia.Knowledge.Store do
   @spec pre_impact_check(project_path(), map()) :: {:ok, map()}
   defdelegate pre_impact_check(project_path, params), to: Reader
 
+  @spec supervision(project_path()) :: map()
+  defdelegate supervision(project_path), to: Reader
+
   # Default-arg wrappers (defdelegate can't express defaults)
   @spec impact_map(project_path(), vertex_id(), non_neg_integer()) ::
           {:ok, impact_map()} | {:error, {:not_found, vertex_id(), [vertex_id()], map()}}

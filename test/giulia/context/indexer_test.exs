@@ -18,9 +18,15 @@ defmodule Giulia.Context.IndexerTest do
       assert Map.has_key?(status, :file_count)
     end
 
-    test "status is :idle, :scanning, or :empty" do
+    test "status is one of the declared scan_status states" do
+      # Pinned to `@type scan_status` in indexer.ex, which declares four states.
+      # The list previously omitted `:building` — the post-scan graph-build
+      # phase — so this snapshot assertion raced against any concurrently
+      # building project and failed whenever it caught one. Anything that makes
+      # graph construction slower widens that window; the assertion, not the
+      # timing, was the bug.
       %{status: s} = Indexer.status()
-      assert s in [:idle, :scanning, :empty]
+      assert s in [:idle, :scanning, :building, :empty]
     end
   end
 

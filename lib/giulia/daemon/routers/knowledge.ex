@@ -715,6 +715,36 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   end
 
   # -------------------------------------------------------------------
+  # GET /api/knowledge/supervision — Process architecture (Builder Pass 12)
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Get the OTP supervision tree (process architecture, not module structure)",
+    endpoint: "GET /api/knowledge/supervision",
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"}
+    },
+    returns:
+      "JSON supervision tree: nested roots plus a flat edge list with restart, " <>
+        "order, strategy and conditional per child",
+    category: "knowledge"
+  }
+  get "/supervision" do
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
+
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
+
+      {:ok, project_path} ->
+        # `{:ok, _}` unconditionally — see the facade. Matching it directly
+        # keeps the contract asserted rather than inventing an unreachable 500.
+        {:ok, result} = Giulia.Knowledge.Facade.supervision(project_path, conn.query_params)
+        send_json(conn, 200, result)
+    end
+  end
+
+  # -------------------------------------------------------------------
   # GET /api/knowledge/struct_lifecycle — Data flow tracing
   # -------------------------------------------------------------------
   @skill %{
