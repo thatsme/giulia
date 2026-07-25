@@ -202,6 +202,9 @@ defmodule Giulia.Knowledge.Store do
   @spec supervision(project_path()) :: map()
   defdelegate supervision(project_path), to: Reader
 
+  @spec otp_risks(project_path(), keyword()) :: {:ok, map()}
+  defdelegate otp_risks(project_path, opts), to: Reader
+
   # Default-arg wrappers (defdelegate can't express defaults)
   @spec impact_map(project_path(), vertex_id(), non_neg_integer()) ::
           {:ok, impact_map()} | {:error, {:not_found, vertex_id(), [vertex_id()], map()}}

@@ -240,6 +240,22 @@ defmodule Giulia.MCP.Dispatch.Knowledge do
     end
   end
 
+  @spec otp_risks(map()) :: {:ok, term()} | {:error, String.t()}
+  def otp_risks(args) do
+    # Thin renderer: `suppress`/`check` coercion lives in the facade, so this
+    # cannot drift from the REST route the way `conventions` did.
+    case Giulia.Daemon.Edge.resolve_ready(args) do
+      {:error, :missing_path} ->
+        {:error, "Missing required parameter: path"}
+
+      {:not_ready, info} ->
+        {:error, Giulia.Daemon.Edge.not_ready_message(info)}
+
+      {:ok, path} ->
+        Giulia.Knowledge.Facade.otp_risks(path, args)
+    end
+  end
+
   @spec supervision(map()) :: {:ok, term()} | {:error, String.t()}
   def supervision(args) do
     # Thin renderer over the same facade call the REST route makes — the tree

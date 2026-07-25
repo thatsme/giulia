@@ -42,11 +42,22 @@ defmodule Giulia.Knowledge.CodeDigest do
   ]
 
   # Paths relative to :code.priv_dir(:giulia).
+  #
+  # EVERY config file whose contents change tier output belongs here. Omitting
+  # one means editing that JSON does not invalidate the cached metrics, so the
+  # daemon serves stale results from before the edit — silently, since nothing
+  # errors. `dispatch_invariants.json` and `relevance.json` were both missing
+  # and are added here; `otp_checks.json` ships registered from its first
+  # commit. Adding a new config file without adding it here is the known
+  # failure mode, so make it a checklist item.
   @tier_config_files [
     "config/scoring.json",
     "config/dispatch_patterns.json",
+    "config/dispatch_invariants.json",
+    "config/relevance.json",
     "config/scan_defaults.json",
-    "config/enrichment_sources.json"
+    "config/enrichment_sources.json",
+    "config/otp_checks.json"
   ]
 
   @persistent_term_key {__MODULE__, :digest}

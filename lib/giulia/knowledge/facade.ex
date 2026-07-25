@@ -130,6 +130,31 @@ defmodule Giulia.Knowledge.Facade do
   end
 
   # ===========================================================================
+  # otp_risks — process-architecture findings (Knowledge.Otp)
+  # ===========================================================================
+
+  @doc """
+  OTP deep-analysis findings, in the conventions response shape.
+
+  Owns both parameters so neither protocol parses them:
+
+    * `suppress` — `rule:Module,Module` form, via the shared
+      `Helpers.parse_suppress/1`
+    * `check` — filter to a single rule (`blocking_init`, …)
+
+  `conventions` parses `suppress` separately in the REST route and again in MCP
+  dispatch; that duplication is the thing the facade exists to prevent, so this
+  endpoint coerces once here and both protocols stay thin renderers.
+  """
+  @spec otp_risks(String.t(), map()) :: {:ok, map()}
+  def otp_risks(path, params) do
+    Store.otp_risks(path,
+      suppress: Helpers.parse_suppress(params["suppress"]),
+      check: params["check"]
+    )
+  end
+
+  # ===========================================================================
   # unprotected_hubs — hubs with weak spec/doc coverage
   # ===========================================================================
 

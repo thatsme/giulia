@@ -715,6 +715,44 @@ defmodule Giulia.Daemon.Routers.Knowledge do
   end
 
   # -------------------------------------------------------------------
+  # GET /api/knowledge/otp_risks — OTP deep-analysis findings
+  # -------------------------------------------------------------------
+  @skill %{
+    intent: "Find OTP process-architecture risks (blocking init, missing handle_info catch-all)",
+    endpoint: "GET /api/knowledge/otp_risks",
+    params: %{
+      path: %{required: true, in: "query", doc: "Absolute project path"},
+      check: %{
+        required: false,
+        in: "query",
+        format: "blocking_init|missing_catch_all_handle_info",
+        doc: "Filter to a single check"
+      },
+      suppress: %{
+        required: false,
+        in: "query",
+        format: "rule:Module.A,Module.B",
+        doc: "Suppress a rule for named modules"
+      }
+    },
+    returns: "JSON findings grouped by check, with by_severity counts",
+    category: "knowledge"
+  }
+  get "/otp_risks" do
+    case Giulia.Daemon.Edge.resolve_ready(conn.query_params) do
+      {:error, :missing_path} ->
+        send_json(conn, 400, %{error: "Missing required query param: path"})
+
+      {:not_ready, info} ->
+        send_not_ready(conn, info)
+
+      {:ok, project_path} ->
+        {:ok, result} = Giulia.Knowledge.Facade.otp_risks(project_path, conn.query_params)
+        send_json(conn, 200, result)
+    end
+  end
+
+  # -------------------------------------------------------------------
   # GET /api/knowledge/supervision — Process architecture (Builder Pass 12)
   # -------------------------------------------------------------------
   @skill %{

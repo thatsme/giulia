@@ -221,6 +221,35 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "otp_risks — REST/MCP parity through facade" do
+    test "ready: identical body" do
+      rest = rest_get("/api/knowledge/otp_risks", path: @project_path)
+      assert {:ok, mcp} = Dispatch.Knowledge.otp_risks(%{"path" => @project_path})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+
+    test "check filter and suppress are coerced once, in the facade" do
+      params = [path: @project_path, check: "blocking_init", suppress: "blocking_init:Foo.Bar"]
+      rest = rest_get("/api/knowledge/otp_risks", params)
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.otp_risks(%{
+                 "path" => @project_path,
+                 "check" => "blocking_init",
+                 "suppress" => "blocking_init:Foo.Bar"
+               })
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+      assert rest["check_filter"] == "blocking_init"
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.otp_risks(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "supervision — REST/MCP parity through facade" do
     test "ready: identical body (no params to drift, but shape must still match)" do
       rest = rest_get("/api/knowledge/supervision", path: @project_path)

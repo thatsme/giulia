@@ -11,6 +11,7 @@ defmodule Giulia.Knowledge.Store.Reader do
   """
 
   alias Giulia.Knowledge.Analyzer
+  alias Giulia.Knowledge.Otp
   alias Giulia.Knowledge.Supervision
 
   @table :giulia_knowledge_graphs
@@ -55,6 +56,14 @@ defmodule Giulia.Knowledge.Store.Reader do
   @spec supervision(String.t()) :: map()
   def supervision(project_path) do
     project_path |> get_graph() |> Supervision.tree()
+  end
+
+  # AST-based like conventions, not a graph read — same shape as
+  # `find_conventions/2`, which also routes through the analyzer rather than
+  # ETS. Not cached: `suppress`/`check` vary per request.
+  @spec otp_risks(String.t(), keyword()) :: {:ok, map()}
+  def otp_risks(project_path, opts) do
+    Otp.otp_risks(project_path, opts)
   end
 
   @spec centrality(String.t(), String.t()) :: {:ok, map()} | {:error, {:not_found, String.t()}}

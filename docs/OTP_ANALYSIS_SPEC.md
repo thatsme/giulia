@@ -227,6 +227,39 @@ Each check ships with the filter-accountability test pattern (drop-side fixtures
 
 **Effort**: ~0.5 day.
 
+### OTP residual baseline — Giulia self-scan (Phase 2, 2026-07-25)
+
+187 files, 187 modules. Recorded honestly: thresholds were not tuned to reach
+zero. Plug / Bandit / Plausible runs are still outstanding — this table covers
+the self-scan only.
+
+| Check | Findings | Notes |
+|---|---|---|
+| `blocking_init` | **0** | Includes `Persistence.WarmRestore` clean, which is this check's designated negative case — it defers I/O via a `send/2` self-message, so a flag there would mean the check is wrong |
+| `missing_catch_all_handle_info` | **9** | All warning tier. Spot-checked 4 of 9 against source: 0 false positives |
+
+The nine: `Storage.Arcade.Consolidator`, `Inference.Orchestrator`,
+`Persistence.Writer`, `Core.ContextManager`, `Inference.Pool`,
+`Persistence.WarmRestore`, `Inference.Approval`, `Core.ProjectContext`,
+`EtsKeeper`.
+
+Three worth acting on rather than suppressing:
+
+- `EtsKeeper` — sole clause is `{:"ETS-TRANSFER", …}`. It is the heir process
+  for tables whose owners can crash; if an unmatched message kills it, the
+  tables it is holding go with it.
+- `Persistence.WarmRestore` — sole clause is `:run`, the message it sends
+  itself. Anything else crashes boot-time L1↔L2 restore.
+- `Core.ContextManager` — sole clause is `{:DOWN, …}`. A crash takes request
+  routing down for every project.
+
+`Inference.Pool` is the instructive one: three clauses including
+`{ref, result} when is_reference(ref)`, so the author clearly anticipated late
+`Task` replies — and still has no catch-all, so monitor noise or a `:timeout`
+still crashes the pool. It also confirms the guard semantics: that clause is
+correctly *not* counted as a catch-all, because the guard is what makes it
+selective.
+
 ### 3.6 Cheaper heuristics — severity: info
 
 Slot into the existing Tier 2 conventions engine as an `otp_deep` rule family, no new machinery:
