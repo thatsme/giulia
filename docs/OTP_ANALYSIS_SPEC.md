@@ -239,7 +239,17 @@ the self-scan only.
 | `missing_catch_all_handle_info` | **9** | All warning tier. Spot-checked 4 of 9 against source: 0 false positives |
 | `cross_process_call_cycle` | **0** | Verified, not assumed — see below |
 | `sync_call_chain_depth` | **0** | Same: the subgraph is empty, so there is nothing to chain |
-| `singleton_bottleneck` | **0** | Same |
+| `singleton_bottleneck` | **0** | Correct, and for a specific reason — see below |
+| `infinity_call_timeout` | **1** | `Core.ContextManager:50` — `GenServer.call(__MODULE__, {:init_project, …}, :infinity)`. True positive |
+| `one_for_all_amplification` | **0** | Giulia uses `:one_for_one` throughout |
+| `unlinked_start` | **0** | Giulia uses `start_link` throughout |
+
+Supervision extraction cross-check: Pass 12 finds 4 supervisors —
+`Giulia.Supervisor` (29 children, `one_for_one`, fully resolved),
+`Giulia.Inference.Supervisor` (1 child), and the two DynamicSupervisors
+(`Provider.Supervisor`, `Core.ProjectSupervisor`) as distinct childless
+vertices. The 29 matches a hand-count of `application.ex` exactly
+(12 + 2 + 5 + 8 + 1 + 1), across all five tiers plus the conditional Bandit.
 
 #### Phase 3's zero is a verified property, not an empty check
 

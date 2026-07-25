@@ -24,6 +24,7 @@ defmodule Giulia.Knowledge.Otp do
   """
 
   alias Giulia.Config.OtpChecks
+  alias Giulia.Knowledge.Supervision
   alias Giulia.Runtime.Collector
 
   @behaviour_aliases ["GenServer", "Supervisor"]
@@ -56,12 +57,17 @@ defmodule Giulia.Knowledge.Otp do
 
     modules = parse_modules(all_asts)
 
+    supervisors = Supervision.extract(all_asts)
+
     findings =
       blocking_init(modules, opts) ++
         missing_catch_all_handle_info(modules) ++
         cross_process_call_cycle(modules) ++
         sync_call_chain_depth(modules) ++
-        singleton_bottleneck(modules)
+        singleton_bottleneck(modules) ++
+        infinity_call_timeout(modules) ++
+        one_for_all_amplification(supervisors, modules) ++
+        unlinked_start(modules)
 
     findings =
       findings
@@ -98,7 +104,10 @@ defmodule Giulia.Knowledge.Otp do
       "missing_catch_all_handle_info",
       "cross_process_call_cycle",
       "sync_call_chain_depth",
-      "singleton_bottleneck"
+      "singleton_bottleneck",
+      "infinity_call_timeout",
+      "one_for_all_amplification",
+      "unlinked_start"
     ]
   end
 
@@ -680,6 +689,147 @@ defmodule Giulia.Knowledge.Otp do
     # The Collector is optional infrastructure; a bottleneck finding must never
     # fail because runtime telemetry is missing or mid-restart.
     _ -> :unavailable
+  end
+
+  # ============================================================================
+  # Info-tier heuristics (spec §3.6)
+  # ============================================================================
+  #
+  # The spec placed these in the Tier 2 conventions engine as an `otp_deep` rule
+  # family, on the grounds that they need no new machinery. That was written
+  # before `Knowledge.Otp` existed; it now IS the machinery, and it owns an
+  # endpoint with a uniform `?check=` filter. Splitting the family across two
+  # endpoints purely by severity tier would make an agent query two places for
+  # one question ("what is wrong with this process architecture?"), so they live
+  # here with the rest. Same rule family, same response shape, one surface.
+
+  @doc """
+  `GenServer.call/3` with an `:infinity` timeout.
+
+  Legitimate for genuinely long operations, which is why this is info tier and
+  not a warning — it is an inventory, not an accusation. Worth having because
+  `:infinity` removes the only backstop against a wedged callee: the caller
+  blocks forever rather than crashing with a timeout anyone can see.
+  """
+  @spec infinity_call_timeout([map()]) :: [finding()]
+  def infinity_call_timeout(modules) do
+    Enum.flat_map(modules, fn module ->
+      module.functions
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.flat_map(&infinity_calls(&1.body))
+      |> Enum.map(fn line ->
+        %{
+          rule: "infinity_call_timeout",
+          message:
+            "GenServer.call with :infinity — the caller blocks indefinitely if the callee " <>
+              "wedges, with no timeout to surface it",
+          category: "otp_deep",
+          severity: "info",
+          file: module.file,
+          line: line,
+          module: module.name
+        }
+      end)
+    end)
+  end
+
+  defp infinity_calls(body) do
+    {_ast, acc} =
+      Macro.prewalk(body, [], fn
+        {{:., _, [{:__aliases__, _, [:GenServer]}, :call]}, meta, [_target, _msg, :infinity]} =
+            node,
+        acc ->
+          {node, [meta[:line] || 0 | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(acc)
+  end
+
+  @doc """
+  `:one_for_all` supervisors with more children than the configured maximum.
+
+  Under `:one_for_all` a single child crash restarts every sibling. That is
+  occasionally intended, but past a handful of children it is usually
+  `:rest_for_one` that was meant, or a split into sub-trees — one unrelated
+  crash should not restart a dozen processes.
+  """
+  @spec one_for_all_amplification([map()], [map()]) :: [finding()]
+  def one_for_all_amplification(supervisors, modules) do
+    by_name = Map.new(modules, &{&1.name, &1})
+    max_children = OtpChecks.one_for_all_max_children()
+
+    supervisors
+    |> Enum.filter(&(&1.strategy == "one_for_all" and length(&1.children) > max_children))
+    |> Enum.flat_map(fn decl ->
+      case Map.get(by_name, decl.module) do
+        nil ->
+          []
+
+        module ->
+          [
+            %{
+              rule: "one_for_all_amplification",
+              message:
+                "#{decl.key} uses :one_for_all with #{length(decl.children)} children " <>
+                  "(threshold #{max_children}) — one crash restarts all of them; " <>
+                  ":rest_for_one or a sub-tree split is usually what was intended",
+              category: "otp_deep",
+              severity: "info",
+              file: module.file,
+              line: module.line,
+              module: decl.key
+            }
+          ]
+      end
+    end)
+  end
+
+  @doc """
+  `GenServer.start/2,3` or `Agent.start/1,2` where `start_link` was meant.
+
+  An unlinked process is an orphan: it is not part of any supervision tree, so
+  nothing restarts it and nothing notices when it dies. Complements the existing
+  `unsupervised_task` convention rule.
+  """
+  @spec unlinked_start([map()]) :: [finding()]
+  def unlinked_start(modules) do
+    Enum.flat_map(modules, fn module ->
+      module.functions
+      |> Map.values()
+      |> List.flatten()
+      |> Enum.flat_map(&unlinked_start_sites(&1.body))
+      |> Enum.map(fn {mod, line} ->
+        %{
+          rule: "unlinked_start",
+          message:
+            "#{mod}.start/… rather than start_link — the process is unlinked, so it belongs " <>
+              "to no supervision tree and nothing restarts or reports it",
+          category: "otp_deep",
+          severity: "info",
+          file: module.file,
+          line: line,
+          module: module.name
+        }
+      end)
+    end)
+  end
+
+  defp unlinked_start_sites(body) do
+    {_ast, acc} =
+      Macro.prewalk(body, [], fn
+        {{:., _, [{:__aliases__, _, [mod]}, :start]}, meta, _args} = node, acc
+        when mod in [:GenServer, :Agent] ->
+          {node, [{Atom.to_string(mod), meta[:line] || 0} | acc]}
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(acc)
   end
 
   # ============================================================================

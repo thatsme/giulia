@@ -18,13 +18,17 @@ Each config file has a dedicated loader module that mirrors the same pattern:
 |---|---|
 | `scoring.json` | `Giulia.Knowledge.ScoringConfig` |
 | `dispatch_patterns.json` | `Giulia.Knowledge.DispatchPatterns` |
+| `dispatch_invariants.json` | `Giulia.Config.DispatchInvariants` |
+| `relevance.json` | `Giulia.Config.Relevance` |
 | `scan_defaults.json` | `Giulia.Context.ScanConfig` |
+| `enrichment_sources.json` | `Giulia.Enrichment.Registry` |
+| `otp_checks.json` | `Giulia.Config.OtpChecks` |
 
 On first call, the loader reads the JSON, parses with atom keys, and caches the result in `:persistent_term`. Subsequent reads are free. None of the loaders watch the file for changes — pick up edits with a daemon restart.
 
 ### Cache invalidation contract
 
-`Knowledge.CodeDigest` hashes the **content** of all three config files alongside the BEAM md5s of the four code-tier modules (`Builder`, `Metrics`, `Behaviours`, `DispatchPatterns`). The persisted L2 caches (graph + metrics) are tagged with the digest at write time. On daemon startup, warm-restore compares stored vs current digest:
+`Knowledge.CodeDigest` hashes the **content** of every config file in the table above alongside the BEAM md5s of the four code-tier modules (`Builder`, `Metrics`, `Behaviours`, `DispatchPatterns`). The persisted L2 caches (graph + metrics) are tagged with the digest at write time. On daemon startup, warm-restore compares stored vs current digest:
 
 - Match → load cache as-is
 - Mismatch → log `"Code digest changed (X -> Y) — invalidating … cache"`, drop the cache, force a rebuild on next scan
@@ -351,3 +355,50 @@ Read by `Giulia.Context.ScanConfig.arcade_history_builds/0`.
 | Mix-style project lays code in non-`lib/` dir | Usually auto-detected via `mix.exs`; otherwise add to `scan_defaults.json` source_roots |
 
 For changes that should affect cached metrics: edit JSON → restart daemon → trigger a scan or wait for the next metric warming.
+
+---
+
+## `otp_checks.json`
+
+Thresholds and MFA lists for the OTP deep-analysis checks behind
+`GET /api/knowledge/otp_risks`. Which calls count as blocking is policy that
+varies by codebase and by year, so it lives here rather than in `.ex` source;
+only the matching mechanics are compiled in.
+
+### `blocking_init`
+
+Calls that block inside `init/1`, which runs inside the supervisor's start
+sequence — a blocking call serialises boot and turns a down dependency into a
+restart-intensity cascade.
+
+| Key | Meaning |
+|---|---|
+| `error_mfas` | Error tier: network, DB drivers, cross-process calls, sleeps |
+| `warning_mfas` | Warning tier: `File.*`, since reading config at boot is legitimate and file size is statically unknowable |
+| `repo_convention` | When `true`, a call to any module whose final segment is exactly `Repo` counts as an error-tier DB call |
+
+Pattern forms: `"Req.*"` matches any function on that module; `"Finch.request"`
+matches exactly; `":httpc.*"` and `":gen_tcp.connect"` are the Erlang
+equivalents. Error tier wins when both would match.
+
+`repo_convention` exists because enumerating every project's repo module is
+impossible. Ecto's naming convention is the only portable signal, and it matches
+`MyApp.Repo.all` and `MyApp.Tenant.Repo.one` while correctly ignoring
+`RepoHelper.all`.
+
+### Thresholds
+
+| Key | Default | Meaning |
+|---|---|---|
+| `sync_chain.max_depth` | `2` | Chains deeper than this are flagged; every hop carries its own timeout, so a 3-hop chain is a 15s worst-case budget |
+| `singleton_bottleneck.fan_in_threshold` | `8` | Distinct modules calling a singleton's synchronous API before it is suspected |
+| `singleton_bottleneck.queue_len_threshold` | `100` | Observed `message_queue_len` at which a static suspicion is escalated to a runtime-confirmed error |
+| `one_for_all.max_children` | `5` | `:one_for_all` supervisors with more children than this are flagged — one crash restarts them all |
+
+`missing_catch_all_handle_info.severity` is the only other key and has no
+tunable threshold: the check is precise by construction, firing only when
+`handle_info/2` clauses exist and none is an unguarded catch-all.
+
+Per the universal-defaults principle these must produce sane output on any
+Elixir codebase with zero tuning — a default that is wrong somewhere is
+release-gating, not something to push onto the user.

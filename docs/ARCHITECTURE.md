@@ -545,6 +545,14 @@ walker cannot resolve directly.
 | 9. Phoenix router-dispatch edges | Parses `get/post/put/...`, `resources`, scoped routes; emits edges from router module to each controller action | `{:calls, :router_dispatch}` |
 | 10. Function-reference edges | Detects four runtime-reference forms: literal MFA tuples `{Mod, :fn, [args]}`, function captures `&Mod.fn/N`, `apply/3`, and any 3-arg call carrying MFA-shape args (`Task.start_link(M, F, A)`, supervisor child specs, etc.) | `{:calls, :mfa_ref \| :capture_ref \| :apply_ref \| :mfa_arg_ref}` |
 | 11. Use-injected import edges | Detects modules whose `defmacro __using__/1` injects `import N` directives, then resolves unqualified calls in consumer files against those imports | `{:calls, :use_import_ref}` |
+| 12. Supervision topology | Parses `Supervisor.start_link/2`, `Supervisor.init/2` and `DynamicSupervisor.start_link/1,2` into the supervision tree. Every endpoint is keyed `name_option \|\| module`, because supervision identity is not module identity — a root supervisor is typically a registered name with no `defmodule`, several children are external modules, and two `{DynamicSupervisor, name: X}` declarations share one module | `{:supervises, %{restart, order, strategy, conditional}}` |
+
+Pass 12 only ever *adds*. It never re-labels an existing vertex: libgraph
+accumulates labels, and `Topology.stats/1`, `Topology.blast_radius/3` and
+`Insights` filter with exact equality (`labels == [:module]`), so a second label
+would silently drop the vertex from those results. The `:supervisor` /
+`:process` labels are minted only for vertices Pass 12 creates — registered
+names and external modules, which no existing filter sees.
 
 Edges from Passes 7-11 are consumed by `dead_code_with_asts/3` via a
 single `reference_targets` set (functions referenced via any of the
@@ -584,7 +592,7 @@ directly as structured tool calls, without constructing HTTP requests.
 | Module | Responsibility |
 |--------|---------------|
 | `MCP.Server` | Anubis MCP server — handles `tools/call`, `tools/list`, `resources/read` |
-| `MCP.ToolSchema` | Auto-generates 75 MCP tool definitions from `@skill` annotations on sub-routers (78 skills minus 3 non-MCP-compatible monitor endpoints: `GET /api/monitor` and `GET /api/monitor/graph` are HTML dashboards, `GET /api/monitor/stream` is an SSE event stream) |
+| `MCP.ToolSchema` | Auto-generates 77 MCP tool definitions from `@skill` annotations on sub-routers (80 skills minus 3 non-MCP-compatible monitor endpoints: `GET /api/monitor` and `GET /api/monitor/graph` are HTML dashboards, `GET /api/monitor/stream` is an SSE event stream) |
 | `MCP.ResourceProvider` | 5 resource templates (`giulia://projects/`, `giulia://modules/`, `giulia://graph/`, `giulia://skills/`, `giulia://status`) |
 | `Daemon.Plugs.McpAuth` | Bearer token authentication via `GIULIA_MCP_KEY` env var (constant-time comparison) |
 | `Daemon.Plugs.McpForward` | Runtime forwarder to Anubis StreamableHTTP transport (defers init to avoid persistent_term race) |
@@ -948,7 +956,7 @@ fixtures_test.exs`.
 ## 18. Known Blind Spots
 
 Static analysis cannot see everything that happens at runtime. The
-11-pass builder + the dispatch-patterns config close most of the gap;
+12-pass builder + the dispatch-patterns config close most of the gap;
 this section names what remains, deliberately, so consumers know where
 "this looks dead" is a tool limitation rather than a real finding.
 
@@ -963,6 +971,16 @@ this section names what remains, deliberately, so consumers know where
 | `apply/2,3` with a computed atom argument | `apply(@modules, mod, args)` | Pass 10 handles literal `apply(M, :f, [_, _])` but not when `M` is a variable | Out of scope — covered by `library_public_api` / `genuine` classification when residuals surface |
 | Macro-injected calls outside known behaviours | A library's `__using__/1` injects `def x, do: ...` plus calls into another library not in `MacroMap` | The injected definition isn't in the source AST; the call site is also injected | `priv/config/dispatch_invariants.json` (`known_behaviour_callbacks`) covers ~24 stdlib/ecosystem behaviours; library-specific macros need a project-side `@dead_code_ignore` or a `dispatch_patterns.json` entry |
 | Runtime-registered routes | `Phoenix.Router` macros are AST-visible (Pass 9 covers them); custom routers building routes from a config map at boot time are not | The route table is data computed at runtime | Out of scope; manual `dispatch_patterns.json` entry if the project uses one |
+
+### Supervision topology (Pass 12)
+
+| Pattern | Example | Why it's invisible | Mitigation |
+|---|---|---|---|
+| DynamicSupervisor children | `DynamicSupervisor.start_child(sup, spec)` | Children are started at runtime, never declared | Supervisor vertex emitted with `dynamic: true`; an empty child list here is correct, not unresolved |
+| Child list built by a function call, `Enum.*` or comprehension | `children = Enum.map(ids, &worker/1)` | Outside the bounded binding resolution (single-assignment vars, literal lists, `++` chains, enclosing function only) | Supervisor emitted with `children_unresolved: true` and **no** child edges — an explicit gap. A partial list presented as complete would become a false negative in every check reasoning over the tree |
+| Children of external supervisors | `{Registry, …}`, `{Bandit, …}` | Defined in dependency source, outside the scanned project | Vertex emitted with `external: true`; the tree stops there rather than descending into deps |
+| Registry-based via-tuples | `{:via, Registry, {R, id}}` | Process identity is runtime data | Module-level resolution only; dependent checks carry a confidence flag |
+| Process identity vs module identity | one module started N times | A module started repeatedly is one vertex | `cross_process_call_cycle` reports `high` confidence only when every endpoint is a `name: __MODULE__` singleton, `medium` otherwise |
 
 ### How residuals get classified
 
