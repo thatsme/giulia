@@ -353,8 +353,18 @@
     projectSelect.appendChild(opt);
   }
 
+  // Must respect the active view. Loading topology unconditionally meant that
+  // changing project while on Supervision dropped you back to the dependency
+  // graph with the Supervision button still highlighted — a 68-node dependency
+  // graph reading as a supervision tree, which is worse than an error because
+  // it looks like a result.
   projectSelect.addEventListener('change', function() {
-    if (this.value) loadTopology(this.value);
+    if (!this.value) return;
+    if (currentView === 'supervision') {
+      loadSupervision(this.value);
+    } else {
+      loadTopology(this.value);
+    }
   });
 
   function loadTopology(projectPath) {
@@ -369,6 +379,13 @@
         var split = splitIsolates(data);
         renderIsolates(split.isolates);
         initCytoscape({ nodes: split.connected, edges: data.edges });
+
+        // Re-apply the active view. initCytoscape builds a plain graph, so
+        // without this the styling is silently dropped whenever the data is
+        // reloaded — leaving Supervision for Heatmap, or changing project while
+        // on any styled view, lit the button but rendered an unstyled
+        // dependency graph. The view looked switched and was not.
+        if (currentView && currentView !== 'supervision') applyView(currentView);
       })
       .catch(function(err) {
         loading.textContent = 'Error loading graph: ' + err.message;

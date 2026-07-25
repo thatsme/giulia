@@ -206,8 +206,15 @@ defmodule Giulia.Daemon.Routers.Monitor do
 
     case File.read(html_path) do
       {:ok, html} ->
+        # These dashboards are live tools read straight off disk and rebuilt
+        # with the image. Without an explicit directive the browser applies
+        # heuristic caching and can serve a stale page indefinitely — there is
+        # no ETag or Last-Modified here to revalidate against. A cached
+        # dashboard is worse than a broken one: it renders a plausible view of
+        # data that no longer exists.
         conn
         |> put_resp_content_type("text/html")
+        |> put_resp_header("cache-control", "no-store, must-revalidate")
         |> send_resp(200, html)
 
       {:error, _} ->
