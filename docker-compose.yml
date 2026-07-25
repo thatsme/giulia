@@ -85,10 +85,13 @@ services:
 
     # HTTP API + Distributed Erlang ports
     # 4000 = HTTP API, 4369 = EPMD, 19100-19105 = distribution port range
+    # Bound to 127.0.0.1 only: the REST API has no authentication and the
+    # distribution ports accept any node presenting the cookie. Publishing
+    # these on 0.0.0.0 hands LAN peers RCE on the BEAM node.
     ports:
-      - "4000:4000"
-      - "4369:4369"
-      - "19100-19105:19100-19105"
+      - "127.0.0.1:4000:4000"
+      - "127.0.0.1:4369:4369"
+      - "127.0.0.1:19100-19105:19100-19105"
 
     deploy: *common-deploy
     logging: *common-logging
@@ -144,10 +147,11 @@ services:
     # Container-to-container communication goes through Docker's internal
     # network where both containers listen on 4369 in their own network
     # namespace — no conflict there.
+    # Bound to 127.0.0.1 only — same rationale as the worker above.
     ports:
-      - "4001:4001"
-      - "4370:4369"
-      - "19110-19115:19110-19115"
+      - "127.0.0.1:4001:4001"
+      - "127.0.0.1:4370:4369"
+      - "127.0.0.1:19110-19115:19110-19115"
 
     deploy:
       resources:
