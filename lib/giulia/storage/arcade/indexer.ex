@@ -167,7 +167,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
       Client.upsert_module(project, mod.name, build_id)
     end)
 
-    count_results(results)
+    count_results(results, "module")
   end
 
   defp write_functions(project, functions, build_id) do
@@ -175,7 +175,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
       Client.upsert_function(project, func.name, build_id)
     end)
 
-    count_results(results)
+    count_results(results, "function")
   end
 
   # Module-level edges only. L3 has explicit types for :depends_on and
@@ -208,7 +208,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
       )
     end
 
-    Map.put(count_results(written), :dropped_by_type, dropped)
+    Map.put(count_results(written, "module_edge"), :dropped_by_type, dropped)
   end
 
   # Function-level :calls edges. These are the authoritative CALLS edges per
@@ -220,13 +220,22 @@ defmodule Giulia.Storage.Arcade.Indexer do
     |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
       Client.insert_call(project, from_mfa, to_mfa, build_id)
     end)
-    |> count_results()
+    |> count_results("function_call_edge")
   end
 
-  defp count_results(results) do
+  # The reason must be logged, not just counted. A snapshot summary of
+  # `%{ok: 1, error: 1}` tells an operator that L3 silently lost a write and
+  # nothing about why — the same blindness applies to anyone debugging a
+  # verifier failure, since `Indexer.snapshot/2` still returns `{:ok, summary}`
+  # on a partial write.
+  defp count_results(results, kind) do
     Enum.reduce(results, %{ok: 0, error: 0}, fn
-      {:ok, _}, acc -> %{acc | ok: acc.ok + 1}
-      {:error, _}, acc -> %{acc | error: acc.error + 1}
+      {:ok, _}, acc ->
+        %{acc | ok: acc.ok + 1}
+
+      {:error, reason}, acc ->
+        Logger.warning("[Arcade.Indexer] #{kind} write failed: #{inspect(reason)}")
+        %{acc | error: acc.error + 1}
     end)
   end
 end

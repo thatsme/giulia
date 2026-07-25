@@ -521,7 +521,53 @@ defmodule Giulia.Storage.Arcade.Client do
   # HTTP plumbing (Req)
   # ---------------------------------------------------------------------------
 
-  defp post(url, body) do
+  # ArcadeDB uses optimistic MVCC at *page* granularity, so two writers touching
+  # unrelated records that happen to share a page collide and the loser gets a
+  # 503 ConcurrentModificationException — whose own message is "Please retry the
+  # operation".
+  #
+  # Giulia produces exactly that concurrency in normal operation: the
+  # `{:graph_ready}` handler and the reconcile timer each spawn a detached
+  # snapshot task (`Indexer`), so two snapshots can write at once. Without a
+  # retry the losing writes were simply dropped and counted, which is L3
+  # silently drifting from L1 — the drift `Arcade.Verifier` exists to catch.
+  #
+  # Retrying is safe even for non-idempotent `CREATE EDGE`: the conflict aborts
+  # the whole transaction, so the failed attempt committed nothing.
+  @concurrent_modification "com.arcadedb.exception.ConcurrentModificationException"
+  @max_write_retries 5
+  @retry_base_backoff_ms 20
+
+  defp post(url, body), do: post_with_retry(url, body, 0)
+
+  defp post_with_retry(url, body, attempt) do
+    case do_post(url, body) do
+      {:error, {503, %{"exception" => @concurrent_modification}}} = error ->
+        if attempt < @max_write_retries do
+          Process.sleep(backoff_ms(attempt))
+          post_with_retry(url, body, attempt + 1)
+        else
+          Logger.warning(
+            "ArcadeDB: concurrent modification persisted through " <>
+              "#{@max_write_retries} retries — write dropped"
+          )
+
+          error
+        end
+
+      result ->
+        result
+    end
+  end
+
+  # Linear backoff with jitter. Jitter matters more than the growth curve here:
+  # the colliding writers are near-simultaneous, so equal sleeps would just
+  # re-collide in lockstep.
+  defp backoff_ms(attempt) do
+    @retry_base_backoff_ms * (attempt + 1) + :rand.uniform(@retry_base_backoff_ms)
+  end
+
+  defp do_post(url, body) do
     case Req.post(url,
            json: body,
            auth: {:basic, "#{user()}:#{password()}"},
