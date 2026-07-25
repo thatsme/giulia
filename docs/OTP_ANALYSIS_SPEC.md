@@ -237,6 +237,35 @@ the self-scan only.
 |---|---|---|
 | `blocking_init` | **0** | Includes `Persistence.WarmRestore` clean, which is this check's designated negative case — it defers I/O via a `send/2` self-message, so a flag there would mean the check is wrong |
 | `missing_catch_all_handle_info` | **9** | All warning tier. Spot-checked 4 of 9 against source: 0 false positives |
+| `cross_process_call_cycle` | **0** | Verified, not assumed — see below |
+| `sync_call_chain_depth` | **0** | Same: the subgraph is empty, so there is nothing to chain |
+| `singleton_bottleneck` | **0** | Same |
+
+#### Phase 3's zero is a verified property, not an empty check
+
+The sync inter-process subgraph has **0 edges** on Giulia. A zero from a
+predicate-heavy check is exactly where a silent false negative hides, so it was
+checked against source by exhaustion rather than accepted:
+
+- 71 `GenServer.call` sites in `lib/`
+- 69 are `GenServer.call(__MODULE__, …)` client-API wrappers or
+  `GenServer.call(pid, …)` — self-targeted or non-literal, both correctly
+  outside the subgraph
+- 1 targets another literal module (`Knowledge.Store`, from
+  `inference/rename_mfa.ex:473`) — but that module has no `use GenServer` and no
+  callbacks, and the call sits in a plain public function. A client call cannot
+  deadlock, so excluding it is correct
+
+Giulia's GenServers do not call each other synchronously from inside callbacks.
+That is a real architectural property, consistent with `Knowledge.Store.Reader`
+existing precisely to bypass the GenServer for bulk reads.
+
+**Consequence for the baseline:** this codebase cannot regression-test the cycle
+detector, because it has no cycles to find. The deliberate two-GenServer
+deadlock fixture in `otp_sync_test.exs` is therefore the only standing proof
+that the check fires at all — treat it as load-bearing, not illustrative. Runs
+against Plug / Bandit / Plausible are still outstanding and are the way to get
+real-world positives.
 
 The nine: `Storage.Arcade.Consolidator`, `Inference.Orchestrator`,
 `Persistence.Writer`, `Core.ContextManager`, `Inference.Pool`,

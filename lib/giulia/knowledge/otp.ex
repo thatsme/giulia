@@ -55,7 +55,12 @@ defmodule Giulia.Knowledge.Otp do
 
     modules = parse_modules(all_asts)
 
-    findings = blocking_init(modules, opts) ++ missing_catch_all_handle_info(modules)
+    findings =
+      blocking_init(modules, opts) ++
+        missing_catch_all_handle_info(modules) ++
+        cross_process_call_cycle(modules) ++
+        sync_call_chain_depth(modules) ++
+        singleton_bottleneck(modules)
 
     findings =
       findings
@@ -86,7 +91,15 @@ defmodule Giulia.Knowledge.Otp do
   Rules this module currently implements. Phase 3 extends the list.
   """
   @spec checks_run() :: [String.t()]
-  def checks_run, do: ["blocking_init", "missing_catch_all_handle_info"]
+  def checks_run do
+    [
+      "blocking_init",
+      "missing_catch_all_handle_info",
+      "cross_process_call_cycle",
+      "sync_call_chain_depth",
+      "singleton_bottleneck"
+    ]
+  end
 
   # ============================================================================
   # blocking_init
@@ -246,6 +259,276 @@ defmodule Giulia.Knowledge.Otp do
   defp catch_all_clause?(_clause), do: false
 
   # ============================================================================
+  # Synchronous inter-process subgraph (Phase 3 foundation)
+  # ============================================================================
+
+  @callback_entry_points [{"handle_call", 3}, {"handle_cast", 2}, {"handle_continue", 2}]
+  @default_call_timeout_ms 5_000
+  @max_chain_hops 8
+
+  @doc """
+  Edges of the synchronous inter-process call graph.
+
+  An edge exists when module A, from inside a `handle_call/3`, `handle_cast/2`
+  or `handle_continue/2` body (or a same-module private helper reachable from
+  one), performs a `GenServer.call` targeting another GenServer module.
+
+  Only genuine synchronous calls are included. `Topology.cycles/1` carries a
+  scar worth heeding here: including `:references` edges once collapsed this
+  codebase into a single fake SCC. A subgraph built for cycle detection must
+  contain nothing but the relation it claims to model.
+  """
+  @spec sync_call_edges([map()]) :: [map()]
+  def sync_call_edges(modules) do
+    implementers = modules |> Enum.filter(&genserver?/1) |> Map.new(&{&1.name, &1})
+
+    implementers
+    |> Map.values()
+    |> Enum.flat_map(fn module ->
+      module
+      |> callback_reachable_bodies()
+      |> Enum.flat_map(&genserver_call_sites(&1, module))
+      |> Enum.filter(&Map.has_key?(implementers, &1.to))
+      |> Enum.reject(&(&1.to == module.name))
+    end)
+    |> Enum.uniq_by(&{&1.from, &1.to})
+  end
+
+  defp callback_reachable_bodies(module) do
+    entry_clauses =
+      @callback_entry_points
+      |> Enum.flat_map(fn key -> Map.get(module.functions, key, []) end)
+
+    case entry_clauses do
+      [] -> []
+      clauses -> do_reachable(module, Enum.map(clauses, & &1.body), MapSet.new(@callback_entry_points))
+    end
+  end
+
+  # `GenServer.call(Target, msg)` / `(Target, msg, timeout)` and multi_call.
+  # A target that is not a literal module — a pid, a via-tuple, a variable —
+  # is skipped: static analysis cannot name the process behind it, and guessing
+  # would fabricate edges into the cycle detector.
+  defp genserver_call_sites(body, module) do
+    {_ast, acc} =
+      Macro.prewalk(body, [], fn
+        {{:., _, [{:__aliases__, _, [:GenServer]}, fun]}, meta, [target | rest]} = node, acc
+        when fun in [:call, :multi_call] ->
+          case render_alias(target) do
+            nil ->
+              {node, acc}
+
+            to ->
+              edge = %{
+                from: module.name,
+                to: to,
+                line: meta[:line] || 0,
+                timeout: call_timeout(rest)
+              }
+
+              {node, [edge | acc]}
+          end
+
+        node, acc ->
+          {node, acc}
+      end)
+
+    Enum.reverse(acc)
+  end
+
+  defp call_timeout([_msg, timeout | _]) when is_integer(timeout), do: timeout
+  defp call_timeout(_args), do: @default_call_timeout_ms
+
+  # ============================================================================
+  # cross_process_call_cycle
+  # ============================================================================
+
+  @doc """
+  Cycles in the synchronous inter-process call graph — guaranteed deadlocks.
+
+  A blocks waiting on B while B blocks waiting on A; both die by timeout five
+  seconds later with stack traces that point nowhere near the cause. It only
+  manifests under a specific interleaving, so tests rarely catch it.
+
+  Confidence is `high` when every module in the cycle is a `name: __MODULE__`
+  singleton — module identity is then process identity, so the cycle is real.
+  Otherwise `medium`: multiple instances may make it harmless. Only `high`
+  carries error severity.
+  """
+  @spec cross_process_call_cycle([map()]) :: [finding()]
+  def cross_process_call_cycle(modules) do
+    by_name = Map.new(modules, &{&1.name, &1})
+    edges = sync_call_edges(modules)
+
+    graph =
+      Enum.reduce(edges, Graph.new(type: :directed), fn edge, g ->
+        Graph.add_edge(g, edge.from, edge.to)
+      end)
+
+    graph
+    |> Graph.strong_components()
+    |> Enum.filter(&(length(&1) > 1))
+    |> Enum.map(&Enum.sort/1)
+    |> Enum.map(fn component ->
+      all_singletons? = Enum.all?(component, &(by_name |> Map.get(&1, %{}) |> Map.get(:singleton)))
+      confidence = if all_singletons?, do: "high", else: "medium"
+      anchor = by_name |> Map.fetch!(List.first(component))
+
+      %{
+        rule: "cross_process_call_cycle",
+        message:
+          "synchronous GenServer.call cycle across #{Enum.join(component, " -> ")} -> " <>
+            "#{List.first(component)} — each blocks on the next, so the cycle deadlocks " <>
+            "until every hop times out (confidence: #{confidence}#{singleton_note(all_singletons?)})",
+        category: "otp_deep",
+        severity: if(all_singletons?, do: "error", else: "warning"),
+        confidence: confidence,
+        cycle: component,
+        file: anchor.file,
+        line: anchor.line,
+        module: List.first(component)
+      }
+    end)
+  end
+
+  defp singleton_note(true), do: " — every module is a name: __MODULE__ singleton"
+  defp singleton_note(false), do: " — not all endpoints are singletons"
+
+  # ============================================================================
+  # sync_call_chain_depth
+  # ============================================================================
+
+  @doc """
+  Acyclic synchronous chains deeper than the configured threshold.
+
+  Every hop carries its own timeout, so a three-hop chain is a 15-second
+  worst-case latency budget nobody approved — and the failure surfaces at the
+  OUTERMOST caller, far from the slow hop. The finding carries the full chain
+  and the summed budget so the number is arguable rather than asserted.
+  """
+  @spec sync_call_chain_depth([map()]) :: [finding()]
+  def sync_call_chain_depth(modules) do
+    by_name = Map.new(modules, &{&1.name, &1})
+    edges = sync_call_edges(modules)
+    adjacency = Enum.group_by(edges, & &1.from)
+    max_depth = OtpChecks.sync_chain_max_depth()
+
+    adjacency
+    |> Map.keys()
+    |> Enum.flat_map(&longest_chains(&1, adjacency, [], []))
+    |> Enum.filter(&(length(&1) > max_depth))
+    |> dedupe_subchains()
+    |> Enum.map(fn chain ->
+      budget = chain |> Enum.map(& &1.timeout) |> Enum.sum()
+      path = [List.first(chain).from | Enum.map(chain, & &1.to)]
+      anchor = Map.fetch!(by_name, List.first(chain).from)
+
+      %{
+        rule: "sync_call_chain_depth",
+        message:
+          "synchronous call chain #{length(chain)} hops deep: #{Enum.join(path, " -> ")} — " <>
+            "worst-case latency budget #{budget}ms, and a timeout surfaces at " <>
+            "#{List.first(path)}, not at the slow hop",
+        category: "otp_deep",
+        severity: "warning",
+        chain: path,
+        timeout_budget_ms: budget,
+        file: anchor.file,
+        line: anchor.line,
+        module: List.first(path)
+      }
+    end)
+  end
+
+  # Enumerate simple paths (a node never repeats, so cycles terminate the walk
+  # and are left to cross_process_call_cycle to report).
+  defp longest_chains(node, adjacency, visited, acc_edges) do
+    if node in visited or length(acc_edges) >= @max_chain_hops do
+      [acc_edges]
+    else
+      visited = [node | visited]
+
+      case Map.get(adjacency, node, []) do
+        [] ->
+          [acc_edges]
+
+        next_edges ->
+          Enum.flat_map(next_edges, fn edge ->
+            longest_chains(edge.to, adjacency, visited, acc_edges ++ [edge])
+          end)
+      end
+    end
+  end
+
+  # A 4-hop chain contains a 3-hop chain; reporting both is noise. Keep only
+  # chains that are not a prefix of a longer reported one.
+  defp dedupe_subchains(chains) do
+    sorted = Enum.sort_by(chains, &(-length(&1)))
+
+    Enum.reduce(sorted, [], fn chain, kept ->
+      if Enum.any?(kept, &List.starts_with?(&1, chain)), do: kept, else: [chain | kept]
+    end)
+  end
+
+  # ============================================================================
+  # singleton_bottleneck (static half)
+  # ============================================================================
+
+  @doc """
+  Singleton GenServers receiving synchronous calls from many distinct modules.
+
+  A singleton serialises every caller, so high static fan-in is a *suspicion* of
+  a contention point — not yet a finding. Phase 4 promotes it to `error` when
+  Collector runtime data agrees on queue depth.
+  """
+  @spec singleton_bottleneck([map()]) :: [finding()]
+  def singleton_bottleneck(modules) do
+    by_name = Map.new(modules, &{&1.name, &1})
+    threshold = OtpChecks.singleton_thresholds().fan_in
+
+    modules
+    |> Enum.filter(&genserver?/1)
+    |> Enum.flat_map(&all_sync_callers(&1, modules))
+    |> Enum.group_by(& &1.to, & &1.from)
+    |> Enum.flat_map(fn {target, callers} ->
+      callers = Enum.uniq(callers)
+      module = Map.get(by_name, target)
+
+      if module && module.singleton && length(callers) >= threshold do
+        [
+          %{
+            rule: "singleton_bottleneck",
+            message:
+              "#{target} is a name: __MODULE__ singleton receiving synchronous calls from " <>
+                "#{length(callers)} distinct modules — every caller serialises through one " <>
+                "process (statically suspected; runtime confirmation pending)",
+            category: "otp_deep",
+            severity: "warning",
+            confidence: "static",
+            fan_in: length(callers),
+            file: module.file,
+            line: module.line,
+            module: target
+          }
+        ]
+      else
+        []
+      end
+    end)
+  end
+
+  # Fan-in counts calls from ANY function, not just callbacks: a bottleneck is
+  # about total load on the singleton, whereas the cycle subgraph deliberately
+  # restricts to callback-reachable code because only a call made while already
+  # holding a process can deadlock.
+  defp all_sync_callers(module, _modules) do
+    module.functions
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.flat_map(&genserver_call_sites(&1.body, module))
+  end
+
+  # ============================================================================
   # Shared parsing
   # ============================================================================
 
@@ -273,6 +556,7 @@ defmodule Giulia.Knowledge.Otp do
           file: path,
           line: line,
           uses: uses_in(body),
+          singleton: singleton?(body),
           functions: functions_in(body)
         }
       end)
@@ -316,6 +600,23 @@ defmodule Giulia.Knowledge.Otp do
   end
 
   defp process_module?(%{uses: uses}), do: Enum.any?(uses, &(&1 in @behaviour_aliases))
+
+  defp genserver?(%{uses: uses}), do: "GenServer" in uses
+
+  # `name: __MODULE__` anywhere in the module — the universal idiom for a
+  # singleton process whose module identity IS its process identity. This is
+  # what lets a cycle be reported at `high` confidence: for a singleton, one
+  # module means exactly one process, so a module-level cycle is a process-level
+  # deadlock. Without it, multiple instances may make the same cycle harmless.
+  defp singleton?(body) do
+    {_ast, found} =
+      Macro.prewalk(body, false, fn
+        {:name, {:__MODULE__, _, ctx}} = node, _acc when is_atom(ctx) -> {node, true}
+        node, acc -> {node, acc}
+      end)
+
+    found
+  end
 
   # `%{{name, arity} => [clause]}` — a clause carries its args, body, line and
   # whether it is guarded, which is all the checks need.
