@@ -372,8 +372,10 @@ defmodule Giulia.Knowledge.Store do
       end)
 
     cy_edges =
-      Enum.map(edges, fn {source, target, label} ->
-        %{data: %{source: source, target: target, label: to_string(label)}}
+      edges
+      |> Enum.reject(&supervision_edge?/1)
+      |> Enum.map(fn {source, target, label} ->
+        %{data: %{source: source, target: target, label: render_edge_label(label)}}
       end)
 
     {:ok,
@@ -384,6 +386,25 @@ defmodule Giulia.Knowledge.Store do
        edge_count: length(cy_edges)
      }}
   end
+
+  # Supervision edges are wiring, not dependency coupling, and they have their
+  # own endpoint and Explorer view. The same reasoning `Topology.cycles/1`
+  # applies to `:references`: a structural view must contain only the relation
+  # it claims to show. They would also duplicate edges Pass 6 already emits as
+  # `:references` for the same module pairs.
+  defp supervision_edge?({_source, _target, {:supervises, _meta}}), do: true
+  defp supervision_edge?(_edge), do: false
+
+  # Edge labels are not all atoms — Passes 7-12 emit tagged tuples
+  # (`{:calls, :protocol_impl}`, `{:supervises, %{...}}`). `to_string/1` raises
+  # Protocol.UndefinedError on a tuple, which surfaced as a bare HTTP 500 on
+  # `/api/knowledge/topology` and took the whole Graph Explorer down: the browser
+  # got an empty body and failed at `r.json()`. Rendering must be total, so no
+  # future edge label can break the view by existing.
+  defp render_edge_label(label) when is_atom(label), do: to_string(label)
+  defp render_edge_label({kind, sub}) when is_atom(kind) and is_atom(sub), do: "#{kind}:#{sub}"
+  defp render_edge_label({kind, _meta}) when is_atom(kind), do: to_string(kind)
+  defp render_edge_label(other), do: inspect(other)
 
   # Behaviour-fracture serialization. Single source of truth for both
   # `audit/1` and `integrity_report/1`; no other module should re-implement
