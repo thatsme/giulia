@@ -42,6 +42,66 @@ defmodule Giulia.Knowledge.OtpSyncTest do
       assert Enum.sort(finding.cycle) == ["Dead.A", "Dead.B"]
     end
 
+    test "a cycle through client API wrappers is detected" do
+      # THE false negative this detector shipped with. Neither callback contains
+      # a `GenServer.call` — both call the other module's client wrapper, which
+      # is how essentially all real Elixir expresses a cross-process call.
+      #
+      # Measured across Giulia, Plug, Bandit and Plausible: 72 GenServer.call
+      # sites, ZERO inside a callback. Without this the subgraph is empty on
+      # every real codebase, and an empty graph reports as "no cycles found".
+      source = """
+      defmodule Wrap.A do
+        use GenServer
+
+        def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+        def fetch, do: GenServer.call(__MODULE__, :fetch)
+
+        def handle_call(:fetch, _from, state) do
+          {:reply, Wrap.B.lookup(), state}
+        end
+      end
+
+      defmodule Wrap.B do
+        use GenServer
+
+        def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+        def lookup, do: GenServer.call(__MODULE__, :lookup)
+
+        def handle_call(:lookup, _from, state) do
+          {:reply, Wrap.A.fetch(), state}
+        end
+      end
+      """
+
+      assert [finding] = source |> parse() |> Otp.cross_process_call_cycle()
+      assert finding.confidence == "high"
+      assert finding.severity == "error"
+      assert Enum.sort(finding.cycle) == ["Wrap.A", "Wrap.B"]
+    end
+
+    test "calling a non-synchronous function of another server is not an edge" do
+      # `peek/0` reads ETS directly — no process boundary, so no deadlock risk.
+      source = """
+      defmodule Safe.A do
+        use GenServer
+        def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+        def fetch, do: GenServer.call(__MODULE__, :fetch)
+        def handle_call(:fetch, _from, s), do: {:reply, Safe.B.peek(), s}
+      end
+
+      defmodule Safe.B do
+        use GenServer
+        def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
+        def peek, do: :ets.lookup(:t, :k)
+        def lookup, do: GenServer.call(__MODULE__, :lookup)
+        def handle_call(:lookup, _from, s), do: {:reply, Safe.A.fetch(), s}
+      end
+      """
+
+      assert source |> parse() |> Otp.cross_process_call_cycle() == []
+    end
+
     test "medium confidence when an endpoint is not a singleton" do
       source = """
       defmodule Dead.A do

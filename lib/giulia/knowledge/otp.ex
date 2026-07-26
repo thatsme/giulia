@@ -292,16 +292,79 @@ defmodule Giulia.Knowledge.Otp do
   def sync_call_edges(modules) do
     implementers = modules |> Enum.filter(&genserver?/1) |> Map.new(&{&1.name, &1})
 
+    # Sync API surface per implementer: public functions wrapping
+    # `GenServer.call(__MODULE__, …)`. Calling one of those from inside a
+    # callback is a cross-process synchronous call, even though no
+    # `GenServer.call` appears at the call site.
+    api_surface =
+      implementers
+      |> Enum.flat_map(fn {name, module} ->
+        names = sync_api_names(module)
+        if MapSet.size(names) > 0, do: [{name, names}], else: []
+      end)
+      |> Map.new()
+
     implementers
     |> Map.values()
     |> Enum.flat_map(fn module ->
-      module
-      |> callback_reachable_bodies()
-      |> Enum.flat_map(&genserver_call_sites(&1, module))
-      |> Enum.filter(&Map.has_key?(implementers, &1.to))
-      |> Enum.reject(&(&1.to == module.name))
+      bodies = callback_reachable_bodies(module)
+
+      direct =
+        bodies
+        |> Enum.flat_map(&genserver_call_sites(&1, module))
+        |> Enum.filter(&Map.has_key?(implementers, &1.to))
+
+      via_api = Enum.flat_map(bodies, &api_call_sites(&1, module, api_surface))
+
+      Enum.reject(direct ++ via_api, &(&1.to == module.name))
     end)
     |> Enum.uniq_by(&{&1.from, &1.to})
+  end
+
+  # Calls from a callback body to another GenServer's synchronous API wrapper.
+  #
+  # Without this the subgraph is empty on essentially all real Elixir. Measured
+  # across Giulia, Plug, Bandit and Plausible: 72 `GenServer.call` sites, and
+  # ZERO of them inside a callback — because the idiom is to wrap the call in a
+  # client function, so a callback contains `OtherServer.fetch()`, not
+  # `GenServer.call(OtherServer, …)`.
+  #
+  # Giulia's own `Persistence.Writer` does exactly this: six callback sites
+  # calling `Persistence.Store.get_db/1`, which wraps a `GenServer.call`. Real
+  # cross-process synchronous calls, invisible to the direct-call-site scan.
+  #
+  # This is the same false negative that `singleton_bottleneck` had before
+  # Phase 4 — the client wrapper hides the process boundary — and it is why the
+  # cycle detector reported an empty graph rather than a clean one.
+  defp api_call_sites(body, module, api_surface) do
+    body
+    |> qualified_calls()
+    |> Enum.flat_map(fn {mfa, line} ->
+      case String.split(mfa, ".") do
+        [_single] ->
+          []
+
+        parts ->
+          fun = List.last(parts)
+          target = parts |> Enum.drop(-1) |> Enum.join(".")
+          api = Map.get(api_surface, target)
+
+          if api && MapSet.member?(api, fun) do
+            [
+              %{
+                from: module.name,
+                to: target,
+                line: line,
+                # The wrapper owns the timeout; it is not visible at this call
+                # site, so the OTP default is the honest assumption.
+                timeout: @default_call_timeout_ms
+              }
+            ]
+          else
+            []
+          end
+      end
+    end)
   end
 
   defp callback_reachable_bodies(module) do

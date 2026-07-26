@@ -79,19 +79,6 @@ defmodule Giulia.Knowledge.Supervision do
   end
 
   @doc """
-  Build the supervision tree from an already-built graph.
-
-  Reads the `{:supervises, meta}` edges Pass 12 emitted rather than re-parsing
-  source, so the endpoint serves whatever the current build contains. Returns
-  the nested tree plus the flat edge list — the flat form is what Cytoscape
-  consumes, the nested form is what humans read.
-
-  Roots are supervisor vertices with no inbound `:supervises` edge. A
-  supervision tree should never cycle, but `visited` guards the descent anyway:
-  a fabricated cycle would otherwise hang the endpoint rather than show up as
-  bad data.
-  """
-  @doc """
   Build the supervision tree from extraction declarations.
 
   This — not `tree/1` — is what the endpoint serves. The graph cannot carry
