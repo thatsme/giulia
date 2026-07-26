@@ -53,9 +53,16 @@ defmodule Giulia.Knowledge.Store.Reader do
     project_path |> get_graph() |> Analyzer.stats()
   end
 
+  # Built from extraction, not the graph. Pass 12 cannot label a supervisor
+  # whose key collides with a vertex an earlier pass already created, so a
+  # graph-derived tree silently loses supervisors — and the flags that say the
+  # data is incomplete. See `Supervision.tree_from_declarations/1`.
   @spec supervision(String.t()) :: map()
   def supervision(project_path) do
-    project_path |> get_graph() |> Supervision.tree()
+    project_path
+    |> Giulia.Context.Store.all_asts()
+    |> Supervision.extract()
+    |> Supervision.tree_from_declarations()
   end
 
   # AST-based like conventions, not a graph read — same shape as

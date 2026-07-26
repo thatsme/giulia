@@ -69,6 +69,58 @@ defmodule Giulia.Knowledge.TopologyViewTest do
            "supervision edges are wiring, not dependency coupling — they have their own view"
   end
 
+  test "a supervisor with an unresolved child list is visible in the tree" do
+    # Regression, found by scanning Plausible. Its Supervisor.start_link takes
+    # `List.flatten(children)` — a function call, outside the binding bound — so
+    # the child list is correctly unresolved and the supervisor has no edges.
+    #
+    # `tree/1` derived roots from edge SOURCES, so that supervisor vanished
+    # entirely: the endpoint returned `supervisor_count: 1, roots: []`. A
+    # consumer sees an empty tree with nothing to distinguish "supervises
+    # nothing" from "we could not see the children" — the gap-presented-as-fact
+    # the flag exists to prevent.
+    decls = [
+      %{
+        key: "Opaque.Supervisor",
+        module: "Opaque.Application",
+        registered_name: "Opaque.Supervisor",
+        dynamic: false,
+        strategy: "one_for_one",
+        children: [],
+        children_unresolved: true
+      }
+    ]
+
+    view = Giulia.Knowledge.Supervision.tree_from_declarations(decls)
+
+    assert [root] = view.roots, "an unresolved supervisor must still appear as a root"
+    assert root.key == "Opaque.Supervisor"
+    assert root.children == []
+    assert root.children_unresolved == true
+  end
+
+  test "a resolved supervisor carries no unresolved flag" do
+    decls = [
+      %{
+        key: "Clear.Supervisor",
+        module: "Clear.Application",
+        registered_name: "Clear.Supervisor",
+        dynamic: false,
+        strategy: "one_for_one",
+        children: [
+          %{key: "Clear.Child", module: "Clear.Child", restart: :permanent, order: 0, conditional: false}
+        ],
+        children_unresolved: false
+      }
+    ]
+
+    view = Giulia.Knowledge.Supervision.tree_from_declarations(decls)
+
+    assert [root] = view.roots
+    refute Map.has_key?(root, :children_unresolved),
+           "the flag must be absent when resolved, never false — no third state to interpret"
+  end
+
   test "a graph of only supervision edges yields a usable view, not a crash", %{project: project} do
     # The degenerate case: every edge filtered out. It must still answer.
     seed!(project, [

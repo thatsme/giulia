@@ -91,15 +91,136 @@ defmodule Giulia.Knowledge.Supervision do
   a fabricated cycle would otherwise hang the endpoint rather than show up as
   bad data.
   """
+  @doc """
+  Build the supervision tree from extraction declarations.
+
+  This — not `tree/1` — is what the endpoint serves. The graph cannot carry
+  supervision metadata: Pass 12 must never re-label an existing vertex (exact-
+  equality filters would drop it), so any supervisor whose key collides with a
+  vertex an earlier pass already created silently loses its `:supervisor` label
+  and every flag with it.
+
+  Plausible is the case that proved it. `Plausible.Supervisor` is not a
+  `defmodule` — it appears exactly once, as a `name:` option — yet a vertex for
+  it already existed by the time Pass 12 ran, so it could not be labelled and
+  the entire tree reported `supervisor_count: 0, roots: []`. Reading the graph
+  meant the answer depended on whether an unrelated pass had happened to mint
+  the same key first.
+
+  Declarations carry `strategy`, `dynamic`, `children_unresolved` and
+  `registered_name` directly, with no label system in the way. Cost is
+  re-parsing at request time — the same trade `Knowledge.Otp` already makes.
+  Pass 12's graph edges remain, for consumers that want supervision as graph
+  structure (blast radius, traversal).
+  """
+  @spec tree_from_declarations([supervisor_decl()]) :: map()
+  def tree_from_declarations(declarations) do
+    by_key = Map.new(declarations, &{&1.key, &1})
+
+    child_keys =
+      declarations
+      |> Enum.flat_map(fn decl -> Enum.map(decl.children, & &1.key) end)
+      |> MapSet.new()
+
+    roots =
+      declarations
+      |> Enum.map(& &1.key)
+      |> Enum.reject(&MapSet.member?(child_keys, &1))
+      |> Enum.sort()
+
+    edges =
+      Enum.flat_map(declarations, fn decl ->
+        Enum.map(decl.children, fn child ->
+          %{
+            from: decl.key,
+            to: child.key,
+            restart: child.restart,
+            order: child.order,
+            strategy: decl.strategy,
+            conditional: child.conditional
+          }
+        end)
+      end)
+
+    %{
+      roots: Enum.map(roots, &decl_node(&1, by_key, MapSet.new())),
+      edges: Enum.sort_by(edges, &{&1.from, &1.order}),
+      supervisor_count: length(declarations),
+      supervised_count: MapSet.size(child_keys)
+    }
+  end
+
+  defp decl_node(key, by_key, visited) do
+    cond do
+      MapSet.member?(visited, key) ->
+        %{key: key, children: [], cycle: true}
+
+      true ->
+        visited = MapSet.put(visited, key)
+        decl = Map.get(by_key, key)
+
+        children =
+          case decl do
+            nil ->
+              []
+
+            %{children: cs} ->
+              cs
+              |> Enum.sort_by(& &1.order)
+              |> Enum.map(fn child ->
+                child.key
+                |> decl_node(by_key, visited)
+                |> Map.merge(%{
+                  restart: child.restart,
+                  order: child.order,
+                  conditional: child.conditional
+                })
+              end)
+          end
+
+        node = %{key: key, children: children}
+
+        node =
+          if decl && decl.dynamic, do: Map.put(node, :dynamic, true), else: node
+
+        # Surfaced only when true, so a consumer never has to distinguish
+        # "resolved and empty" from "flag absent".
+        if decl && decl.children_unresolved do
+          Map.put(node, :children_unresolved, true)
+        else
+          node
+        end
+    end
+  end
+
+  @doc """
+  Build the supervision tree from an already-built graph.
+
+  Retained for graph-shaped consumers. Prefer `tree_from_declarations/1` for the
+  endpoint — see its docs for why the graph cannot carry the flags.
+  """
   @spec tree(Graph.t()) :: map()
   def tree(graph) do
     edges = supervises_edges(graph)
     by_parent = Enum.group_by(edges, & &1.from)
     child_keys = MapSet.new(edges, & &1.to)
 
+    # Roots are supervisors with no inbound edge — INCLUDING those with no edges
+    # at all. A supervisor whose child list could not be statically resolved has
+    # no edges by construction, so deriving roots from edge sources alone made
+    # it vanish from the response entirely: `children_unresolved: true` was
+    # computed and then silently discarded here.
+    #
+    # Plausible is the case that exposed this. Its `Supervisor.start_link` takes
+    # `List.flatten(children)` — a function call, outside the binding bound — so
+    # the whole tree came back as `supervisor_count: 1, roots: []`. A consumer
+    # sees an empty tree and no reason to doubt it. That is the exact
+    # gap-presented-as-fact this flag exists to prevent.
     roots =
       by_parent
       |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(labelled_supervisors(graph))
       |> Enum.reject(&MapSet.member?(child_keys, &1))
       |> Enum.sort()
 
@@ -113,24 +234,31 @@ defmodule Giulia.Knowledge.Supervision do
     # supervisor that is also a project module keeps `[:module]` alone and is
     # only counted here if it has children. Under-reporting is the safe
     # direction for a summary figure.
-    labelled_supervisors =
-      graph
-      |> Graph.vertices()
-      |> Enum.filter(&(:supervisor in Graph.vertex_labels(graph, &1)))
-      |> MapSet.new()
-
     supervisors =
       by_parent
       |> Map.keys()
       |> MapSet.new()
-      |> MapSet.union(labelled_supervisors)
+      |> MapSet.union(labelled_supervisors(graph))
+
+    unresolved =
+      graph
+      |> Graph.vertices()
+      |> Enum.filter(&(:children_unresolved in Graph.vertex_labels(graph, &1)))
+      |> MapSet.new()
 
     %{
-      roots: Enum.map(roots, &build_node(&1, by_parent, MapSet.new())),
+      roots: Enum.map(roots, &build_node(&1, by_parent, MapSet.new(), unresolved)),
       edges: Enum.sort_by(edges, &{&1.from, &1.order}),
       supervisor_count: MapSet.size(supervisors),
       supervised_count: MapSet.size(child_keys)
     }
+  end
+
+  defp labelled_supervisors(graph) do
+    graph
+    |> Graph.vertices()
+    |> Enum.filter(&(:supervisor in Graph.vertex_labels(graph, &1)))
+    |> MapSet.new()
   end
 
   defp supervises_edges(graph) do
@@ -154,7 +282,7 @@ defmodule Giulia.Knowledge.Supervision do
     end)
   end
 
-  defp build_node(key, by_parent, visited) do
+  defp build_node(key, by_parent, visited, unresolved) do
     if MapSet.member?(visited, key) do
       %{key: key, children: [], cycle: true}
     else
@@ -166,7 +294,7 @@ defmodule Giulia.Knowledge.Supervision do
         |> Enum.sort_by(& &1.order)
         |> Enum.map(fn edge ->
           edge.to
-          |> build_node(by_parent, visited)
+          |> build_node(by_parent, visited, unresolved)
           |> Map.merge(%{
             restart: edge.restart,
             order: edge.order,
@@ -174,7 +302,15 @@ defmodule Giulia.Knowledge.Supervision do
           })
         end)
 
-      %{key: key, children: children}
+      node = %{key: key, children: children}
+
+      # Surfaced only when true, so a consumer never has to distinguish
+      # "resolved and empty" from "flag absent".
+      if MapSet.member?(unresolved, key) do
+        Map.put(node, :children_unresolved, true)
+      else
+        node
+      end
     end
   end
 

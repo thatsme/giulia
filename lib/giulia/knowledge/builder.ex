@@ -168,11 +168,22 @@ defmodule Giulia.Knowledge.Builder do
     # `{DynamicSupervisor, name: X}` declarations share one module. Every
     # endpoint is therefore keyed `name_option || module`.
     #
-    # This pass only ever *adds*. It never re-labels an existing vertex,
-    # because libgraph accumulates labels and several call sites filter on
-    # exact equality (`Graph.vertex_labels(g, v) == [:module]` in
-    # `Topology.stats/1`, `Topology.blast_radius/3` and `Insights`) — a
-    # second label would silently remove the vertex from those results.
+    # This pass only ever *adds*. It never re-labels an existing vertex:
+    # several call sites filter on exact equality
+    # (`Graph.vertex_labels(g, v) == [:module]` in `Topology.stats/1`,
+    # `Topology.blast_radius/3` and `Insights`), so a second label would
+    # silently remove the vertex from those results.
+    #
+    # Mechanism, verified rather than assumed: `Graph.add_vertex/3` on an
+    # EXISTING vertex is a no-op — it cannot corrupt labels, and it also cannot
+    # add one. Only `Graph.label_vertex/3` accumulates, and this pass never
+    # calls it.
+    #
+    # The consequence is why the `/supervision` endpoint does NOT read the
+    # graph: a supervisor whose key collides with a vertex an earlier pass
+    # already minted keeps that pass's labels and is invisible to any
+    # label-based query. Graph edges are for graph-shaped consumers; the tree
+    # comes from `Supervision.tree_from_declarations/1`.
     add_supervision_edges(graph, ast_data)
   end
 
@@ -1964,6 +1975,13 @@ defmodule Giulia.Knowledge.Builder do
 
     graph =
       Enum.reduce(declarations, graph, fn decl, g ->
+        # No attempt to encode `children_unresolved` on the vertex. A key that
+        # collides with a vertex an earlier pass already minted cannot be
+        # labelled (see `ensure_supervision_vertex/3`), so the flag would
+        # survive for some supervisors and vanish for others — worse than not
+        # carrying it, because its absence would read as a resolved child list.
+        # The endpoint reads declarations instead; see
+        # `Supervision.tree_from_declarations/1`.
         ensure_supervision_vertex(g, decl.key, :supervisor)
       end)
 
@@ -1987,11 +2005,6 @@ defmodule Giulia.Knowledge.Builder do
     end)
   end
 
-  # Add a vertex only when it does not already exist. libgraph accumulates
-  # labels, so labelling an existing `:module` vertex would leave it with
-  # `[:module, :supervisor]` and drop it from every exact-equality filter.
-  # Project modules keep `[:module]`; only genuinely new keys — registered
-  # names and external modules — carry the new labels.
   defp ensure_supervision_vertex(graph, key, label) do
     if Graph.has_vertex?(graph, key) do
       graph
