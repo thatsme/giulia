@@ -547,12 +547,39 @@ walker cannot resolve directly.
 | 11. Use-injected import edges | Detects modules whose `defmacro __using__/1` injects `import N` directives, then resolves unqualified calls in consumer files against those imports | `{:calls, :use_import_ref}` |
 | 12. Supervision topology | Parses `Supervisor.start_link/2`, `Supervisor.init/2` and `DynamicSupervisor.start_link/1,2` into the supervision tree. Every endpoint is keyed `name_option \|\| module`, because supervision identity is not module identity — a root supervisor is typically a registered name with no `defmodule`, several children are external modules, and two `{DynamicSupervisor, name: X}` declarations share one module | `{:supervises, %{restart, order, strategy, conditional}}` |
 
-Pass 12 only ever *adds*. It never re-labels an existing vertex: libgraph
-accumulates labels, and `Topology.stats/1`, `Topology.blast_radius/3` and
-`Insights` filter with exact equality (`labels == [:module]`), so a second label
-would silently drop the vertex from those results. The `:supervisor` /
-`:process` labels are minted only for vertices Pass 12 creates — registered
-names and external modules, which no existing filter sees.
+Pass 12 only ever *adds*. It never re-labels an existing vertex, because
+`Topology.stats/1`, `Topology.blast_radius/3` and `Insights` filter with exact
+equality (`labels == [:module]`), so a second label would silently drop the
+vertex from those results. The `:supervisor` / `:process` labels are minted only
+for vertices Pass 12 creates — registered names and external modules, which no
+existing filter sees.
+
+The libgraph mechanism, verified rather than assumed:
+
+| call | on a NEW vertex | on an EXISTING vertex |
+|---|---|---|
+| `Graph.add_vertex/3` | sets the label | **no-op** — the label is silently discarded |
+| `Graph.label_vertex/3` | — | **accumulates** — `[:module]` becomes `[:module, :x]` |
+
+An earlier version of this section claimed `add_vertex/3` accumulates. It does
+not, and the distinction is load-bearing in both directions: `add_vertex/3`
+cannot corrupt an existing vertex's labels, which is what makes Pass 12 safe —
+and it equally cannot *add* one, which is why an attempt to mark supervisors
+with a `:children_unresolved` label silently did nothing.
+
+**Consequence: the graph cannot carry supervision metadata.** A supervisor whose
+key collides with a vertex an earlier pass already minted keeps that pass's
+labels, so any label-based query is blind to it. `Plausible.Supervisor` is the
+worked example — not a `defmodule`, appearing exactly once as a `name:` option,
+yet already a vertex by the time Pass 12 ran, which made the whole tree report
+`supervisor_count: 0, roots: []`. Whether the tree worked depended on whether an
+unrelated pass happened to mint the same key first.
+
+`GET /api/knowledge/supervision` therefore builds from extraction declarations
+(`Supervision.tree_from_declarations/1`), which carry `strategy`, `dynamic`,
+`children_unresolved` and `registered_name` directly. Pass 12's edges remain for
+graph-shaped consumers — blast radius, traversal — where the flags do not
+matter.
 
 Edges from Passes 7-11 are consumed by `dead_code_with_asts/3` via a
 single `reference_targets` set (functions referenced via any of the
@@ -977,7 +1004,7 @@ this section names what remains, deliberately, so consumers know where
 | Pattern | Example | Why it's invisible | Mitigation |
 |---|---|---|---|
 | DynamicSupervisor children | `DynamicSupervisor.start_child(sup, spec)` | Children are started at runtime, never declared | Supervisor vertex emitted with `dynamic: true`; an empty child list here is correct, not unresolved |
-| Child list built by a function call, `Enum.*` or comprehension | `children = Enum.map(ids, &worker/1)` | Outside the bounded binding resolution (single-assignment vars, literal lists, `++` chains, enclosing function only) | Supervisor emitted with `children_unresolved: true` and **no** child edges — an explicit gap. A partial list presented as complete would become a false negative in every check reasoning over the tree |
+| Child list built by a function call, `Enum.*` or comprehension | `Supervisor.start_link(List.flatten(children), opts)` — Plausible's actual shape | Outside the bounded binding resolution (single-assignment vars, literal lists, `++` chains, enclosing function only) | Supervisor emitted with `children_unresolved: true` and **no** child edges — an explicit gap, surfaced on the supervisor node in `/api/knowledge/supervision`. A partial list presented as complete would become a false negative in every check reasoning over the tree |
 | Children of external supervisors | `{Registry, …}`, `{Bandit, …}` | Defined in dependency source, outside the scanned project | Vertex emitted with `external: true`; the tree stops there rather than descending into deps |
 | Registry-based via-tuples | `{:via, Registry, {R, id}}` | Process identity is runtime data | Module-level resolution only; dependent checks carry a confidence flag |
 | Process identity vs module identity | one module started N times | A module started repeatedly is one vertex | `cross_process_call_cycle` reports `high` confidence only when every endpoint is a `name: __MODULE__` singleton, `medium` otherwise |
