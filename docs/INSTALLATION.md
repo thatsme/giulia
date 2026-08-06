@@ -78,8 +78,8 @@ The following environment variables are defined in the `x-common-env` anchor in 
 | `GIULIA_HOME` | `/data` | Data directory inside the container |
 | `GIULIA_IN_CONTAINER` | `true` | Signals that Giulia is running inside Docker |
 | `GIULIA_COOKIE` | `giulia_dev` | Erlang distribution cookie for node authentication. **Change this before connecting to non-trivial nodes or exposing over a network.** |
-| `GIULIA_HOST_PROJECTS_PATH` | *(required)* | Host-side path prefix for path translation. Example: `D:/Development/GitHub` (Windows) or `/home/user/projects` (Linux). Must match the host side of your Docker volume mount. |
-| `GIULIA_PATH_MAPPING` | (empty) | Custom path mapping overrides |
+| `GIULIA_HOST_PROJECTS_PATH` | *(required)* | Host-side path prefix for path translation, mapped to `/projects`. Example: `D:/Development/GitHub` (Windows), `/Users/alex/dev` (macOS), `/home/user/projects` (Linux). Must match the host side of your Docker volume mount. |
+| `GIULIA_PATH_MAPPING` | (empty) | Additional host→container prefixes beyond `/projects`, written `host=container` and separated by `;`. Example: `/opt/vendor=/vendor;/srv/code=/projects`. The longest matching prefix wins. |
 | `GIULIA_PORT` | `4000` (worker), `4001` (monitor) | HTTP API port |
 | `GIULIA_ROLE` | `worker` or `monitor` | Container role. Determines which OTP children start. |
 | `ARCADEDB_URL` | `http://host.docker.internal:2480` | ArcadeDB REST API endpoint (worker only) |

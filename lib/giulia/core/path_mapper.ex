@@ -1,74 +1,73 @@
 defmodule Giulia.Core.PathMapper do
   @moduledoc """
-  The Translation Shim - Path mapping between Host and Container.
+  Host↔container path translation.
 
-  When the Windows Client says `C:\\Development\\Guardian\\lib\\guardian.ex`,
-  the Daemon translates it to `/projects/guardian/lib/guardian.ex`.
+  Giulia runs inside a container while its clients run on the host. A client
+  speaks host paths — `D:/Development/GitHub/Giulia` under Docker Desktop on
+  Windows, `/Users/alex/dev/Giulia` under OrbStack on macOS — and the daemon
+  resolves them against the mount that carries them into the container.
 
-  This is the "Senior" implementation:
-  - Handles Windows backslashes vs Linux forward slashes
-  - Uses prefix swap, not string hacking
-  - Configured via environment variables (no hardcoded paths)
+  Every mapping comes from the environment. No host path is compiled in, so a
+  single image behaves identically on every platform: a difference in behaviour
+  can only follow from a difference in configuration.
 
-  Configuration:
-    GIULIA_HOST_PROJECTS_PATH - The host prefix (e.g., "C:/Development/GitHub")
-    Maps to /projects inside the container
+  ## Configuration
+
+    * `GIULIA_HOST_PROJECTS_PATH` — host prefix mounted at `/projects`
+    * `GIULIA_PATH_MAPPING` — additional pairs, `host=container`, `;`-separated
+
+  ## Matching rules
+
+  Longest prefix wins, so a specific mapping is never shadowed by a shorter one
+  sharing its head. A prefix matches only on a path-segment boundary:
+  `/Users/alex/dev` maps `/Users/alex/dev/app` but never `/Users/alex/devil`.
+  Comparison ignores case only for prefixes beginning with a Windows drive
+  letter — `/Users` and `/users` are two different directories on the Linux
+  filesystem inside the container, and treating them as one silently rewrites
+  macOS paths to a location that does not exist.
+
+  An unmapped path is returned unchanged. `diagnostics/0` reports the active
+  table and is surfaced on `GET /health`, so a wrong mount shows up in one
+  request instead of as an empty scan result much later.
   """
+
+  require Logger
 
   @container_prefix "/projects"
 
   @doc """
   Convert a host path to a container path.
 
-  ## Example
-      iex> PathMapper.to_container("C:\\\\Development\\\\GitHub\\\\Guardian\\\\lib\\\\guardian.ex")
-      "/projects/Guardian/lib/guardian.ex"
+  With `GIULIA_HOST_PROJECTS_PATH=D:/Development/GitHub`, the host path
+  `D:/Development/GitHub/Giulia/mix.exs` becomes `/projects/Giulia/mix.exs`.
+  Returns the input unchanged when no mapping applies.
   """
   @spec to_container(String.t()) :: String.t()
   def to_container(host_path) do
-    host_prefix = get_host_prefix()
-
-    # 1. Normalize Windows backslashes to forward slashes
     normalized = normalize_slashes(host_path)
 
-    # 2. Swap the prefix (case-insensitive for Windows drive letters)
-    if host_prefix && starts_with_ignore_case?(normalized, host_prefix) do
-      # Replace the prefix, preserving the rest of the path
-      suffix = String.slice(normalized, String.length(host_prefix)..-1//1)
-      @container_prefix <> suffix
-    else
-      # Fallback: if no mapping, try legacy mappings
-      legacy_host_to_container(normalized)
-    end
-  end
-
-  # Case-insensitive prefix check (for Windows paths like C: vs c:)
-  defp starts_with_ignore_case?(string, prefix) do
-    String.downcase(String.slice(string, 0, String.length(prefix))) ==
-      String.downcase(prefix)
+    swap(normalized, by_host_length(), fn {host, container} -> {host, container} end)
   end
 
   @doc """
   Convert a container path back to a host path.
 
-  ## Example
-      iex> PathMapper.to_host("/projects/Guardian/lib/guardian.ex")
-      "C:/Development/GitHub/Guardian/lib/guardian.ex"
+  The inverse of `to_container/1`. Returns the input unchanged when no mapping
+  applies — a container-only path such as `/tmp/x` has no host equivalent.
   """
   @spec to_host(String.t()) :: String.t()
   def to_host(container_path) do
-    host_prefix = get_host_prefix()
+    normalized = normalize_slashes(container_path)
 
-    if host_prefix && String.starts_with?(container_path, @container_prefix) do
-      String.replace_prefix(container_path, @container_prefix, host_prefix)
-    else
-      container_path
-    end
+    swap(normalized, by_container_length(), fn {host, container} -> {container, host} end)
   end
 
   @doc """
-  Smart path resolution - the main entry point.
-  Use this for all path operations in the daemon.
+  Smart path resolution — the main entry point for daemon code.
+
+  Inside a container, translates a host path to its container equivalent.
+  Outside one, host and container paths are the same thing, so the path is
+  returned as given.
   """
   @spec resolve_path(String.t() | nil) :: String.t() | nil
   def resolve_path(nil), do: nil
@@ -81,14 +80,75 @@ defmodule Giulia.Core.PathMapper do
     end
   end
 
-  @doc """
-  Check if we're running inside Docker.
-  """
+  @doc "Check if we're running inside a container."
   @spec in_container?() :: boolean()
   def in_container? do
     File.exists?("/.dockerenv") or
       File.exists?("/run/.containerenv") or
       System.get_env("GIULIA_IN_CONTAINER") == "true"
+  end
+
+  @doc """
+  Active host→container mappings, in resolution order.
+
+  `GIULIA_PATH_MAPPING` pairs come first, then any added by `add_mapping/2`,
+  then the `GIULIA_HOST_PROJECTS_PATH` → `/projects` pair. Source order only
+  breaks ties: `to_container/1` and `to_host/1` both prefer the longest prefix.
+  """
+  @spec list_mappings() :: [{String.t(), String.t()}]
+  def list_mappings do
+    env_pairs() ++ runtime_pairs() ++ projects_pair()
+  end
+
+  @doc """
+  Add a runtime path mapping.
+
+  Useful when a project is mounted somewhere the environment does not describe.
+  """
+  @spec add_mapping(String.t(), String.t()) :: :ok
+  def add_mapping(host_prefix, container_prefix) do
+    current = Application.get_env(:giulia, :path_mappings, [])
+    Application.put_env(:giulia, :path_mappings, [{host_prefix, container_prefix} | current])
+    :ok
+  end
+
+  @doc """
+  Report the active mapping table and whether it can translate host paths.
+
+  `warning` is `nil` when the configuration is usable, and a sentence when it is
+  not — the daemon is running in a container with nothing to translate against,
+  which makes every host path from a client resolve to itself and then fail to
+  open.
+  """
+  @spec diagnostics() :: map()
+  def diagnostics do
+    mappings = list_mappings()
+
+    %{
+      in_container: in_container?(),
+      mappings:
+        Enum.map(mappings, fn {host, container} -> %{host: host, container: container} end),
+      warning: mapping_warning(mappings)
+    }
+  end
+
+  @doc """
+  Log the mapping table at boot, loudly if it cannot translate anything.
+
+  Called from the application supervisor so a bad mount is visible in the first
+  lines of `docker compose logs` rather than as a confusing empty scan.
+  """
+  @spec log_configuration() :: :ok
+  def log_configuration do
+    case diagnostics() do
+      %{warning: nil, mappings: mappings} ->
+        Logger.info("PathMapper: #{length(mappings)} host→container mapping(s) active")
+
+      %{warning: warning} ->
+        Logger.warning("PathMapper: #{warning}")
+    end
+
+    :ok
   end
 
   @doc """
@@ -100,84 +160,135 @@ defmodule Giulia.Core.PathMapper do
   """
   @spec lm_studio_base_url() :: String.t()
   def lm_studio_base_url do
-    # Check the correct env var name (GIULIA_LM_STUDIO_URL per CLAUDE.md)
     case System.get_env("GIULIA_LM_STUDIO_URL") do
       nil ->
         if in_container?() do
-          # Inside Docker, use host.docker.internal to reach host machine
           "http://host.docker.internal:1234"
         else
-          # Outside Docker, default to localhost
           "http://127.0.0.1:1234"
         end
 
       url ->
-        # User provided URL - extract base (handle both full URL and base URL)
         url = String.trim_trailing(url, "/")
+
         if String.contains?(url, "/v1/") do
-          # Full URL provided like "http://192.168.1.52:1234/v1/chat/completions"
           uri = URI.parse(url)
           "#{uri.scheme}://#{uri.host}:#{uri.port || 1234}"
         else
-          # Base URL provided like "http://192.168.1.52:1234"
           url
         end
     end
   end
 
-  @doc """
-  Get the LM Studio chat completions URL.
-  """
+  @doc "Get the LM Studio chat completions URL."
   @spec lm_studio_url() :: String.t()
   def lm_studio_url do
     "#{lm_studio_base_url()}/v1/chat/completions"
   end
 
-  @doc """
-  Get the LM Studio models endpoint URL (for availability check).
-  """
+  @doc "Get the LM Studio models endpoint URL (for availability check)."
   @spec lm_studio_models_url() :: String.t()
   def lm_studio_models_url do
     "#{lm_studio_base_url()}/v1/models"
-  end
-
-  @doc """
-  List all active mappings (for debugging).
-  """
-  @spec list_mappings() :: [{String.t(), String.t()}]
-  def list_mappings do
-    host_prefix = get_host_prefix()
-
-    if host_prefix do
-      [{host_prefix, @container_prefix}]
-    else
-      []
-    end
-  end
-
-  @doc """
-  Add a runtime path mapping (for dynamic configuration).
-  """
-  @spec add_mapping(String.t(), String.t()) :: :ok
-  def add_mapping(host_prefix, container_prefix) do
-    current = Application.get_env(:giulia, :path_mappings, [])
-    new_mappings = [{host_prefix, container_prefix} | current]
-    Application.put_env(:giulia, :path_mappings, new_mappings)
-    :ok
   end
 
   # ============================================================================
   # Private
   # ============================================================================
 
+  # Rewrites the first prefix that matches, or returns the path untouched.
+  # `orient` picks which side of each pair is the source and which the target,
+  # so one traversal serves both translation directions.
+  defp swap(path, mappings, orient) do
+    Enum.find_value(mappings, path, fn pair ->
+      {from, to} = orient.(pair)
+
+      if prefix_match?(path, from) do
+        to <> String.slice(path, String.length(from)..-1//1)
+      end
+    end)
+  end
+
+  defp by_host_length, do: Enum.sort_by(list_mappings(), &String.length(elem(&1, 0)), :desc)
+
+  defp by_container_length, do: Enum.sort_by(list_mappings(), &String.length(elem(&1, 1)), :desc)
+
+  # A prefix matches only on a segment boundary, so `/a/dev` never claims
+  # `/a/devil`. Case is ignored only for Windows drive-letter prefixes.
+  defp prefix_match?(_path, prefix) when prefix in [nil, ""], do: false
+
+  defp prefix_match?(path, prefix) do
+    len = String.length(prefix)
+    head = String.slice(path, 0, len)
+    rest = String.slice(path, len..-1//1)
+
+    same_head?(head, prefix) and (rest == "" or String.starts_with?(rest, "/"))
+  end
+
+  defp same_head?(head, prefix) do
+    if windows_prefix?(prefix) do
+      String.downcase(head) == String.downcase(prefix)
+    else
+      head == prefix
+    end
+  end
+
+  defp windows_prefix?(prefix), do: Regex.match?(~r/^[A-Za-z]:/, prefix)
+
+  defp env_pairs, do: parse_mapping_spec(System.get_env("GIULIA_PATH_MAPPING"))
+
+  defp parse_mapping_spec(nil), do: []
+  defp parse_mapping_spec(""), do: []
+
+  defp parse_mapping_spec(spec) do
+    spec
+    |> String.split(";")
+    |> Enum.flat_map(fn entry ->
+      case String.split(entry, "=", parts: 2) do
+        [host, container] -> mapping_pair(host, container)
+        _ -> []
+      end
+    end)
+  end
+
+  defp mapping_pair(host, container) do
+    host = normalize_slashes(String.trim(host))
+    container = normalize_slashes(String.trim(container))
+
+    if host != "" and container != "", do: [{host, container}], else: []
+  end
+
+  defp runtime_pairs do
+    :giulia
+    |> Application.get_env(:path_mappings, [])
+    |> Enum.flat_map(fn {host, container} -> mapping_pair(host, container) end)
+  end
+
+  defp projects_pair do
+    case get_host_prefix() do
+      nil -> []
+      "" -> []
+      prefix -> [{prefix, @container_prefix}]
+    end
+  end
+
   defp get_host_prefix do
-    # Priority: env var > app config
     case System.get_env("GIULIA_HOST_PROJECTS_PATH") do
-      nil -> Application.get_env(:giulia, :host_projects_path)
-      "" -> Application.get_env(:giulia, :host_projects_path)
+      nil -> normalize_slashes(Application.get_env(:giulia, :host_projects_path))
+      "" -> normalize_slashes(Application.get_env(:giulia, :host_projects_path))
       path -> normalize_slashes(path)
     end
   end
+
+  defp mapping_warning([]) do
+    if in_container?() do
+      "no host→container path mappings configured — set GIULIA_HOST_PROJECTS_PATH " <>
+        "to the host side of the /projects mount, or host paths sent by clients " <>
+        "will resolve to themselves and fail to open"
+    end
+  end
+
+  defp mapping_warning(_), do: nil
 
   defp normalize_slashes(nil), do: nil
 
@@ -185,29 +296,5 @@ defmodule Giulia.Core.PathMapper do
     path
     |> String.replace("\\", "/")
     |> String.trim_trailing("/")
-  end
-
-  # Legacy fallback for paths that don't match the main mapping
-  defp legacy_host_to_container(normalized_path) do
-    runtime_mappings = Application.get_env(:giulia, :path_mappings, [])
-
-    legacy_mappings =
-      runtime_mappings ++
-        [
-          {"C:/Development/GitHub", "/projects"},
-          {"D:/Development/GitHub", "/projects"},
-          {"C:/Users", "/users"},
-          {"D:/Users", "/users"},
-          {"/home", "/home"},
-          {"/Users", "/users"}
-        ]
-
-    Enum.find_value(legacy_mappings, normalized_path, fn {host, container} ->
-      if String.starts_with?(normalized_path, host) do
-        String.replace_prefix(normalized_path, host, container)
-      else
-        nil
-      end
-    end)
   end
 end

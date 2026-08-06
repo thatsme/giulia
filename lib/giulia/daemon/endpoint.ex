@@ -15,47 +15,50 @@ defmodule Giulia.Daemon.Endpoint do
   import Giulia.Daemon.Helpers
 
   # Global Logic Tap — every HTTP request emits telemetry (Build 96)
-  plug Plug.Telemetry, event_prefix: [:giulia, :http]
-  plug Plug.Logger
-  plug :match
-  plug :fetch_query_params
-  plug :maybe_parse_body
-  plug :dispatch
+  plug(Plug.Telemetry, event_prefix: [:giulia, :http])
+  plug(Plug.Logger)
+  plug(:match)
+  plug(:fetch_query_params)
+  plug(:maybe_parse_body)
+  plug(:dispatch)
 
   # Skip Plug.Parsers for /mcp — Anubis StreamableHTTP reads the raw body itself.
   # Plug.Parsers consumes the body stream, leaving nothing for Anubis to read.
   defp maybe_parse_body(%{path_info: ["mcp" | _]} = conn, _opts), do: conn
 
   defp maybe_parse_body(conn, _opts) do
-    Plug.Parsers.call(conn, Plug.Parsers.init(
-      parsers: [:json],
-      pass: ["application/json", "text/*", "multipart/*"],
-      json_decoder: Jason
-    ))
+    Plug.Parsers.call(
+      conn,
+      Plug.Parsers.init(
+        parsers: [:json],
+        pass: ["application/json", "text/*", "multipart/*"],
+        json_decoder: Jason
+      )
+    )
   end
 
   # ============================================================================
   # MCP Endpoint (Model Context Protocol — Streamable HTTP transport)
   # ============================================================================
 
-  forward "/mcp", to: Giulia.Daemon.Plugs.McpForward
+  forward("/mcp", to: Giulia.Daemon.Plugs.McpForward)
 
   # ============================================================================
   # Sub-Router Forwards
   # ============================================================================
 
-  forward "/api/index",        to: Giulia.Daemon.Routers.Index
-  forward "/api/search",       to: Giulia.Daemon.Routers.Search
-  forward "/api/knowledge",    to: Giulia.Daemon.Routers.Knowledge
-  forward "/api/runtime",      to: Giulia.Daemon.Routers.Runtime
-  forward "/api/transaction",  to: Giulia.Daemon.Routers.Transaction
-  forward "/api/approval",     to: Giulia.Daemon.Routers.Approval
-  forward "/api/intelligence", to: Giulia.Daemon.Routers.Intelligence
-  forward "/api/briefing",     to: Giulia.Daemon.Routers.Intelligence
-  forward "/api/brief",        to: Giulia.Daemon.Routers.Intelligence
-  forward "/api/plan",         to: Giulia.Daemon.Routers.Intelligence
-  forward "/api/monitor",      to: Giulia.Daemon.Routers.Monitor
-  forward "/api/discovery",    to: Giulia.Daemon.Routers.Discovery
+  forward("/api/index", to: Giulia.Daemon.Routers.Index)
+  forward("/api/search", to: Giulia.Daemon.Routers.Search)
+  forward("/api/knowledge", to: Giulia.Daemon.Routers.Knowledge)
+  forward("/api/runtime", to: Giulia.Daemon.Routers.Runtime)
+  forward("/api/transaction", to: Giulia.Daemon.Routers.Transaction)
+  forward("/api/approval", to: Giulia.Daemon.Routers.Approval)
+  forward("/api/intelligence", to: Giulia.Daemon.Routers.Intelligence)
+  forward("/api/briefing", to: Giulia.Daemon.Routers.Intelligence)
+  forward("/api/brief", to: Giulia.Daemon.Routers.Intelligence)
+  forward("/api/plan", to: Giulia.Daemon.Routers.Intelligence)
+  forward("/api/monitor", to: Giulia.Daemon.Routers.Monitor)
+  forward("/api/discovery", to: Giulia.Daemon.Routers.Discovery)
 
   # ============================================================================
   # Core Routes (stay in Endpoint)
@@ -63,11 +66,16 @@ defmodule Giulia.Daemon.Endpoint do
 
   # Health check
   get "/health" do
-    send_resp(conn, 200, Jason.encode!(%{
-      status: "ok",
-      node: node(),
-      version: Giulia.Version.short_version()
-    }))
+    send_resp(
+      conn,
+      200,
+      Jason.encode!(%{
+        status: "ok",
+        node: node(),
+        version: Giulia.Version.short_version(),
+        paths: Giulia.Core.PathMapper.diagnostics()
+      })
+    )
   end
 
   # Streaming command endpoint (SSE for real-time inference steps)
@@ -83,14 +91,16 @@ defmodule Giulia.Daemon.Endpoint do
             Giulia.Inference.Events.subscribe(request_id)
 
             # Start SSE response
-            conn = conn
-            |> put_resp_content_type("text/event-stream")
-            |> put_resp_header("cache-control", "no-cache")
-            |> put_resp_header("connection", "keep-alive")
-            |> send_chunked(200)
+            conn =
+              conn
+              |> put_resp_content_type("text/event-stream")
+              |> put_resp_header("cache-control", "no-cache")
+              |> put_resp_header("connection", "keep-alive")
+              |> send_chunked(200)
 
             # Send initial event
-            {:ok, conn} = chunk(conn, "event: start\ndata: {\"request_id\": \"#{request_id}\"}\n\n")
+            {:ok, conn} =
+              chunk(conn, "event: start\ndata: {\"request_id\": \"#{request_id}\"}\n\n")
 
             Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
               execute_inference_streaming(message, resolved_path, context_pid, request_id)
@@ -157,6 +167,7 @@ defmodule Giulia.Daemon.Endpoint do
       uptime_seconds: 0,
       active_projects: length(Giulia.Core.ContextManager.list_projects())
     }
+
     send_json(conn, 200, status)
   end
 
@@ -222,9 +233,10 @@ defmodule Giulia.Daemon.Endpoint do
 
     send_json(conn, 200, %{
       in_container: in_container,
-      mappings: Enum.map(mappings, fn {host, container} ->
-        %{host: host, container: container}
-      end)
+      mappings:
+        Enum.map(mappings, fn {host, container} ->
+          %{host: host, container: container}
+        end)
     })
   end
 
@@ -248,10 +260,10 @@ defmodule Giulia.Daemon.Endpoint do
   # Suppress browser favicon 404s
   get "/favicon.ico" do
     # Minimal 1x1 transparent ICO (62 bytes)
-    ico = <<0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0, 40, 0, 0, 0, 22, 0, 0, 0,
-            40, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 8, 0,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0>>
+    ico =
+      <<0, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0, 32, 0, 40, 0, 0, 0, 22, 0, 0, 0, 40, 0, 0, 0, 1, 0, 0,
+        0, 2, 0, 0, 0, 1, 0, 32, 0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>
 
     conn
     |> put_resp_content_type("image/x-icon")
@@ -338,33 +350,42 @@ defmodule Giulia.Daemon.Endpoint do
   defp handle_native_query(message, project_path) do
     message_lower = String.downcase(message)
 
-    response = cond do
-      String.contains?(message_lower, "module") ->
-        modules = Giulia.Context.Store.Query.list_modules(project_path)
-        module_list = Enum.map_join(modules, "\n", &"- #{&1.name}")
-        "Indexed modules:\n#{module_list}"
+    response =
+      cond do
+        String.contains?(message_lower, "module") ->
+          modules = Giulia.Context.Store.Query.list_modules(project_path)
+          module_list = Enum.map_join(modules, "\n", &"- #{&1.name}")
+          "Indexed modules:\n#{module_list}"
 
-      String.contains?(message_lower, "function") ->
-        module_filter = extract_module_name(message)
-        functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
+        String.contains?(message_lower, "function") ->
+          module_filter = extract_module_name(message)
+          functions = Giulia.Context.Store.Query.list_functions(project_path, module_filter)
 
-        header = if module_filter, do: "Functions in #{module_filter}:", else: "Functions (showing first 20):"
-        func_list = Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
-          type_marker = if f.type in [:defp, :defmacrop, :defguardp], do: "(private)", else: ""
-          "- #{f.module}.#{f.name}/#{f.arity} #{type_marker}"
-        end)
-        "#{header}\n#{func_list}"
+          header =
+            if module_filter,
+              do: "Functions in #{module_filter}:",
+              else: "Functions (showing first 20):"
 
-      String.contains?(message_lower, "status") ->
-        stats = Giulia.Context.Store.stats(project_path)
-        "Index: #{stats.ast_files} files, #{stats.total_entries} entries"
+          func_list =
+            Enum.map_join(Enum.take(functions, 50), "\n", fn f ->
+              type_marker =
+                if f.type in [:defp, :defmacrop, :defguardp], do: "(private)", else: ""
 
-      String.contains?(message_lower, "summary") ->
-        Giulia.Context.Store.Formatter.project_summary(project_path)
+              "- #{f.module}.#{f.name}/#{f.arity} #{type_marker}"
+            end)
 
-      true ->
-        "I can answer questions about modules, functions, status, or summary without using the LLM."
-    end
+          "#{header}\n#{func_list}"
+
+        String.contains?(message_lower, "status") ->
+          stats = Giulia.Context.Store.stats(project_path)
+          "Index: #{stats.ast_files} files, #{stats.total_entries} entries"
+
+        String.contains?(message_lower, "summary") ->
+          Giulia.Context.Store.Formatter.project_summary(project_path)
+
+        true ->
+          "I can answer questions about modules, functions, status, or summary without using the LLM."
+      end
 
     %{status: "ok", response: response}
   end
@@ -390,13 +411,15 @@ defmodule Giulia.Daemon.Endpoint do
 
       {:inference_event, event} ->
         data = Jason.encode!(event)
+
         case chunk(conn, "event: step\ndata: #{data}\n\n") do
-          {:ok, conn} -> stream_events(conn, request_id)
+          {:ok, conn} ->
+            stream_events(conn, request_id)
+
           {:error, _} ->
             Giulia.Inference.Events.unsubscribe(request_id)
             conn
         end
-
     after
       300_000 ->
         Giulia.Inference.Events.unsubscribe(request_id)

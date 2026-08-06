@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 164 · v0.3.8 · 2026-06-09
+> **Document version**: Build 165 · v0.3.8 · 2026-08-06
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -38,7 +38,8 @@ Root-level endpoints defined in `Giulia.Daemon.Endpoint`. These handle health ch
 
 ### GET /health
 
-Health check. Returns daemon status, Erlang node name, and version.
+Health check. Returns daemon status, Erlang node name, version, and the active
+host↔container path mappings.
 
 **Parameters:** None.
 
@@ -54,9 +55,21 @@ curl http://localhost:4000/health
 {
   "status": "ok",
   "node": "worker@giulia-worker",
-  "version": "v0.3.8.164"
+  "version": "v0.3.8.165",
+  "paths": {
+    "in_container": true,
+    "mappings": [
+      { "host": "/srv/code", "container": "/projects" }
+    ],
+    "warning": null
+  }
 }
 ```
+
+`paths.warning` is `null` while path translation is configured. It carries a
+message when the daemon runs in a container with no mapping to translate
+against — the condition under which host paths sent by clients resolve to
+themselves and every scan silently returns nothing.
 
 ---
 

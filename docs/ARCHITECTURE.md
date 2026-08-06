@@ -1,6 +1,6 @@
 # Giulia Architecture
 
-> **Document version**: Build 164 · v0.3.8 · 2026-06-09
+> **Document version**: Build 165 · v0.3.8 · 2026-08-06
 >
 > This document describes the architecture as of the build above. If the build
 > counter in `mix.exs` is higher, sections may be out of date — re-audit against
@@ -846,20 +846,36 @@ Two modules handle path security and translation.
 prefix swap strategy.
 
 ```
-Host:      D:/Development/GitHub/MyProject/lib/foo.ex
+Host:      /srv/code/MyProject/lib/foo.ex
 Container: /projects/MyProject/lib/foo.ex
 
-Mapping:   GIULIA_HOST_PROJECTS_PATH="D:/Development/GitHub"
+Mapping:   GIULIA_HOST_PROJECTS_PATH="/srv/code"
            Container prefix: /projects
 ```
 
 The translation:
 1. Normalizes Windows backslashes to forward slashes
-2. Performs case-insensitive prefix matching (Windows drive letters)
-3. Swaps the host prefix with `/projects`
+2. Performs case-insensitive prefix matching for Windows drive letters only
+3. Swaps the host prefix with the mapped container prefix
 
-The reverse translation (`to_host/1`) does the inverse for responses that include
-file paths, so clients see paths they can open locally.
+`GIULIA_PATH_MAPPING` adds further prefixes beyond `/projects`, written
+`host=container` and separated by `;`. Where several mappings could apply, the
+longest prefix wins, and a prefix matches only on a path-segment boundary, so
+`/srv/code` claims `/srv/code/app` but never `/srv/codex`.
+
+No host path is compiled into the module: every mapping is supplied by the
+environment. One image therefore behaves the same under Docker Desktop on
+Windows, OrbStack on macOS, and native Linux, and a difference in behaviour can
+only follow from a difference in configuration. Case-insensitivity is confined
+to Windows drive-letter prefixes because `/Users` and `/users` are distinct
+directories on the Linux filesystem inside the container.
+
+An unmapped path is returned unchanged. `diagnostics/0` reports the active table
+and is surfaced on `GET /health`, so a misconfigured mount is visible in a single
+request rather than as an empty scan result later.
+
+The reverse translation (`to_host/1`) inverts the same table for responses that
+include file paths, so clients see paths they can open locally.
 
 ### PathSandbox
 

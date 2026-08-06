@@ -64,6 +64,8 @@ defmodule Giulia.Application do
 
     role = Giulia.Role.role()
 
+    Giulia.Core.PathMapper.log_configuration()
+
     base_children = [
       # Registry for named process lookup
       {Registry, keys: :unique, name: Giulia.Registry},
