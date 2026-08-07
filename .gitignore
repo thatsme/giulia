@@ -74,3 +74,6 @@ priv/plts/*.plt.hash
 
 # Ad-hoc captured logs (e.g. test_output.log) — regenerable, never tracked
 *.log
+
+# Local scratch area — never tracked
+/vigil/
