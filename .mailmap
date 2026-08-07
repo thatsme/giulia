@@ -1,0 +1,14 @@
+# Canonical author identity: thatsme <alessio.battistutta@gmail.com>
+#
+# History carries four variants of one person, including 166 commits whose
+# author name begins with a stray UTF-8 BOM (user.name was set from BOM-encoded
+# output). Matching on the commit email alone folds every name variant --
+# "Alex", "<BOM>Alex", "Alessio Battistutta", "thatsme" -- into one identity,
+# so the BOM never has to appear in this file.
+#
+# Rewriting the published history would require a force-push; this is the
+# non-destructive equivalent and is applied automatically by git shortlog,
+# git log, git blame, and GitHub's contributor views.
+
+thatsme <alessio.battistutta@gmail.com> <alessio.battistutta@gmail.com>
+thatsme <alessio.battistutta@gmail.com> <alessio.battistutta@hhla-plt.it>
