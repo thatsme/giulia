@@ -634,12 +634,56 @@ commentary. Cap any per-rule expansion at 20 lines with "+ N more".
 - Do NOT re-frame any of these as OOP defects — see the ELIXIR IDIOM RULE. These are Elixir
   convention checks (the project's own `coding-conventions.md`), applied to Elixir.
 
+### Section 15b: Process Architecture
+
+OTP process-architecture findings from `GET /api/knowledge/otp_risks`, plus the
+supervision tree from `GET /api/knowledge/supervision`. **Distinct from Section 15** —
+those are AST idiom checks on code shape; these are about how processes start, restart
+and block on each other. Nothing else in the report covers this: the call graph shows
+who calls whom, never what dies when something crashes.
+
+**Supervision summary (always).** Root supervisor, tier count, strategy per supervisor,
+and the count of children flagged `conditional: true`. If any supervisor reports
+`children_unresolved: true`, say so explicitly — its children are unknown, not absent,
+and every finding below is correspondingly incomplete for that subtree.
+
+**Findings, by severity.**
+
+**Errors** — list every one individually, never cap:
+- `cross_process_call_cycle` at `high` confidence. **This is P0 in Section 16**, alongside
+  dependency cycles and behaviour fractures. It is a guaranteed deadlock: each process
+  blocks on the next until every hop times out, and it only manifests under a specific
+  interleaving, so a clean test suite is not evidence of absence.
+- `blocking_init` at error tier — network, DB or cross-process calls inside `init/1`,
+  which serialise boot and can cascade into a restart-intensity tree death.
+- `singleton_bottleneck` where `confidence: "runtime_confirmed"` — static suspicion the
+  Collector agreed with.
+
+**Warnings** — report per rule with the top offending modules:
+`missing_catch_all_handle_info`, `sync_call_chain_depth` (quote the summed
+`timeout_budget_ms`, it is the arguable number), `singleton_bottleneck` at static
+confidence, `cross_process_call_cycle` at `medium` confidence.
+
+**Info** — counts only: `infinity_call_timeout`, `one_for_all_amplification`,
+`unlinked_start`.
+
+**Rules:**
+- Report confidence verbatim. A `medium` cycle is not a deadlock claim — module identity
+  is not process identity, and multiple instances may make the same cycle harmless. Never
+  promote `medium` to `high` in prose.
+- `runtime: "unavailable"` on a `singleton_bottleneck` means no Collector data was
+  present, not that the process is healthy. Say "unconfirmed", never "clean".
+- A zero here deserves one line of justification, not silence. Zero findings can mean a
+  sound architecture *or* an empty subgraph — e.g. a codebase whose GenServers never call
+  each other synchronously has no cycles to find, which is a real property but not the
+  same claim as "the deadlock check passed".
+
 ### Section 16: Recommended Actions (Priority Order)
 
 Synthesize findings into concrete, prioritized recommendations.
 
 **Priority levels:**
-- **P0**: Blocking issues — cycles, behaviour fractures, crashes, L2/L3 edge-parity divergence, and error-tier convention violations that are correctness/security bugs (`runtime_atom_creation`, `silent_rescue`)
+- **P0**: Blocking issues — cycles (dependency *and* `cross_process_call_cycle` at `high` confidence), behaviour fractures, crashes, L2/L3 edge-parity divergence, and error-tier convention violations that are correctness/security bugs (`runtime_atom_creation`, `silent_rescue`)
 - **P1**: High-risk gaps — unprotected hubs, god modules with high fan-in, `try_rescue_flow_control` violations, nominal-coverage modules masquerading as tested
 - **P2**: Improvement opportunities — god module splits, coupling reduction, dead code
 - **P3**: Polish — spec coverage for non-hub modules, doc coverage, warning/info convention drift

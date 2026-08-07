@@ -1,0 +1,52 @@
+{
+  "_comment": "OTP deep-analysis check configuration. Thresholds and MFA lists live here, never in .ex source, so they can be tuned without a recompile. Defaults must produce sane output on any Elixir codebase with zero tuning — a default that is wrong somewhere is release-gating, not 'the user can override'.",
+
+  "blocking_init": {
+    "_comment": "Calls that block inside init/1. init/1 runs inside the supervisor's start sequence, so a blocking call serialises boot and a down dependency turns into a restart-intensity cascade. Patterns ending in '.*' match any function on that module; bare 'Mod.fun' matches exactly.",
+
+    "error_mfas": [
+      "Req.*",
+      "HTTPoison.*",
+      "Tesla.*",
+      "Finch.request",
+      ":httpc.*",
+      ":gen_tcp.connect",
+      ":ssl.connect",
+      "Postgrex.*",
+      "MyXQL.*",
+      "Redix.*",
+      "GenServer.call",
+      "GenServer.multi_call",
+      ":gen_server.call",
+      "Task.await",
+      "Task.await_many",
+      "Process.sleep",
+      ":timer.sleep"
+    ],
+
+    "warning_mfas": [
+      "File.*"
+    ],
+
+    "repo_convention": true,
+    "_repo_convention_note": "When true, any call to a module whose last segment is 'Repo' (Ecto's universal naming convention) counts as an error-tier DB call. Listing every project's repo module is impossible; the convention is the portable signal."
+  },
+
+  "missing_catch_all_handle_info": {
+    "_comment": "No tunables. `use GenServer` injects a default handle_info/2 that logs unexpected messages, but defining ANY clause overrides the injected default entirely — from then on a late Task reply, a :DOWN message or port noise crashes the server. The check fires only when clauses exist and none is an unguarded catch-all.",
+    "severity": "warning"
+  },
+
+  "sync_chain": {
+    "max_depth": 2
+  },
+
+  "singleton_bottleneck": {
+    "fan_in_threshold": 8,
+    "queue_len_threshold": 100
+  },
+
+  "one_for_all": {
+    "max_children": 5
+  }
+}

@@ -156,7 +156,35 @@ defmodule Giulia.Knowledge.Builder do
     # Conservative: only literal alias references are followed (no
     # alias-table resolution inside the `quote` body, no conditional
     # imports). False negatives over false positives.
-    add_use_import_edges(graph, ast_data)
+    graph = add_use_import_edges(graph, ast_data)
+
+    # Pass 12: Supervision topology. Parses `Supervisor.start_link/2`,
+    # `Supervisor.init/2` and `DynamicSupervisor.start_link/1,2` into
+    # `{:supervises, %{restart, order, strategy, conditional}}` edges.
+    #
+    # Supervision identity is not module identity: the root supervisor is
+    # usually a registered name with no `defmodule` at all, several children
+    # are external modules the earlier passes filter out, and two
+    # `{DynamicSupervisor, name: X}` declarations share one module. Every
+    # endpoint is therefore keyed `name_option || module`.
+    #
+    # This pass only ever *adds*. It never re-labels an existing vertex:
+    # several call sites filter on exact equality
+    # (`Graph.vertex_labels(g, v) == [:module]` in `Topology.stats/1`,
+    # `Topology.blast_radius/3` and `Insights`), so a second label would
+    # silently remove the vertex from those results.
+    #
+    # Mechanism, verified rather than assumed: `Graph.add_vertex/3` on an
+    # EXISTING vertex is a no-op — it cannot corrupt labels, and it also cannot
+    # add one. Only `Graph.label_vertex/3` accumulates, and this pass never
+    # calls it.
+    #
+    # The consequence is why the `/supervision` endpoint does NOT read the
+    # graph: a supervisor whose key collides with a vertex an earlier pass
+    # already minted keeps that pass's labels and is invisible to any
+    # label-based query. Graph edges are for graph-shaped consumers; the tree
+    # comes from `Supervision.tree_from_declarations/1`.
+    add_supervision_edges(graph, ast_data)
   end
 
   # ============================================================================
@@ -1952,4 +1980,52 @@ defmodule Giulia.Knowledge.Builder do
   end
 
   defp unqualified_call_signature(_), do: :skip
+
+  # ============================================================================
+  # Pass 12: Supervision Topology
+  # ============================================================================
+
+  defp add_supervision_edges(graph, ast_data) do
+    declarations = Giulia.Knowledge.Supervision.extract(ast_data)
+    supervisor_keys = MapSet.new(declarations, & &1.key)
+
+    graph =
+      Enum.reduce(declarations, graph, fn decl, g ->
+        # No attempt to encode `children_unresolved` on the vertex. A key that
+        # collides with a vertex an earlier pass already minted cannot be
+        # labelled (see `ensure_supervision_vertex/3`), so the flag would
+        # survive for some supervisors and vanish for others — worse than not
+        # carrying it, because its absence would read as a resolved child list.
+        # The endpoint reads declarations instead; see
+        # `Supervision.tree_from_declarations/1`.
+        ensure_supervision_vertex(g, decl.key, :supervisor)
+      end)
+
+    Enum.reduce(declarations, graph, fn decl, g ->
+      Enum.reduce(decl.children, g, fn child, g_acc ->
+        label = if MapSet.member?(supervisor_keys, child.key), do: :supervisor, else: :process
+
+        g_acc
+        |> ensure_supervision_vertex(child.key, label)
+        |> Graph.add_edge(decl.key, child.key,
+          label:
+            {:supervises,
+             %{
+               restart: child.restart,
+               order: child.order,
+               strategy: decl.strategy,
+               conditional: child.conditional
+             }}
+        )
+      end)
+    end)
+  end
+
+  defp ensure_supervision_vertex(graph, key, label) do
+    if Graph.has_vertex?(graph, key) do
+      graph
+    else
+      Graph.add_vertex(graph, key, label)
+    end
+  end
 end

@@ -1,6 +1,6 @@
 # Giulia REST API Reference
 
-> **Document version**: Build 164 · v0.3.8 · 2026-06-09
+> **Document version**: Build 165 · v0.3.8 · 2026-08-06
 
 Complete reference for all REST API endpoints exposed by the Giulia daemon on port 4000.
 
@@ -20,7 +20,7 @@ Complete reference for all REST API endpoints exposed by the Giulia daemon on po
 
 1. [Core](#core) (10 endpoints)
 2. [Index](#index) (10 endpoints)
-3. [Knowledge](#knowledge) (27 endpoints)
+3. [Knowledge](#knowledge) (29 endpoints)
 4. [Intelligence](#intelligence) (6 endpoints)
 5. [Runtime](#runtime) (16 endpoints)
 6. [Search](#search) (3 endpoints)
@@ -38,7 +38,8 @@ Root-level endpoints defined in `Giulia.Daemon.Endpoint`. These handle health ch
 
 ### GET /health
 
-Health check. Returns daemon status, Erlang node name, and version.
+Health check. Returns daemon status, Erlang node name, version, and the active
+host↔container path mappings.
 
 **Parameters:** None.
 
@@ -54,9 +55,21 @@ curl http://localhost:4000/health
 {
   "status": "ok",
   "node": "worker@giulia-worker",
-  "version": "v0.3.8.164"
+  "version": "v0.3.8.165",
+  "paths": {
+    "in_container": true,
+    "mappings": [
+      { "host": "/srv/code", "container": "/projects" }
+    ],
+    "warning": null
+  }
 }
 ```
+
+`paths.warning` is `null` while path translation is configured. It carries a
+message when the daemon runs in a container with no mapping to translate
+against — the condition under which host paths sent by clients resolve to
+themselves and every scan silently returns nothing.
 
 ---
 
@@ -1280,6 +1293,109 @@ curl "http://localhost:4000/api/knowledge/heatmap?path=C:/Development/GitHub/Giu
 ```
 
 ---
+
+### GET /api/knowledge/supervision
+
+The OTP supervision tree — process architecture, not module structure. Answers questions the call graph cannot: what dies when this crashes, and in what order things start.
+
+**Parameters (query string):**
+
+| Param  | Required | Description            |
+|--------|----------|------------------------|
+| `path` | Yes      | Host-side project path |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/supervision?path=/Users/you/Development/GitHub/giulia"
+```
+
+**Response:**
+
+```json
+{
+  "roots": [
+    {
+      "key": "Giulia.Supervisor",
+      "children": [
+        {"key": "Giulia.Context.Store", "order": 0, "restart": "unknown", "conditional": false, "children": []},
+        {"key": "Giulia.Inference.Trace", "order": 1, "restart": "unknown", "conditional": true, "children": []}
+      ]
+    }
+  ],
+  "edges": [
+    {"from": "Giulia.Supervisor", "to": "Giulia.Context.Store", "order": 0, "restart": "unknown", "strategy": "one_for_one", "conditional": false}
+  ],
+  "supervisor_count": 3,
+  "supervised_count": 29
+}
+```
+
+`roots` is the nested tree; `edges` is the flat, Cytoscape-ready form of the same data.
+
+Two fields matter for consumers reasoning about the tree:
+
+- `conditional: true` — the child may not be running. Children behind `if`/`case` (an env-gated tier, say) are captured as the **union** of all branches and flagged, rather than one branch being silently chosen.
+- `children_unresolved: true` on a supervisor — its child list could not be statically bounded (built by a function call, `Enum.*`, or config). Children are omitted deliberately; this is an explicit gap, not a claim of childlessness.
+
+### GET /api/knowledge/otp_risks
+
+OTP process-architecture findings. Credo checks style and Dialyzer checks types; this checks how processes start and talk to each other.
+
+**Parameters (query string):**
+
+| Param      | Required | Description                                                       |
+|------------|----------|-------------------------------------------------------------------|
+| `path`     | Yes      | Host-side project path                                            |
+| `check`    | No       | Filter to one rule (e.g. `blocking_init`)                         |
+| `suppress` | No       | `rule:Module.A,Module.B` — suppress a rule for the named modules   |
+
+**Checks:**
+
+| Rule | Severity | Detects |
+|---|---|---|
+| `cross_process_call_cycle` | error / warning | Synchronous `GenServer.call` cycles — a guaranteed deadlock. `error` only at `high` confidence, when every module in the cycle is a `name: __MODULE__` singleton |
+| `blocking_init` | error / warning | Blocking calls in `init/1`, including via same-module private helpers |
+| `missing_catch_all_handle_info` | warning | `handle_info/2` clauses with no catch-all — defining any clause overrides the default `use GenServer` injects |
+| `sync_call_chain_depth` | warning | Chains deeper than the threshold, with the summed timeout budget |
+| `singleton_bottleneck` | warning / error | Singletons with high synchronous fan-in; escalates to `error` when runtime queue depth confirms |
+| `infinity_call_timeout` | info | `GenServer.call` with `:infinity` |
+| `one_for_all_amplification` | info | `:one_for_all` with more children than the threshold |
+| `unlinked_start` | info | `GenServer.start` / `Agent.start` rather than `start_link` |
+
+**Example:**
+
+```bash
+curl "http://localhost:4000/api/knowledge/otp_risks?path=/Users/you/Development/GitHub/giulia&check=blocking_init"
+```
+
+**Response:**
+
+```json
+{
+  "total_findings": 9,
+  "by_severity": {"error": 0, "warning": 9, "info": 0},
+  "by_check": {
+    "missing_catch_all_handle_info": [
+      {
+        "rule": "missing_catch_all_handle_info",
+        "severity": "warning",
+        "module": "Giulia.EtsKeeper",
+        "file": "lib/giulia/ets_keeper.ex",
+        "line": 103,
+        "message": "…defines 1 handle_info/2 clause(s) but no catch-all…"
+      }
+    ]
+  },
+  "checks_run": ["blocking_init", "missing_catch_all_handle_info", "…"]
+}
+```
+
+`singleton_bottleneck` findings additionally carry `runtime`: either
+`%{max_queue_len, window}` when Collector snapshots are available, or
+`"unavailable"` when no runtime data exists (the monitor role may not be
+running). Static findings are unchanged in that case — absence of telemetry
+never suppresses or fails the check.
 
 ### GET /api/knowledge/unprotected_hubs
 

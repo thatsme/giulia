@@ -93,14 +93,12 @@ defmodule Giulia.Storage.Arcade.Indexer do
   @impl true
   def init(_opts) do
     schedule_reconcile()
-    {:ok, %{}}
+    {:ok, %{in_flight: %{}, pending: %{}}}
   end
 
   @impl true
   def handle_info({:graph_ready, project_path, build_id}, state) do
-    # Run snapshot in a separate task to avoid blocking the GenServer
-    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn -> snapshot(project_path, build_id) end)
-    {:noreply, state}
+    {:noreply, request_snapshot(state, project_path, build_id)}
   end
 
   def handle_info(:reconcile, state) do
@@ -109,36 +107,137 @@ defmodule Giulia.Storage.Arcade.Indexer do
     {:noreply, state}
   end
 
+  # A snapshot task finished. Release the slot, then run whatever was coalesced
+  # while it held it. Matched before the catch-all below, which would otherwise
+  # swallow it and leak the slot forever.
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, state) do
+    case take_in_flight(state, ref) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {project, state} ->
+        case Map.pop(state.pending, project) do
+          {nil, pending} ->
+            {:noreply, %{state | pending: pending}}
+
+          {build_id, pending} ->
+            {:noreply, start_snapshot(%{state | pending: pending}, project, build_id)}
+        end
+    end
+  end
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
   def handle_call(:reconcile_now, _from, state) do
-    {:reply, run_reconcile(), state}
+    # Synchronous by contract — callers use the returned list. It still respects
+    # the gate: a project already being snapshotted is skipped rather than
+    # snapshotted a second time concurrently.
+    {:reply, run_reconcile(Map.keys(state.in_flight)), state}
+  end
+
+  # ============================================================================
+  # Snapshot de-duplication
+  # ============================================================================
+  #
+  # Two snapshots of the same project must never run concurrently. Both write
+  # the same (project, build_id) rows, so they collide on ArcadeDB's optimistic
+  # page-level MVCC and one loses — which the retry in `Arcade.Client` absorbs,
+  # but only by doing the work twice and burning the retry budget on
+  # self-inflicted contention. Measured: 6 retry exhaustions per 6 full suite
+  # runs, all concentrated in the DELETE that opens each write group.
+  #
+  # Concurrency arises normally: `{:graph_ready}` fires per rebuild while the
+  # reconcile timer can independently decide the same project needs a snapshot.
+  #
+  # A request arriving while one is in flight is COALESCED rather than dropped.
+  # Dropping it would leave L3 pinned at the older build — exactly the silent
+  # L1/L3 drift the reconciler exists to prevent. Only the newest build is kept:
+  # intermediate ones are already stale by the time the slot frees.
+
+  defp request_snapshot(state, project, build_id) do
+    if Map.has_key?(state.in_flight, project) do
+      Logger.debug(
+        "[Arcade.Indexer] Snapshot already in flight for #{project}; " <>
+          "coalescing build #{build_id}"
+      )
+
+      %{state | pending: Map.put(state.pending, project, build_id)}
+    else
+      start_snapshot(state, project, build_id)
+    end
+  end
+
+  defp start_snapshot(state, project, build_id) do
+    case Task.Supervisor.start_child(Giulia.TaskSupervisor, fn -> snapshot(project, build_id) end) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        %{state | in_flight: Map.put(state.in_flight, project, %{ref: ref, build_id: build_id})}
+
+      {:error, reason} ->
+        # Never mark in-flight for a task that failed to start, or the slot is
+        # held by nothing and the project is never snapshotted again.
+        Logger.warning(
+          "[Arcade.Indexer] Could not start snapshot task for #{project}: #{inspect(reason)}"
+        )
+
+        state
+    end
+  end
+
+  defp take_in_flight(state, ref) do
+    case Enum.find(state.in_flight, fn {_project, %{ref: r}} -> r == ref end) do
+      nil -> {nil, state}
+      {project, _} -> {project, %{state | in_flight: Map.delete(state.in_flight, project)}}
+    end
   end
 
   defp schedule_reconcile do
     Process.send_after(self(), :reconcile, @reconcile_interval_ms)
   end
 
+  # The periodic pass routes through the same gate rather than snapshotting
+  # directly: discovery does network I/O so it stays off the GenServer, but the
+  # decision to snapshot goes back through `{:graph_ready}` so it cannot race a
+  # rebuild-triggered snapshot of the same project.
   defp spawn_reconcile do
-    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn -> run_reconcile() end)
+    parent = self()
+
+    Task.Supervisor.start_child(Giulia.TaskSupervisor, fn ->
+      Enum.each(projects_needing_snapshot(), fn {project, build_id} ->
+        Logger.info(
+          "[Arcade.Indexer] Reconcile: #{project} missing build #{build_id}, requesting snapshot"
+        )
+
+        send(parent, {:graph_ready, project, build_id})
+      end)
+    end)
   end
 
-  # For each project that Knowledge.Store has in memory, check whether
-  # ArcadeDB already has the current build snapshotted. If not, snapshot
-  # it. Returns the list of `{project, build_id}` actually re-snapshotted.
-  defp run_reconcile do
+  # Projects whose current build is absent from ArcadeDB.
+  defp projects_needing_snapshot do
     current_build = Giulia.Version.build()
 
     Store.list_projects()
     |> Enum.filter(fn project -> needs_snapshot?(project, current_build) end)
-    |> Enum.map(fn project ->
+    |> Enum.map(fn project -> {project, current_build} end)
+  end
+
+  # Synchronous reconcile for `reconcile_now/0`. Returns the list of
+  # `{project, build_id}` actually re-snapshotted, skipping any project whose
+  # snapshot is already running.
+  defp run_reconcile(skip) do
+    skip = MapSet.new(skip)
+
+    projects_needing_snapshot()
+    |> Enum.reject(fn {project, _build} -> MapSet.member?(skip, project) end)
+    |> Enum.map(fn {project, build_id} ->
       Logger.info(
-        "[Arcade.Indexer] Reconcile: #{project} missing build #{current_build}, snapshotting"
+        "[Arcade.Indexer] Reconcile: #{project} missing build #{build_id}, snapshotting"
       )
 
-      _ = snapshot(project, current_build)
-      {project, current_build}
+      _ = snapshot(project, build_id)
+      {project, build_id}
     end)
   end
 
@@ -167,7 +266,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
       Client.upsert_module(project, mod.name, build_id)
     end)
 
-    count_results(results)
+    count_results(results, "module")
   end
 
   defp write_functions(project, functions, build_id) do
@@ -175,7 +274,7 @@ defmodule Giulia.Storage.Arcade.Indexer do
       Client.upsert_function(project, func.name, build_id)
     end)
 
-    count_results(results)
+    count_results(results, "function")
   end
 
   # Module-level edges only. L3 has explicit types for :depends_on and
@@ -186,47 +285,84 @@ defmodule Giulia.Storage.Arcade.Indexer do
   defp write_module_edges(project, edges, build_id) do
     # CREATE EDGE is not idempotent — purge this (project, build_id) first
     # so re-snapshots replace rather than accumulate.
-    Client.delete_edges_for_build("DEPENDS_ON", project, build_id)
+    case purge!("DEPENDS_ON", project, build_id) do
+      :ok ->
+        {written, dropped} =
+          Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
+            case type do
+              :depends_on ->
+                {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
 
-    {written, dropped} =
-      Enum.reduce(edges, {[], %{}}, fn {from, to, type}, {writes, drops} ->
-        case type do
-          :depends_on ->
-            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
+              :implements ->
+                {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
 
-          :implements ->
-            {[Client.insert_dependency(project, from, to, build_id) | writes], drops}
+              other ->
+                {writes, Map.update(drops, other, 1, &(&1 + 1))}
+            end
+          end)
 
-          other ->
-            {writes, Map.update(drops, other, 1, &(&1 + 1))}
+        if map_size(dropped) > 0 do
+          Logger.debug(
+            "[Arcade.Indexer] Module-edge types intentionally not persisted to L3: #{inspect(dropped)}"
+          )
         end
-      end)
 
-    if map_size(dropped) > 0 do
-      Logger.debug(
-        "[Arcade.Indexer] Module-edge types intentionally not persisted to L3: #{inspect(dropped)}"
-      )
+        Map.put(count_results(written, "module_edge"), :dropped_by_type, dropped)
+
+      {:error, _reason} ->
+        %{ok: 0, error: 1, purge_failed: true, dropped_by_type: %{}}
     end
-
-    Map.put(count_results(written), :dropped_by_type, dropped)
   end
 
   # Function-level :calls edges. These are the authoritative CALLS edges per
   # the L3 schema (CALLS runs between Function vertices).
   defp write_function_call_edges(project, edges, build_id) do
-    Client.delete_edges_for_build("CALLS", project, build_id)
+    case purge!("CALLS", project, build_id) do
+      :ok ->
+        edges
+        |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
+          Client.insert_call(project, from_mfa, to_mfa, build_id)
+        end)
+        |> count_results("function_call_edge")
 
-    edges
-    |> Enum.map(fn {from_mfa, to_mfa, :calls} ->
-      Client.insert_call(project, from_mfa, to_mfa, build_id)
-    end)
-    |> count_results()
+      {:error, _reason} ->
+        %{ok: 0, error: 1, purge_failed: true}
+    end
   end
 
-  defp count_results(results) do
+  # A failed purge is more damaging than a failed insert, and was previously
+  # discarded entirely. CREATE EDGE is not idempotent, so inserting on top of a
+  # build whose edges were not removed ACCUMULATES them — L3 then exceeds L1,
+  # which is precisely the `l3_exceeds_l1` drift Arcade.Verifier reports. Abort
+  # the write group instead of corrupting the snapshot.
+  defp purge!(edge_type, project, build_id) do
+    case Client.delete_edges_for_build(edge_type, project, build_id) do
+      {:ok, _} ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "[Arcade.Indexer] #{edge_type} purge failed for #{project} build #{build_id} — " <>
+            "skipping inserts to avoid accumulating duplicate edges: #{inspect(reason)}"
+        )
+
+        {:error, reason}
+    end
+  end
+
+  # The reason must be logged, not just counted. A snapshot summary of
+  # `%{ok: 1, error: 1}` tells an operator that L3 silently lost a write and
+  # nothing about why — the same blindness applies to anyone debugging a
+  # verifier failure, since `Indexer.snapshot/2` still returns `{:ok, summary}`
+  # on a partial write.
+  defp count_results(results, kind) do
     Enum.reduce(results, %{ok: 0, error: 0}, fn
-      {:ok, _}, acc -> %{acc | ok: acc.ok + 1}
-      {:error, _}, acc -> %{acc | error: acc.error + 1}
+      {:ok, _}, acc ->
+        %{acc | ok: acc.ok + 1}
+
+      {:error, reason}, acc ->
+        Logger.warning("[Arcade.Indexer] #{kind} write failed: #{inspect(reason)}")
+        %{acc | error: acc.error + 1}
     end)
   end
 end

@@ -81,6 +81,28 @@ defmodule Giulia.Storage.Arcade.VerifierTest do
     graph
   end
 
+  # `Indexer.snapshot/2` returns `{:ok, summary}` even when individual writes
+  # failed — the summary counts them and the call still looks successful. Every
+  # call site here used to discard it, so a partial write sailed past and
+  # surfaced later as a confusing count-parity mismatch inside verify/2, which
+  # reads as "the verifier is broken" rather than "L3 never received the data".
+  # Assert at the point of the write instead.
+  defp snapshot!(project, build_id) do
+    {:ok, summary} = Indexer.snapshot(project, build_id)
+
+    errors =
+      summary
+      |> Map.values()
+      |> Enum.map(&Map.get(&1, :error, 0))
+      |> Enum.sum()
+
+    assert errors == 0,
+           "snapshot wrote partially (#{errors} failed write(s)) — L3 is already " <>
+             "incomplete before verify/2 runs: #{inspect(summary)}"
+
+    summary
+  end
+
   defp add_l1_edge!(project, from, to, via) do
     [{_, graph}] = :ets.lookup(@knowledge_table, {:graph, project})
     updated = Graph.add_edge(graph, from, to, label: {:calls, via})
@@ -96,7 +118,7 @@ defmodule Giulia.Storage.Arcade.VerifierTest do
     test "faithful L1→L3 snapshot round-trips clean", %{project: project, build_id: build_id} do
       insert_l1_graph!(project)
 
-      {:ok, _snapshot} = Indexer.snapshot(project, build_id)
+      snapshot!(project, build_id)
 
       {:ok, report} = Verifier.verify(project, sample_per_bucket: 10)
 
@@ -116,7 +138,7 @@ defmodule Giulia.Storage.Arcade.VerifierTest do
       empty_graph = Graph.new(type: :directed)
       :ets.insert(@knowledge_table, {{:graph, project}, empty_graph})
 
-      {:ok, _} = Indexer.snapshot(project, build_id)
+      snapshot!(project, build_id)
 
       {:ok, report} = Verifier.verify(project)
       assert report.overall == :pass
@@ -134,7 +156,7 @@ defmodule Giulia.Storage.Arcade.VerifierTest do
     test "detects L1 edges added post-snapshot (l3_under_l1)",
          %{project: project, build_id: build_id} do
       insert_l1_graph!(project)
-      {:ok, _} = Indexer.snapshot(project, build_id)
+      snapshot!(project, build_id)
 
       # Add another :calls edge to L1 — simulating a pass that ran
       # after the last snapshot. L3 is now stale.
@@ -153,7 +175,7 @@ defmodule Giulia.Storage.Arcade.VerifierTest do
     test "detects L3 edges accumulated beyond L1 (l3_exceeds_l1)",
          %{project: project, build_id: build_id} do
       insert_l1_graph!(project)
-      {:ok, _} = Indexer.snapshot(project, build_id)
+      snapshot!(project, build_id)
 
       # Inject an extra CALLS edge directly into L3 — simulating a
       # non-idempotent re-insert or a stale record from a previous run

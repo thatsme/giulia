@@ -221,6 +221,49 @@ defmodule Giulia.MCP.RestMcpParityTest do
     end
   end
 
+  describe "otp_risks — REST/MCP parity through facade" do
+    test "ready: identical body" do
+      rest = rest_get("/api/knowledge/otp_risks", path: @project_path)
+      assert {:ok, mcp} = Dispatch.Knowledge.otp_risks(%{"path" => @project_path})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+
+    test "check filter and suppress are coerced once, in the facade" do
+      params = [path: @project_path, check: "blocking_init", suppress: "blocking_init:Foo.Bar"]
+      rest = rest_get("/api/knowledge/otp_risks", params)
+
+      assert {:ok, mcp} =
+               Dispatch.Knowledge.otp_risks(%{
+                 "path" => @project_path,
+                 "check" => "blocking_init",
+                 "suppress" => "blocking_init:Foo.Bar"
+               })
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+      assert rest["check_filter"] == "blocking_init"
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.otp_risks(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+  end
+
+  describe "supervision — REST/MCP parity through facade" do
+    test "ready: identical body (no params to drift, but shape must still match)" do
+      rest = rest_get("/api/knowledge/supervision", path: @project_path)
+      assert {:ok, mcp} = Dispatch.Knowledge.supervision(%{"path" => @project_path})
+
+      assert rest == mcp |> Jason.encode!() |> Jason.decode!()
+    end
+
+    test "unscanned path: MCP carries the scan hint (shared readiness via Edge)" do
+      assert {:error, msg} = Dispatch.Knowledge.supervision(%{"path" => @unscanned})
+      assert msg =~ "scan"
+    end
+  end
+
   describe "search/semantic — REST/MCP parity through Search.Facade" do
     test "valid concept: REST and MCP agree on the canonical shape (was divergent)" do
       rest_conn =
@@ -274,9 +317,30 @@ defmodule Giulia.MCP.RestMcpParityTest do
     test "scanned + bounded embeddings: REST and MCP return identical clusters" do
       # Three function embeddings: two with identical vectors (cluster), one
       # orthogonal (does not). Deterministic single cluster of size 2.
+      #
+      # `SemanticIndex` (semantic_index.ex:230) and `Persistence.Loader`
+      # (loader.ex:155) both write function embeddings for this project from
+      # BACKGROUND processes. `async: false` does not constrain them — they are
+      # app GenServers, not test processes — so a re-index landing between the
+      # two protocol calls swaps the fixture for the project's real ~2000-entry
+      # set. Observed once in 13 full-suite runs: REST returned the fixtures and
+      # MCP returned real functions, and the assertion reported a 60-line diff
+      # of two unrelated cluster sets that looked like a parity defect.
+      #
+      # Re-seed immediately before each call so both read the same data, and
+      # verify the fixture actually survived. This tests parity — that the two
+      # protocols agree on one input — which is not what a race can tell us.
       seed_function_embeddings(@project_path, bounded_function_embeddings())
-
+      assert_fixture_intact!("before REST")
       rest = rest_get("/api/knowledge/duplicates", path: @project_path, max: 5)
+
+      Giulia.Context.Store.put_embeddings(
+        @project_path,
+        :function,
+        bounded_function_embeddings()
+      )
+
+      assert_fixture_intact!("before MCP")
       assert {:ok, mcp} = Dispatch.Knowledge.duplicates(%{"path" => @project_path, "max" => "5"})
 
       assert rest == mcp |> Jason.encode!() |> Jason.decode!()
@@ -329,6 +393,26 @@ defmodule Giulia.MCP.RestMcpParityTest do
       fixture_embedding("Fix.dup_b/0", "Fix", "dup_b", a),
       fixture_embedding("Fix.solo/0", "Fix", "solo", c)
     ]
+  end
+
+  # Fail with the cause rather than with a diff of two unrelated cluster sets.
+  # If a background re-index has replaced the fixture, say so by name — the
+  # alternative is a parity assertion failing for a reason that has nothing to
+  # do with parity.
+  defp assert_fixture_intact!(when_label) do
+    # `get_embeddings/2` returns `{:ok, entries} | :error` — see the
+    # `restore_function_embeddings/2` clauses below. Matching a bare list here
+    # silently reported an empty fixture that was in fact intact.
+    ids =
+      case Giulia.Context.Store.get_embeddings(@project_path, :function) do
+        {:ok, entries} when is_list(entries) -> Enum.map(entries, & &1.id)
+        entries when is_list(entries) -> Enum.map(entries, & &1.id)
+        _ -> []
+      end
+
+    assert Enum.sort(ids) == ["Fix.dup_a/0", "Fix.dup_b/0", "Fix.solo/0"],
+           "seeded embedding fixture was replaced #{when_label} — a background " <>
+             "SemanticIndex/Loader write raced this test. Got #{length(ids)} entries."
   end
 
   defp fixture_embedding(id, mod, func, vec) do

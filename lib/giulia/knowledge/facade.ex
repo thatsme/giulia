@@ -108,6 +108,53 @@ defmodule Giulia.Knowledge.Facade do
   end
 
   # ===========================================================================
+  # supervision — process architecture (Builder Pass 12)
+  # ===========================================================================
+
+  @doc """
+  Supervision tree for a project: nested `roots` plus the flat `edges` list.
+
+  Takes no parameters beyond `path` — the tree is whatever the current build
+  contains, so there is nothing to coerce or default. It still routes through
+  the facade rather than letting each protocol call `Store` directly, so REST
+  and MCP cannot drift in shape.
+
+  `children_unresolved` supervisors appear in the tree with no children. That
+  is a deliberate, visible gap (a child list built by a function call or
+  `Enum.*` is outside Pass 12's binding bound) rather than a claim of
+  childlessness — see the ARCHITECTURE blind-spot table.
+  """
+  @spec supervision(String.t(), map()) :: {:ok, map()}
+  def supervision(path, _params) do
+    {:ok, Store.supervision(path)}
+  end
+
+  # ===========================================================================
+  # otp_risks — process-architecture findings (Knowledge.Otp)
+  # ===========================================================================
+
+  @doc """
+  OTP deep-analysis findings, in the conventions response shape.
+
+  Owns both parameters so neither protocol parses them:
+
+    * `suppress` — `rule:Module,Module` form, via the shared
+      `Helpers.parse_suppress/1`
+    * `check` — filter to a single rule (`blocking_init`, …)
+
+  `conventions` parses `suppress` separately in the REST route and again in MCP
+  dispatch; that duplication is the thing the facade exists to prevent, so this
+  endpoint coerces once here and both protocols stay thin renderers.
+  """
+  @spec otp_risks(String.t(), map()) :: {:ok, map()}
+  def otp_risks(path, params) do
+    Store.otp_risks(path,
+      suppress: Helpers.parse_suppress(params["suppress"]),
+      check: params["check"]
+    )
+  end
+
+  # ===========================================================================
   # unprotected_hubs — hubs with weak spec/doc coverage
   # ===========================================================================
 

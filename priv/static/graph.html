@@ -247,6 +247,7 @@
       <button class="view-btn" data-view="heatmap">Heatmap</button>
       <button class="view-btn" data-view="blast">Blast Radius</button>
       <button class="view-btn" data-view="hubs">Hub Map</button>
+      <button class="view-btn" data-view="supervision">Supervision</button>
     </div>
     <select id="layout-select">
       <option value="cose">Force-Directed</option>
@@ -310,6 +311,16 @@
 
   // Zone colors
   var ZONE_COLORS = { red: '#e94560', yellow: '#ffa726', green: '#53d769' };
+
+  // Restart type drives colour in the Supervision view. `unknown` is the
+  // common case, not an error: a bare module child spec states no restart, so
+  // it takes the OTP default rather than declaring one.
+  var RESTART_COLORS = {
+    permanent: '#53d769',
+    transient: '#42a5f5',
+    temporary: '#ffa726',
+    unknown: '#7e8ba3'
+  };
   var EDGE_COLOR = 'rgba(255,255,255,0.08)';
   var EDGE_HIGHLIGHT = '#bb86fc';
 
@@ -342,8 +353,18 @@
     projectSelect.appendChild(opt);
   }
 
+  // Must respect the active view. Loading topology unconditionally meant that
+  // changing project while on Supervision dropped you back to the dependency
+  // graph with the Supervision button still highlighted — a 68-node dependency
+  // graph reading as a supervision tree, which is worse than an error because
+  // it looks like a result.
   projectSelect.addEventListener('change', function() {
-    if (this.value) loadTopology(this.value);
+    if (!this.value) return;
+    if (currentView === 'supervision') {
+      loadSupervision(this.value);
+    } else {
+      loadTopology(this.value);
+    }
   });
 
   function loadTopology(projectPath) {
@@ -358,10 +379,114 @@
         var split = splitIsolates(data);
         renderIsolates(split.isolates);
         initCytoscape({ nodes: split.connected, edges: data.edges });
+
+        // Re-apply the active view. initCytoscape builds a plain graph, so
+        // without this the styling is silently dropped whenever the data is
+        // reloaded — leaving Supervision for Heatmap, or changing project while
+        // on any styled view, lit the button but rendered an unstyled
+        // dependency graph. The view looked switched and was not.
+        if (currentView && currentView !== 'supervision') applyView(currentView);
       })
       .catch(function(err) {
         loading.textContent = 'Error loading graph: ' + err.message;
       });
+  }
+
+  // The Supervision view is the only one backed by a different endpoint. The
+  // other four restyle one shared topology graph; this replaces the graph
+  // entirely, so switching away has to reload the topology (see applyView).
+  function loadSupervision(projectPath) {
+    loading.textContent = 'Loading supervision tree...';
+    loading.style.display = 'block';
+
+    fetch('/api/knowledge/supervision?path=' + encodeURIComponent(projectPath))
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        loading.style.display = 'none';
+        renderIsolates([]);
+
+        var edges = data.edges || [];
+        var supervisors = Object.create(null);
+        var seen = Object.create(null);
+        var nodes = [];
+
+        // Every edge source supervises something; roots carry the flags the
+        // tree cannot show structurally.
+        edges.forEach(function(e) { supervisors[e.from] = true; });
+
+        function addNode(key, meta) {
+          if (seen[key]) return;
+          seen[key] = true;
+          nodes.push({
+            data: {
+              id: key,
+              label: key.split('.').slice(-2).join('.'),
+              full_label: key,
+              restart: (meta && meta.restart) || 'unknown',
+              kind: supervisors[key] ? 'supervisor' : 'process'
+            }
+          });
+        }
+
+        edges.forEach(function(e) {
+          addNode(e.from, null);
+          addNode(e.to, { restart: e.restart });
+        });
+
+        // A supervisor with no edges at all still belongs on screen — a
+        // DynamicSupervisor or an unresolved child list is exactly the case a
+        // reader most needs to see, and it has no edges by construction.
+        (data.roots || []).forEach(function(r) { addNode(r.key, null); });
+
+        if (nodes.length === 0) {
+          loading.textContent = 'No supervision tree found for this project.';
+          loading.style.display = 'block';
+          return;
+        }
+
+        initCytoscape({
+          nodes: nodes,
+          edges: edges.map(function(e, i) {
+            return {
+              data: {
+                id: 'sup-' + i,
+                source: e.from,
+                target: e.to,
+                label: String(e.order),
+                conditional: !!e.conditional
+              }
+            };
+          })
+        });
+
+        cy.nodes().addClass('sup-node');
+        cy.nodes().forEach(function(n) {
+          if (n.data('kind') === 'supervisor') n.addClass('sup-supervisor');
+        });
+        cy.edges().forEach(function(e) {
+          if (e.data('conditional')) e.addClass('sup-conditional');
+        });
+
+        // Flags come from the nested payload, which carries per-supervisor
+        // metadata the flat edge list does not.
+        (data.roots || []).forEach(function(root) { markFlags(root); });
+
+        cy.layout({ name: 'breadthfirst', directed: true, padding: 40, spacingFactor: 1.3, animate: false }).run();
+      })
+      .catch(function(err) {
+        loading.textContent = 'Error loading supervision tree: ' + err.message;
+        loading.style.display = 'block';
+      });
+  }
+
+  function markFlags(node) {
+    var el = cy.getElementById(node.key);
+    if (el && el.length) {
+      if (node.dynamic) el.addClass('sup-dynamic');
+      if (node.children_unresolved) el.addClass('sup-unresolved');
+      if (node.external) el.addClass('sup-external');
+    }
+    (node.children || []).forEach(markFlags);
   }
 
   // Compute isolated nodes: any node with no incoming or outgoing edge
@@ -557,6 +682,44 @@
           'opacity': 1
         }
       },
+      // --- Supervision view -------------------------------------------------
+      // Colour carries restart type; shape and border carry the things a
+      // supervision tree can lie about if you don't mark them.
+      {
+        selector: 'node.sup-node',
+        style: {
+          'background-color': function(ele) { return RESTART_COLORS[ele.data('restart')] || '#7e8ba3'; },
+          'width': 22,
+          'height': 22,
+          'font-size': 9
+        }
+      },
+      {
+        selector: 'node.sup-supervisor',
+        style: { 'shape': 'round-rectangle', 'width': 30, 'height': 22, 'border-width': 2, 'border-color': '#bb86fc' }
+      },
+      {
+        // Children are started at runtime and are structurally invisible —
+        // marked so an empty node never reads as "supervises nothing".
+        selector: 'node.sup-dynamic',
+        style: { 'shape': 'diamond', 'border-width': 2, 'border-color': '#ffa726', 'border-style': 'dashed' }
+      },
+      {
+        // The child list could not be statically bounded. Distinct from
+        // dynamic: this is "we could not see", not "there is nothing to see".
+        selector: 'node.sup-unresolved',
+        style: { 'border-width': 3, 'border-color': '#e94560', 'border-style': 'dotted' }
+      },
+      {
+        selector: 'node.sup-external',
+        style: { 'opacity': 0.55, 'border-style': 'dashed' }
+      },
+      {
+        // A child present in only some branches of an if/case — it may not be
+        // running at all, so the edge must not look like a certainty.
+        selector: 'edge.sup-conditional',
+        style: { 'line-style': 'dashed', 'line-color': '#ffa726', 'target-arrow-color': '#ffa726' }
+      },
       {
         selector: 'node.blast-source',
         style: {
@@ -663,13 +826,29 @@
     if (cy) cy.fit(40);
   });
 
-  // View switching
+  // View switching. Supervision is backed by a different endpoint, so entering
+  // or leaving it reloads rather than restyles — applyView cannot restyle its
+  // way from one dataset to another.
   document.querySelectorAll('.view-btn').forEach(function(btn) {
     btn.addEventListener('click', function() {
+      var previous = currentView;
+      var next = btn.dataset.view;
+      var project = projectSelect.value;
+
       document.querySelectorAll('.view-btn').forEach(function(b) { b.classList.remove('active'); });
       btn.classList.add('active');
-      currentView = btn.dataset.view;
-      applyView(currentView);
+      currentView = next;
+
+      if (!project) return;
+
+      if (next === 'supervision') {
+        loadSupervision(project);
+        applyView(next);
+      } else if (previous === 'supervision') {
+        loadTopology(project);
+      } else {
+        applyView(next);
+      }
     });
   });
 
@@ -700,6 +879,17 @@
           '<div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> Yellow: needs attention</div>' +
           '<div class="legend-row"><div class="legend-dot" style="background:#53d769;opacity:0.3"></div> Green: healthy (dimmed)</div>' +
           '<div class="legend-row" style="margin-top:4px;color:#555">Click node for details</div>';
+        break;
+
+      case 'supervision':
+        legend.innerHTML =
+          '<div class="legend-row"><div class="legend-dot" style="background:#53d769"></div> restart: permanent</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#42a5f5"></div> restart: transient</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#ffa726"></div> restart: temporary</div>' +
+          '<div class="legend-row"><div class="legend-dot" style="background:#7e8ba3"></div> restart: unspecified (OTP default)</div>' +
+          '<div class="legend-row" style="margin-top:4px;color:#555">Rounded = supervisor &middot; Diamond = DynamicSupervisor</div>' +
+          '<div class="legend-row" style="color:#555">Dashed edge = conditional child (may not be running)</div>' +
+          '<div class="legend-row" style="color:#e94560">Dotted red border = child list unresolved (unknown, not empty)</div>';
         break;
 
       case 'blast':

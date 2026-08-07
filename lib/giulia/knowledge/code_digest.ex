@@ -49,14 +49,25 @@ defmodule Giulia.Knowledge.CodeDigest do
   ]
 
   # Paths relative to :code.priv_dir(:giulia).
-  # `config/relevance.json` is intentionally absent — read-time response
-  # filter, never baked into cached output. See the moduledoc.
+  #
+  # EVERY config file whose contents are baked into tier output belongs here.
+  # Omitting one means editing that JSON does not invalidate the cached
+  # metrics, so the daemon serves stale results from before the edit —
+  # silently, since nothing errors. Adding a new config file without adding it
+  # here is the known failure mode, so make it a checklist item; the test
+  # "every config file that feeds cached output is tracked by the digest"
+  # enforces it against priv/config/*.json.
+  #
+  # `config/relevance.json` is the one deliberate exclusion: it is a
+  # post-cache read-time response filter, never baked into cached output.
+  # See the moduledoc.
   @tier_config_files [
     "config/scoring.json",
     "config/dispatch_patterns.json",
+    "config/dispatch_invariants.json",
     "config/scan_defaults.json",
     "config/enrichment_sources.json",
-    "config/dispatch_invariants.json"
+    "config/otp_checks.json"
   ]
 
   @persistent_term_key {__MODULE__, :digest}
