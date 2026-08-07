@@ -240,10 +240,12 @@ On-disk key-value store for surviving restarts without re-scanning.
 
 - **Code-digest envelope**: graph and metrics are persisted wrapped in a
   `%{digest: <12-char hex>, payload: <data>}` envelope. The digest is
-  computed by `Knowledge.CodeDigest` from the BEAM md5 of four code-tier
-  modules (`Builder`, `Metrics`, `Behaviours`, `DispatchPatterns`) and the
-  content md5 of three config files (`scoring.json`, `dispatch_patterns.json`,
-  `scan_defaults.json`). On warm-restore, the loader compares the stored
+  computed by `Knowledge.CodeDigest` from the BEAM md5 of eleven code-tier
+  modules (the graph/metric tier — `Builder`, `Metrics`, `Behaviours`,
+  `DispatchPatterns`, `DeadCodeClassifier`, `TemplateReferences` — plus the
+  enrichment tier) and the content md5 of five config files (`scoring.json`,
+  `dispatch_patterns.json`, `scan_defaults.json`, `enrichment_sources.json`,
+  `dispatch_invariants.json`). On warm-restore, the loader compares the stored
   digest against the current digest:
 
   - Match → load cache as-is
@@ -331,9 +333,13 @@ without recompilation:
 | `dispatch_invariants.json` | `Config.DispatchInvariants` | Project-root markers, OTP/framework implicit functions, known external behaviour callback signatures, Phoenix HTTP verbs (v0.3.8+) |
 | `relevance.json` | `Config.Relevance` | Bucket boundaries for `?relevance=high\|medium\|all` on `dead_code` / `conventions` / `duplicates` (v0.3.8+) |
 
-All are loaded once at daemon startup, cached in `:persistent_term`,
-and tracked by the CodeDigest envelope (see L2 section above). Edits
-propagate via daemon restart + automatic cache invalidation on warm-restore.
+All are loaded once at daemon startup and cached in `:persistent_term`.
+All except `relevance.json` are tracked by the CodeDigest envelope (see
+L2 section above), so edits propagate via daemon restart + automatic cache
+invalidation on warm-restore. `relevance.json` is excluded deliberately:
+its buckets filter a response at read time and are never baked into the
+cached graph or metrics, so an edit takes effect on the next request with
+no invalidation needed.
 
 See [`CONFIGURATION.md`](CONFIGURATION.md) for the per-variable
 reference and operator workflow.

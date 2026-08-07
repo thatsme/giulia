@@ -16,12 +16,19 @@ defmodule Giulia.Knowledge.CodeDigest do
 
   Tracked surfaces:
 
-  - **Code modules** (loaded BEAM md5): `Builder`, `Metrics`, `Behaviours`,
-    `DispatchPatterns`. Editing any of these and recompiling shifts the
-    digest.
-  - **Config files** (file content md5): `priv/config/scoring.json`,
-    `priv/config/dispatch_patterns.json`, `priv/config/scan_defaults.json`.
+  - **Code modules** (loaded BEAM md5): the graph/metric tier plus the
+    enrichment tier — see `@tier_modules`. Editing any of these and
+    recompiling shifts the digest.
+  - **Config files** (file content md5): every `priv/config/*.json` whose
+    values are baked into cached output — see `@tier_config_files`.
     Editing any of these and restarting the daemon shifts the digest.
+
+  `priv/config/relevance.json` is deliberately **not** tracked. Its buckets
+  are applied at read time when filtering a response, never baked into the
+  cached graph or metrics, so an edit takes effect on the next request
+  without invalidating anything. Every other config file feeds cached
+  output and must be listed in `@tier_config_files` — otherwise an edit
+  leaves stale caches validating against an unchanged digest.
 
   The hash is computed once per VM and cached in `:persistent_term`. Reads
   are free; writes only happen on the first call after boot.
@@ -42,11 +49,14 @@ defmodule Giulia.Knowledge.CodeDigest do
   ]
 
   # Paths relative to :code.priv_dir(:giulia).
+  # `config/relevance.json` is intentionally absent — read-time response
+  # filter, never baked into cached output. See the moduledoc.
   @tier_config_files [
     "config/scoring.json",
     "config/dispatch_patterns.json",
     "config/scan_defaults.json",
-    "config/enrichment_sources.json"
+    "config/enrichment_sources.json",
+    "config/dispatch_invariants.json"
   ]
 
   @persistent_term_key {__MODULE__, :digest}

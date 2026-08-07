@@ -1,12 +1,14 @@
 # Giulia Configuration Reference
 
-This document is the canonical reference for every tunable in `priv/config/`. Three JSON files control behaviour that should be tunable without recompilation:
+This document is the per-variable reference for the three most-tuned JSON files in `priv/config/`:
 
 - [`scoring.json`](#scoringjson) — heatmap, change_risk, god_modules, unprotected_hubs scoring constants
 - [`dispatch_patterns.json`](#dispatch_patternsjson) — runtime-dispatch patterns the AST walker can't statically see
 - [`scan_defaults.json`](#scan_defaultsjson) — universal source-root list for Mix projects
 
-All three are loaded once at daemon startup, cached in `:persistent_term` for free reads, and tracked by `Knowledge.CodeDigest` so edits invalidate the L2 cache automatically.
+`priv/config/` also holds `enrichment_sources.json`, `dispatch_invariants.json` and `relevance.json`, which have no per-variable section here yet — see `ARCHITECTURE.md` §5 for what each controls.
+
+All are loaded once at daemon startup and cached in `:persistent_term` for free reads. All except `relevance.json` are tracked by `Knowledge.CodeDigest` so edits invalidate the L2 cache automatically; `relevance.json` filters responses at read time and needs no invalidation.
 
 ## Overview
 
@@ -24,7 +26,7 @@ On first call, the loader reads the JSON, parses with atom keys, and caches the 
 
 ### Cache invalidation contract
 
-`Knowledge.CodeDigest` hashes the **content** of all three config files alongside the BEAM md5s of the four code-tier modules (`Builder`, `Metrics`, `Behaviours`, `DispatchPatterns`). The persisted L2 caches (graph + metrics) are tagged with the digest at write time. On daemon startup, warm-restore compares stored vs current digest:
+`Knowledge.CodeDigest` hashes the **content** of five config files (the three documented here plus `enrichment_sources.json` and `dispatch_invariants.json`) alongside the BEAM md5s of eleven code-tier modules. The persisted L2 caches (graph + metrics) are tagged with the digest at write time. On daemon startup, warm-restore compares stored vs current digest:
 
 - Match → load cache as-is
 - Mismatch → log `"Code digest changed (X -> Y) — invalidating … cache"`, drop the cache, force a rebuild on next scan
