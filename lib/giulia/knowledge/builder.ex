@@ -881,7 +881,13 @@ defmodule Giulia.Knowledge.Builder do
   # in all_modules, try prepending the caller's parent namespaces (deepest
   # first). Handles Phoenix `scope "/", App do ...Controller end`, Ecto
   # `has_many :posts, Post`, and any other same-app short-form references.
-  defp resolve_with_fallback(parts, caller_module, prefixes, all_modules) do
+  # Exposed @doc false for the resolver-contract property suite
+  # (test/giulia/knowledge/resolver_contracts_test.exs) — same test-harness
+  # precedent as Topology.fuzzy_score/2. Not part of the public API.
+  @doc false
+  @spec resolve_with_fallback(list(), String.t(), [String.t()], MapSet.t(String.t())) ::
+          {:ok, String.t()} | :not_found
+  def resolve_with_fallback(parts, caller_module, prefixes, all_modules) do
     direct = resolve_module_parts(parts, caller_module)
 
     cond do
@@ -911,7 +917,12 @@ defmodule Giulia.Knowledge.Builder do
   # unbounded analyzed-project names must not mint atoms: if the atom does
   # not exist, no loaded code has ever referenced such a module, which is
   # already the answer. Same pattern as `Daemon.Helpers.safe_to_node_atom/1`.
-  defp loadable_runtime_module?(name) do
+  # @doc false: exposed for the resolver-contract property suite (the
+  # no-atom-minting contract can only bind here — the pipeline path
+  # re-parses with Sourceror, whose tokenizer legitimately mints atoms).
+  @doc false
+  @spec loadable_runtime_module?(String.t()) :: boolean()
+  def loadable_runtime_module?(name) do
     module =
       try do
         String.to_existing_atom("Elixir." <> name)
@@ -926,7 +937,12 @@ defmodule Giulia.Knowledge.Builder do
   # "MyAppWeb.Router" → ["MyAppWeb"]
   # "MyApp.Web.Api.Router" → ["MyApp.Web.Api", "MyApp.Web", "MyApp"]
   # "MyApp" → []
-  defp caller_namespace_prefixes(caller_module) do
+  # @doc false: exposed for the resolver-contract property suite — the
+  # contracts must feed resolve_with_fallback/4 the SAME prefixes
+  # production computes, not a test-local reimplementation that could drift.
+  @doc false
+  @spec caller_namespace_prefixes(String.t()) :: [String.t()]
+  def caller_namespace_prefixes(caller_module) do
     parts = String.split(caller_module, ".")
 
     case length(parts) do
